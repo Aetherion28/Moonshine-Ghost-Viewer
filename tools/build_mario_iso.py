@@ -77,7 +77,10 @@ def material_for(w, model, mat, prefix):
     elif mat.blend:
         alpha = {"alphaMode": "BLEND"}
     factor = tuple(c / 255 for c in mat.mat_color) if not mat.use_vertex_color else (1, 1, 1, 1)
-    mi = w.custom_material(unlit(f"{prefix} {mat.name}", tex[0] if tex else None, alpha, factor))
+    spec = unlit(f"{prefix} {mat.name}", tex[0] if tex else None, alpha, factor)
+    if mat.lit:   # the viewer lights these like GX: ambient + stage lights, times material/vertex colour
+        spec["extras"] = {"lit": 1, "mask": mat.lit_mask, "ambVtx": int(mat.amb_vtx), "diff": mat.diff_fn}
+    mi = w.custom_material(spec)
     return mi, entry
 
 
@@ -100,7 +103,7 @@ def add_static_part(w, model, name, parent_node, matrix=None, skip_tex=()):
         mi, entry = material_for(w, model, mat, name)
         uv = uv_for(mesh, entry) if entry is not None else None
         color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
-        _add_mesh(w, f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color)
+        _add_mesh(w, f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, normal=mesh.get("nrm"))
         mesh_node = w.gltf["nodes"].pop()
         w.gltf["scenes"][0]["nodes"].pop()
         ni = add_node(w, mesh_node)
@@ -108,8 +111,8 @@ def add_static_part(w, model, name, parent_node, matrix=None, skip_tex=()):
     return hi
 
 
-def _add_mesh(w, name, pos, tris, mat, uv=None, color=None, joints=None, weights=None):
-    w.add_arrays(name, pos, tris, mat, uv, color)
+def _add_mesh(w, name, pos, tris, mat, uv=None, color=None, joints=None, weights=None, normal=None):
+    w.add_arrays(name, pos, tris, mat, uv, color, normal)
     if joints is not None:
         prim = w.gltf["meshes"][-1]["primitives"][0]
         prim["attributes"]["JOINTS_0"] = w.accessor(np.ascontiguousarray(joints, np.uint16), "VEC4", 5123, 34962)
@@ -148,7 +151,7 @@ def build_glb(arc, out: Path):
                 joints[vi, k] = j
                 weights[vi, k] = wt
         weights /= np.maximum(weights.sum(1, keepdims=True), 1e-6)
-        _add_mesh(w, f"body_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, None, joints, weights)
+        _add_mesh(w, f"body_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, None, joints, weights, normal=mesh.get("nrm"))
         w.gltf["nodes"][-1]["skin"] = 0
     jidx = {n: joint_nodes[i] for i, n in enumerate(body.joint_names)}
     # --- hands (decomp TMario::changeHand: [0]=ma_hnd2, [1]=ma_hnd3, plus ma_hnd4r)

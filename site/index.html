@@ -291,10 +291,40 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 0.55));
-  const sun = new THREE.DirectionalLight(0xffffff, 0.55);
-  sun.position.set(0.4, 1, 0.3);
-  scene.add(sun);
+  // GX-style lighting for lit materials (objects, NPCs, Mario): per-vertex ambient + two positional
+  // lights from the stage's Light/AmbColor objects, summed and clamped to 1, times the material or
+  // vertex colour. The stage geometry itself is unlit in the game (baked vertex colours).
+  const gxAmb = new THREE.AmbientLight(0x808080, 1);
+  const gxSun = new THREE.PointLight(0xffffff, 1, 0, 0), gxSub = new THREE.PointLight(0x000000, 1, 0, 0);
+  scene.add(gxAmb, gxSun, gxSub);
+  function setStageLights(L) {
+    const g = (L && (L.object || L.player)) || {};
+    const rgb = (c, d) => new THREE.Color().setRGB(...(c || d).map((v) => v / 255));
+    gxAmb.color.copy(rgb(g.amb, [128, 128, 128]));
+    gxSun.color.copy(rgb(g.sun && g.sun.c, [255, 255, 255]));
+    gxSun.position.fromArray((g.sun && g.sun.p) || [200000, 500000, 200000]);
+    gxSub.color.copy(rgb(g.sub && g.sub.c, [0, 0, 0]));
+    gxSub.position.fromArray((g.sub && g.sub.p) || [-200000, -500000, -200000]);
+  }
+  setStageLights(null);
+  function gxClamp(sh) {
+    sh.fragmentShader = sh.fragmentShader.replace(
+      'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
+      'vec3 outgoingLight = min(reflectedLight.directDiffuse + reflectedLight.indirectDiffuse, diffuseColor.rgb) + totalEmissiveRadiance;');
+  }
+  function gxMaterial(m) {   // unlit glTF material flagged lit by the converter -> lit like the game
+    if (!m || !m.userData || !m.userData.lit || m.isMeshLambertMaterial) return m;
+    const n = new THREE.MeshLambertMaterial({ map: m.map, color: m.color.clone(), vertexColors: m.vertexColors,
+      transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, side: m.side, depthWrite: m.depthWrite });
+    n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp;
+    return n;
+  }
+  // Clones (one per ghost / placed object) keep the clamp.
+  const lambertCopy = THREE.MeshLambertMaterial.prototype.copy;
+  THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) this.onBeforeCompile = gxClamp; return this; };
+  function gxLight(root) {
+    root.traverse((o) => { if (o.isMesh && o.geometry.attributes.normal) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material); });
+  }
 
   function applySceneTheme() {
     scene.background = new THREE.Color(css('--scene-bg') || '#cfdde6');
@@ -521,7 +551,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!info || !info.scenes[routeKey]) { update(); return; }
     let lib = objLibCache.get(info.lib);
     if (!lib) {
-      lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', (g) => res(g.scene), rej)));
+      lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', (g) => { gxLight(g.scene); res(g.scene); }, rej)));
       objLibCache.set(info.lib, lib);
     }
     const file = info.scenes[routeKey];
@@ -530,6 +560,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     try {
       const [libScene, data] = await Promise.all([lib, list]);
       if (key !== objectsKey) return;
+      setStageLights(data.lights);
       const items = Array.isArray(data) ? data : data.o;
       const protos = {};
       libScene.children.forEach((c) => { if (/^m\d+(_s\d+)?$/.test(c.name)) protos[c.name.slice(1)] = c; });
@@ -1658,6 +1689,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       .then(async (gltf) => {
         MarioRig.setData(await anims);
         marioModel = gltf.scene;
+        gxLight(marioModel);
         marioModel.traverse((o) => {
           if (o.isMesh) { o.frustumCulled = false; [].concat(o.material).forEach((m) => { m.side = THREE.DoubleSide; }); }
         });

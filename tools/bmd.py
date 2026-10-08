@@ -65,6 +65,10 @@ class Material:
     cull: int = 0
     used: list = field(default_factory=list)  # every distinct texture the TEV stages sample
     tev: dict | None = None        # TEV stages and colour registers (for baking NPC colours)
+    lit: bool = False              # colour channel 0 lighting enabled (GX_SetChanCtrl)
+    lit_mask: int = 0              # which lights (bit per GX light)
+    amb_vtx: bool = False          # ambient from vertex colour instead of the register
+    diff_fn: int = 0               # 0 none, 1 sign, 2 clamp
 
 
 @dataclass
@@ -313,6 +317,13 @@ def parse(data: bytes, decode_textures: bool = True, bmt: bytes | None = None,
             if a in arrays and any(a in at for _, at in verts):
                 ti = np.array([at.get(a, 0) for _, at in verts])
                 mesh["uv"][a] = arrays[a][np.clip(ti, 0, len(arrays[a]) - 1), :2]
+        for na in (NRM, NBT):
+            if na in arrays and any(na in at for _, at in verts):
+                ni = np.array([at.get(na, 0) for _, at in verts])
+                n = arrays[na][np.clip(ni, 0, len(arrays[na]) - 1), :3].astype(np.float32)
+                n = np.einsum("nij,nj->ni", mats[:, :3, :3], n)
+                mesh["nrm"] = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-6)
+                break
         if CLR0 in arrays and any(CLR0 in at for _, at in verts):
             ci = np.array([at.get(CLR0, 0) for _, at in verts])
             mesh["color"] = arrays[CLR0][np.clip(ci, 0, len(arrays[CLR0]) - 1)]
@@ -435,6 +446,10 @@ def _parse_materials(mat: bytes) -> list[Material]:
         # (mode 1) also carry SRCALPHA/INVSRCALPHA blend modes, but their alpha is not coverage
         # (e.g. the nozzles' texture alpha drives their shine), so they draw solid.
         blend = mat[bm] == 1 and mode == 4 and not (mat[bm + 1] == 1 and mat[bm + 2] == 0)
-        out.append(Material(names[i] if i < len(names) else f"mat{i}", mode == 4, alpha_ref, blend, use_vtx,
-                            mat_color, used[0] if used else None, used[1] if len(used) > 1 else None, cull, used, tev))
+        m_out = Material(names[i] if i < len(names) else f"mat{i}", mode == 4, alpha_ref, blend, use_vtx,
+                         mat_color, used[0] if used else None, used[1] if len(used) > 1 else None, cull, used, tev)
+        if ch != 0xFFFF:
+            c0 = mat[chan_o + ch * 8: chan_o + ch * 8 + 6]   # enable, matSrc, litMask, diffFn, attnFn, ambSrc
+            m_out.lit, m_out.lit_mask, m_out.diff_fn, m_out.amb_vtx = bool(c0[0]), c0[2], c0[3], c0[5] == 1
+        out.append(m_out)
     return out

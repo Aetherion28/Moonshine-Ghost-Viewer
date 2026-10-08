@@ -113,6 +113,30 @@ def parse_rails(ral: bytes) -> dict:
     return rails
 
 
+LIGHT_GROUPS = {"プレイヤー": "player", "オブジェクト": "object", "敵": "enemy"}
+LIGHT_KINDS = {"太陽": "sun", "太陽サブ": "sub", "影": "shade", "影サブ": "shadeSub", "太陽スペキュラ": "spec",
+               "太陽アンビエント": "amb", "影アンビエント": "shadeAmb"}
+
+
+def stage_lights(scene: bytes) -> dict:
+    """Light / AmbColor objects (TLightWithDBSet): per group (player, object, enemy) a sun light and
+    a sub light (position far away, colour) and an ambient colour, plus "in shadow" variants."""
+    out = {}
+    for o in scene_bin.parse(scene):
+        if o["type"] not in ("Light", "AmbColor"):
+            continue
+        m = re.match(r"(.+?)（(.+?)）", o.get("name", ""))
+        if not m or m.group(2) not in LIGHT_GROUPS or m.group(1) not in LIGHT_KINDS:
+            continue
+        g = out.setdefault(LIGHT_GROUPS[m.group(2)], {})
+        p = o["payload"]
+        if o["type"] == "AmbColor" and len(p) >= 4:
+            g[LIGHT_KINDS[m.group(1)]] = list(p[:3])
+        elif o["type"] == "Light" and len(p) >= 16:
+            g[LIGHT_KINDS[m.group(1)]] = {"p": [round(v, 1) for v in struct.unpack_from(">3f", p, 0)], "c": list(p[12:15])}
+    return out
+
+
 def move_extra(typ: str, payload: bytes, rails: dict):
     try:
         if typ in ROLL_TYPES:
@@ -361,7 +385,7 @@ def add_models(w: GlbWriter, models, name: str) -> None:
             mi, entry = material_for(w, model, mat, f"{name}p{pi}")
             uv = uv_for(mesh, entry) if entry is not None else None
             color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
-            w.add_arrays(f"{name}_p{pi}s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color)
+            w.add_arrays(f"{name}_p{pi}s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"))
             node = w.gltf["nodes"].pop()
             w.gltf["scenes"][0]["nodes"].pop()
             w.gltf["nodes"].append(node)
@@ -378,7 +402,7 @@ def add_model(w: GlbWriter, model: bmd.Model, name: str) -> None:
         mi, entry = material_for(w, model, mat, name)
         uv = uv_for(mesh, entry) if entry is not None else None
         color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
-        w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color)
+        w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"))
         node = w.gltf["nodes"].pop()
         w.gltf["scenes"][0]["nodes"].pop()
         w.gltf["nodes"].append(node)
@@ -511,7 +535,7 @@ def main(argv):
                 instances.append([mi, typ, key or "", round(px, 2), round(py, 2), round(pz, 2),
                                   round(rx, 2), round(ry, 2), round(rz, 2), round(sx, 3), round(sy, 3), round(sz, 3),
                                   pick, hit[0], hit[1], o["hash"], CARRY_TYPES.get(typ, "")] + ([extra] if extra else []))
-            data = {"o": instances, "w": wires(arc)}
+            data = {"o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
             dyn = {}
             for atype, (path, kind, pname) in DYNAMIC_CARRY.items():
                 if path not in arc:

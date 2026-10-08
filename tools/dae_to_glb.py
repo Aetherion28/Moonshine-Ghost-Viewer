@@ -217,9 +217,11 @@ class GlbWriter:
         return self.mat_cache[key]
 
     def add_arrays(self, name: str, pos: np.ndarray, tris: np.ndarray, mat: int, uv: np.ndarray | None = None,
-                   color: np.ndarray | None = None) -> None:
-        """Add a mesh from flat per-vertex arrays (positions, optional UV and RGBA8 colour)."""
+                   color: np.ndarray | None = None, normal: np.ndarray | None = None) -> None:
+        """Add a mesh from flat per-vertex arrays (positions, optional UV, RGBA8 colour, normals)."""
         attrs = {"POSITION": self.accessor(np.ascontiguousarray(pos, np.float32), "VEC3", 5126, 34962, minmax=True)}
+        if normal is not None:
+            attrs["NORMAL"] = self.accessor(np.ascontiguousarray(normal, np.float32), "VEC3", 5126, 34962)
         if uv is not None:
             attrs["TEXCOORD_0"] = self.accessor(np.ascontiguousarray(uv, np.float32), "VEC2", 5126, 34962)
         if color is not None:
