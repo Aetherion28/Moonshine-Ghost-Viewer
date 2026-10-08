@@ -19,6 +19,7 @@ import base64
 import hashlib
 import json
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -73,6 +74,57 @@ CARRY_TYPES = {"JumpBase": "spring", "ResetFruit": "fruit", "FruitBanana": "frui
 PREFERRED = {"cannon": "default.bmd", "bombhei": "nejibomb_model1.bmd"}
 # Actors Mario can carry that enemies spawn at run time (not placed in scene.bin), by retail actor
 # type (Strategic/ActorTypes.hpp): model, carry kind and the .prm holding their throw physics.
+# Moving blocks (MapObjRailBlock.cpp). TRollBlock spins about its local Z by a per-object speed;
+# TRailBlock rolls along a rail from map/scene.ral.
+ROLL_TYPES = {"Umaibou", "GetaGreen", "GetaOrange", "RollBlock", "RollBlockR", "RollBlockY", "RollBlockB"}
+RAIL_TYPES = {"EXRollCube", "RailBlock", "RailBlockR", "RailBlockY", "RailBlockB"}
+
+
+def _lstr(b: bytes, p: int):
+    n = struct.unpack_from(">H", b, p)[0]
+    return b[p + 2:p + 2 + n], p + 2 + n
+
+
+def actor_tail(payload: bytes):
+    """Offset just past TActor + TMapObjBase strings: [desc][u32][model key]."""
+    _, p = _lstr(payload, 36)
+    p += 4
+    _, p = _lstr(payload, p)
+    return p
+
+
+def parse_rails(ral: bytes) -> dict:
+    rails, i = {}, 0
+    while i + 12 <= len(ral):
+        n, no, do = struct.unpack_from(">III", ral, i)
+        i += 12
+        if n == 0:
+            break
+        name = ral[no:ral.index(b"\0", no)].decode("ascii", "replace")
+        nodes = []
+        for k in range(n):
+            x, y, z, cn, fl, pi, ya, ro, sp = struct.unpack_from(">hhhhIHHHH", ral, do + k * 0x44)
+            con = list(struct.unpack_from(">8H", ral, do + k * 0x44 + 0x14)[:max(cn, 0)])
+            nodes.append([x, y, z, pi, ya, ro, sp, fl, con])
+        rails[name] = nodes
+    return rails
+
+
+def move_extra(typ: str, payload: bytes, rails: dict):
+    try:
+        if typ in ROLL_TYPES:
+            p = actor_tail(payload)
+            return {"roll": struct.unpack_from(">i", payload, p)[0] * 0.01}
+        if typ in RAIL_TYPES:
+            name, _ = _lstr(payload, actor_tail(payload))
+            name = name.decode("ascii", "replace")
+            if name in rails and not name.startswith("S_"):
+                return {"rail": rails[name]}
+    except (struct.error, ValueError):
+        pass
+    return None
+
+
 DYNAMIC_CARRY = {0x1000001E: ("bombhei/nejibomb_model1.bmd", "bomb", "bombhei")}
 # Once water stops a Bob-omb, nejibomb_stop1.btp swaps its texture to the blue "stop" one (same
 # model; downnejibomb_model1 is the burst-apart debris). (texture, replacement) per actor type.
@@ -376,6 +428,7 @@ def main(argv):
             if arc is None or "map/scene.bin" not in arc:
                 continue
             instances = []
+            rails = parse_rails(arc["map/scene.ral"]) if "map/scene.ral" in arc else {}
             for o in scene_bin.parse(arc["map/scene.bin"]):
                 typ = o["type"]
                 if SKIP_TYPES.match(typ):
@@ -431,6 +484,8 @@ def main(argv):
                     track = cork_track(arc)
                     if track:
                         extra = {"cork": track}
+                if typ in ROLL_TYPES or typ in RAIL_TYPES:
+                    extra = move_extra(typ, o["payload"], rails) or extra
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
                 pick = PICKUP_TYPES.get(typ, "")
                 if hidden and pick:
