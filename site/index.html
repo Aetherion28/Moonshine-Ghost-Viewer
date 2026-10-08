@@ -357,6 +357,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       sh.uniforms.gxReg0 = { value: new THREE.Vector3(...T.reg0) };
       sh.uniforms.gxK = { value: new THREE.Vector3(T.k3, T.k4, T.spec ? 1 : 0) };
     }
+    if (m.npcGrad) {   // NPC colour change (TEV): texture brightness mapped from a dark to a light colour
+      sh.uniforms.npcLo = { value: m.npcGrad[0] }; sh.uniforms.npcHi = { value: m.npcGrad[1] };
+      sh.fragmentShader = 'uniform vec3 npcLo;\nuniform vec3 npcHi;\n' + sh.fragmentShader.replace('#include <map_fragment>',
+        '#include <map_fragment>\n  { float l = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114)); diffuseColor.rgb = mix(npcLo, npcHi, l); }');
+    }
     sh.vertexShader = head + 'uniform vec3 gxLightPos;\nuniform vec3 gxLightCol;\nuniform vec3 gxAmbCol;\nuniform float gxSign;\n' + sh.vertexShader.replace('#include <lights_lambert_vertex>', `
       vec3 gxN = normalize( transformedNormal );
       vec3 gxL = normalize( ( viewMatrix * vec4( gxLightPos, 1.0 ) ).xyz - mvPosition.xyz );
@@ -394,7 +399,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   const GX_TOON = new Map();   // toon ramp textures by glTF texture index (Mario's model)
   function gxCacheKey() {
-    return 'gx' + (this.userData && this.userData.toon && GX_TOON.has(this.userData.toon.tex) ? '-toon' : '') + (this.gxEnvTex ? '-env' : '');
+    return 'gx' + (this.userData && this.userData.toon && GX_TOON.has(this.userData.toon.tex) ? '-toon' : '') + (this.gxEnvTex ? '-env' : '') + (this.npcGrad ? '-npc' : '');
   }
   function gxClamp(sh) { gxCompile.call(this, sh); }
   function gxMaterial(m) {   // unlit glTF material flagged lit by the converter -> lit like the game
@@ -628,6 +633,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const col = (c) => new THREE.Vector3(...c.map((v) => Math.min(1, v / 255)));
     if (mode === 'mul') { m.color = new THREE.Color(...a.map((v) => Math.min(1, v / 255))); return; }
     const lo = col(a), hi = col(b);
+    if (m.onBeforeCompile === gxClamp) {   // lit material: the game-lighting shader applies the gradient too
+      m.npcGrad = [lo, hi];
+      m.needsUpdate = true;
+      return;
+    }
     m.onBeforeCompile = (sh) => {
       sh.uniforms.npcLo = { value: lo }; sh.uniforms.npcHi = { value: hi };
       sh.fragmentShader = 'uniform vec3 npcLo;\nuniform vec3 npcHi;\n' + sh.fragmentShader.replace('#include <map_fragment>',
@@ -725,7 +735,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           if (o.material.length === 1) o.material = o.material[0];
           // Coins and shines use environment-mapped materials the viewer can't reproduce; tint them instead.
           const tint = PICKUP_TINT[pick.replace(/_hidden$/, '')];
-          if (tint) [].concat(o.material).forEach((m) => { if (m.onBeforeCompile !== gxClamp) m.color = new THREE.Color(tint); });
+          if (tint) [].concat(o.material).forEach((m) => { if (m.onBeforeCompile !== gxClamp || (!m.map && !m.gxEnvTex)) m.color = new THREE.Color(tint); });
           // The Shine Sprite's glow card adds light (game: additive blend) rather than covering.
           [].concat(o.material).forEach((m) => {
             if (!/starglow/i.test(m.name)) return;
