@@ -1242,6 +1242,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (!near.length || Math.abs(groundY(x, y + 20, z) - y) < 15) continue;
       samples.push({ q: q - s0, x, y, z, near });
     }
+    // Drop samples standing on objects that don't move (blocks, platforms the collision file lacks).
+    const still = objNodes.filter((n) => !n.userData.move && n.visible);
+    for (let k = samples.length - 1; k >= 0; k--) {
+      const sm = samples[k];
+      _rc.set(_o3.set(sm.x, sm.y + 60, sm.z), _down3); _rc.far = 120;
+      const h = _rc.intersectObjects(still, true);
+      if (h.length && Math.abs(h[0].distance - 60) < 20) samples.splice(k, 1);
+    }
     while (samples.length > 120) for (let k = samples.length - 1; k > 0; k -= 2) samples.splice(k, 1);   // thin evenly
     let best = 0;
     if (samples.length >= 4) {
@@ -1263,13 +1271,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         return sc;
       };
       // Coarse pass over 20 s, then refine the first best band to single frames.
-      let top = -Infinity, band = [];
-      for (let phi = 0; phi <= 2400; phi += 16) {
-        const sc = score(phi);
-        if (sc > top) { top = sc; band = [phi]; } else if (sc === top) band.push(phi);
-      }
-      // Accept only a clear improvement on "no offset"; otherwise keep 0.
-      if (top - score(0) >= Math.max(4, samples.length * 0.2)) {
+      const coarse = [];
+      for (let phi = 0; phi <= 2400; phi += 16) coarse.push([phi, score(phi)]);
+      const top = Math.max(...coarse.map((c) => c[1]));
+      // Cycles repeat, so several offsets can fit about as well: take the earliest that is within a
+      // whisker of the best (a short intro is the usual case), and only if it is a clear
+      // improvement on no offset at all.
+      const tol = Math.max(1, Math.round(samples.length * 0.05));
+      const band = coarse.filter((c) => c[1] >= top - tol).map((c) => c[0]);
+      if (top - coarse[0][1] >= Math.max(4, samples.length * 0.2)) {
         let run = [band[0]];
         for (let k = 1; k < band.length && band[k] === run[run.length - 1] + 16; k++) run.push(band[k]);
         let lo = run[0] - 16, hi = run[run.length - 1] + 16, fine = [];
