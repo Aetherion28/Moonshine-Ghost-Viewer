@@ -1682,7 +1682,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (s.gap || `${seg.route.area}:${seg.route.episode}` !== objectsKey.split('|').pop()) return false;
     const B = mv.box, p = st.pos, m = 20;
     const on = s.x >= p.x + B.x0 - m && s.x <= p.x + B.x1 + m && s.z >= p.z + B.z0 - m && s.z <= p.z + B.z1 + m
-      && Math.abs(s.y - (p.y + st.cy + B.top)) < 50;
+      && s.y > p.y + st.cy + Math.min(B.top * 0.5, B.top - 30) && s.y < p.y + st.cy + B.top + 50;   // on top, or on a rounded block's upper slope
     if (!on) return 0;
     // TRailMapObj::checkMarioRiding also wants a standing status (MARIO_STATUS_FLAG 0x200: wait,
     // squat, the landing ends), so a stopped lift only sets off once Mario has come to rest on it.
