@@ -291,27 +291,51 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
-  // GX-style lighting for lit materials (objects, NPCs, Mario): per-vertex ambient + two positional
-  // lights from the stage's Light/AmbColor objects, summed and clamped to 1, times the material or
-  // vertex colour. The stage geometry itself is unlit in the game (baked vertex colours).
-  const gxAmb = new THREE.AmbientLight(0x808080, 1);
-  const gxSun = new THREE.PointLight(0xffffff, 1, 0, 0), gxSub = new THREE.PointLight(0x000000, 1, 0, 0);
-  scene.add(gxAmb, gxSun, gxSub);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 0.55));   // markers and other viewer-only meshes
+  const sun = new THREE.DirectionalLight(0xffffff, 0.55);
+  sun.position.set(0.4, 1, 0.3);
+  scene.add(sun);
+
+  // Game lighting (MarioUtil/LightUtil.cpp, TLightCommon::setLight): lit materials get GX_LIGHT0 =
+  // the stage's "sun" light (a position, no attenuation) and the matching ambient colour, per
+  // vertex: clamp(ambient + colour * N.L) times the material or vertex colour. Mario uses the
+  // player set, everything else the object set; set 1 ("shade") replaces set 0 for actors standing
+  // on ground marked as in shadow. Stage geometry is unlit in the game (baked vertex colours).
+  let gxSets = null;
   function setStageLights(L) {
-    const g = (L && (L.object || L.player)) || {};
-    const rgb = (c, d) => new THREE.Color().setRGB(...(c || d).map((v) => v / 255));
-    gxAmb.color.copy(rgb(g.amb, [128, 128, 128]));
-    gxSun.color.copy(rgb(g.sun && g.sun.c, [255, 255, 255]));
-    gxSun.position.fromArray((g.sun && g.sun.p) || [200000, 500000, 200000]);
-    gxSub.color.copy(rgb(g.sub && g.sub.c, [0, 0, 0]));
-    gxSub.position.fromArray((g.sub && g.sub.p) || [-200000, -500000, -200000]);
+    const mk = (g) => {
+      g = g || {};
+      const c = (v, d) => new THREE.Color().setRGB(...(v || d).map((x) => x / 255));
+      const one = (l, amb) => ({ pos: new THREE.Vector3().fromArray((l && l.p) || [200000, 500000, 200000]),
+        col: c(l && l.c, [255, 255, 255]), amb: c(amb, [128, 128, 128]) });
+      return [one(g.sun, g.amb), one(g.shade || g.sun, g.shadeAmb || g.amb)];
+    };
+    gxSets = L ? { player: mk(L.player || L.object), object: mk(L.object || L.player) } : null;
   }
-  setStageLights(null);
-  function gxClamp(sh) {
+  const GX_DEFAULT = { pos: new THREE.Vector3(200000, 500000, 200000), col: new THREE.Color(1, 1, 1), amb: new THREE.Color(0.5, 0.5, 0.5) };
+  function gxSet(group, id) { return (gxSets && gxSets[group] && gxSets[group][id ? 1 : 0]) || GX_DEFAULT; }
+  function gxCompile(sh) {
+    const m = this;
+    if (!m.gx) m.gx = { pos: GX_DEFAULT.pos.clone(), col: GX_DEFAULT.col.clone(), amb: GX_DEFAULT.amb.clone() };
+    sh.uniforms.gxLightPos = { value: m.gx.pos };
+    sh.uniforms.gxLightCol = { value: m.gx.col };
+    sh.uniforms.gxAmbCol = { value: m.gx.amb };
+    sh.uniforms.gxSign = { value: m.userData && m.userData.diff === 1 ? 1 : 0 };
+    sh.vertexShader = 'uniform vec3 gxLightPos;\nuniform vec3 gxLightCol;\nuniform vec3 gxAmbCol;\nuniform float gxSign;\n' + sh.vertexShader.replace('#include <lights_lambert_vertex>', `
+      vec3 gxN = normalize( transformedNormal );
+      vec3 gxL = normalize( ( viewMatrix * vec4( gxLightPos, 1.0 ) ).xyz - mvPosition.xyz );
+      float gxD = dot( gxN, gxL );
+      vLightFront = gxLightCol * ( gxSign > 0.5 ? gxD : max( gxD, 0.0 ) );
+      vIndirectFront = gxAmbCol;
+      #ifdef DOUBLE_SIDED
+        vLightBack = vLightFront;
+        vIndirectBack = gxAmbCol;
+      #endif`);
     sh.fragmentShader = sh.fragmentShader.replace(
       'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
-      'vec3 outgoingLight = min(reflectedLight.directDiffuse + reflectedLight.indirectDiffuse, diffuseColor.rgb) + totalEmissiveRadiance;');
+      'vec3 outgoingLight = clamp( vLightFront + vIndirectFront, 0.0, 1.0 ) * diffuseColor.rgb + totalEmissiveRadiance;');
   }
+  function gxClamp(sh) { gxCompile.call(this, sh); }
   function gxMaterial(m) {   // unlit glTF material flagged lit by the converter -> lit like the game
     if (!m || !m.userData || !m.userData.lit || m.isMeshLambertMaterial) return m;
     const n = new THREE.MeshLambertMaterial({ map: m.map, color: m.color.clone(), vertexColors: m.vertexColors,
@@ -319,7 +343,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp;
     return n;
   }
-  // Clones (one per ghost / placed object) keep the clamp.
+  // Point a model's lit materials at a light set (materials are per placed object after cloning).
+  function gxApply(root, set) {
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      [].concat(o.material).forEach((m) => {
+        if (m.onBeforeCompile !== gxClamp) return;
+        if (!m.gx) m.gx = { pos: new THREE.Vector3(), col: new THREE.Color(), amb: new THREE.Color() };
+        m.gx.pos.copy(set.pos); m.gx.col.copy(set.col); m.gx.amb.copy(set.amb);
+      });
+    });
+  }
+  // Clones (one per ghost / placed object) keep the shader; their light values are set by gxApply.
   const lambertCopy = THREE.MeshLambertMaterial.prototype.copy;
   THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) this.onBeforeCompile = gxClamp; return this; };
   function gxLight(root) {
@@ -695,6 +730,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     for (let i = 0; i < nv; i++) { v[i * 3] = ox + q[i * 3] * st; v[i * 3 + 1] = oy + q[i * 3 + 1] * st; v[i * 3 + 2] = oz + q[i * 3 + 2] * st; }
     const big = nv > 65535;
     const t = big ? new Uint32Array(buf.slice(o, o + nt * 12)) : Uint32Array.from(new Uint16Array(buf.slice(o, o + nt * 6)));
+    // Optional per-triangle light set after the types ('LGHT'): which light set actors standing there use.
+    let light = null;
+    o += big ? nt * 12 : nt * 6; o = (o + 3) & ~3; o += nt * 2; o = (o + 3) & ~3;
+    if (o + 4 + nt <= buf.byteLength && dv.getUint32(o, true) === 0x5448474c) light = new Uint8Array(buf.slice(o + 4, o + 4 + nt));
     // grid
     let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
     for (let i = 0; i < nv; i++) { x0 = Math.min(x0, v[i * 3]); x1 = Math.max(x1, v[i * 3]); z0 = Math.min(z0, v[i * 3 + 2]); z1 = Math.max(z1, v[i * 3 + 2]); }
@@ -713,7 +752,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const [cx0, cx1, cz0, cz1] = ranges.subarray(k * 4, k * 4 + 4);
       for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) cells[fill[cz * gw + cx]++] = k;
     }
-    return { v, t, nt, x0, z0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0 };
+    return { v, t, nt, x0, z0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0, light, lastTri: -1 };
   }
   function colCellRange(C, xa, xb, za, zb, fn) {
     const cx0 = Math.max(0, Math.floor((Math.min(xa, xb) - C.x0) / COL_CELL)), cx1 = Math.min(C.gw - 1, Math.floor((Math.max(xa, xb) - C.x0) / COL_CELL));
@@ -728,6 +767,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // Highest collision surface at (x, z) at or below y (TMap::checkGround), or -Infinity.
   function colGround(C, x, y, z) {
     let best = -Infinity;
+    C.lastTri = -1;
     const v = C.v, t = C.t;
     colCellRange(C, x, x, z, z, (k) => {
       const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
@@ -742,7 +782,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
       const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
       if (Math.abs(ny) / Math.hypot(nx, ny, nz) < 0.2) return;
-      if (hy <= y + 1 && hy > best) best = hy;
+      if (hy <= y + 1 && hy > best) { best = hy; C.lastTri = k; }
     });
     return best;
   }
@@ -785,6 +825,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     update();
   }
   function activeCol() { return stageCol && mapGroup && stageCol.id === mapGroup.userData.id ? stageCol : null; }
+  // Light set for an actor at (x, y, z): the floor below it when that floor is marked as shadow and
+  // within 200 units (TMario light ID in MarioMove.cpp, MActor::setLightData), else 0.
+  function lightSetAt(x, y, z) {
+    const C = activeCol();
+    if (!C || !C.light) return 0;
+    const h = colGround(C, x, y + 50, z);
+    return C.lastTri >= 0 && h + 200 > y ? C.light[C.lastTri] : 0;
+  }
 
   // Drawn stage geometry, used for ray casts when a stage has no collision file.
   const rayMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
@@ -1559,8 +1607,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (rig) g.marker.updateMatrixWorld(true);
     const cork = plan && plan.cork;
     const stageClock = stageTime(g, t);
+    const colKey = activeCol() ? 1 : 0;
     objNodes.forEach((node, i) => {
       const b = node.userData.base;
+      if (node.userData.gxKey !== colKey) {   // light set from the floor under the object (once collision is in)
+        node.userData.gxKey = colKey;
+        gxApply(node, gxSet('object', lightSetAt(b.p[0], b.p[1], b.p[2])));
+      }
       if (node.userData.carry) {
         const holds = plan ? plan.placed.get(i) : null;
         const st = holds ? carryState(node, holds, t) : { pos: b.p, shrink: 0 };
@@ -1704,6 +1757,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     let body;
     if (marioModel) {
       body = THREE.SkeletonUtils.clone(marioModel);
+      body.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone(); });   // own light set per ghost
       group.userData.rig = MarioRig.attach(body);
     } else {
       body = new THREE.Group();
@@ -2085,6 +2139,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     ghosts.forEach((g) => {
       const s = ghostSampleAt(g.data, t);
       g.marker.position.set(s.x, s.y, s.z);
+      gxApply(g.marker, gxSet('player', lightSetAt(s.x, s.y, s.z)));
       g.marker.rotation.y = (s.yaw / 32768) * Math.PI;
       g.marker.visible = g.visible && !s.gap;
       const rig = g.marker.userData.rig;
