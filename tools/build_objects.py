@@ -37,7 +37,8 @@ from dae_to_glb import GlbWriter  # noqa: E402
 
 SKIP_TYPES = re.compile(r"^(Light|AmbColor|Cube\w*|AreaCylinder|\w*Manager|Map|Sky|SunMgr|MirrorCamera|Mario|"
                         r"GroupObj|IdxGroup|MarScene|MapObjSoundGroup|MapObjWave|Pollution|\w*Camera\w*|"
-                        r"\w*Event\w*Point|Strategy|ConductorInit|NameRefGrp|ScenarioArchiveName\w*)$")
+                        r"\w*Event\w*Point|Strategy|ConductorInit|NameRefGrp|ScenarioArchiveName\w*|"
+                        r"Shimmer)$")   # Shimmer: the heat-haze screen effect's plane
 PICKUP_TYPES = {"Coin": "coin", "CoinBlue": "coin_blue", "CoinRed": "coin_red", "Shine": "shine",
                 "Mushroom1up": "1up", "Mushroom1upR": "1up", "Mushroom1upX": "1up",
                 "NozzleItem": "nozzle", "Item": "item"}
@@ -48,7 +49,7 @@ TYPE_FOLDERS = {"NPCMareM": "marem", "NPCMareMB": "maremb", "NPCMareW": "marew",
                 "Gesso": "mamegesso", "LandGesso": "rikugesso", "BossGesso": "bgeso", "PoiHana": "poihana",
                 "PoiHanaRed": "poihana", "SleepPoiHana": "poihana", "StayPakkun": "pakkun", "Pakkun": "pakkun",
                 "HanaSambo": "sambohead", "Yumbo": "sambohead", "ElecNokonoko": "dennoko",
-                "Telesa": "telesa", "LoopTelesa": "telesa", "MarioModokiTelesa": "telesa", "BossTelesa": "telesa",
+                "Telesa": "telesa", "LoopTelesa": "telesa", "BoxTelesa": "telesa", "MarioModokiTelesa": "telesa", "BossTelesa": "telesa",
                 "FishoidA": "fish", "FishoidB": "fish", "FishoidC": "fish", "FishoidD": "fish",
                 "ButterflyA": "butterfly", "ButterflyB": "butterfly", "ButterflyC": "butterfly",
                 "NPCBoard": "boardnpc", "NPCKinopio": "kinopio", "NPCKinojii": "kinojii", "NPCPeach": "peach",
@@ -331,7 +332,8 @@ def find_model(arc: dict, typ: str, keys, table: dict):
     folders = [TYPE_FOLDERS.get(typ, "").lower(), typ.lower(), base]
     folders += [base[:n] for n in range(len(base) - 1, 3, -1)]
     for f in folders:
-        if not f:
+        # "mapobj" is every map object's shared folder, not a model for a MapObj* type that has none
+        if not f or f == "mapobj":
             continue
         files = _folder_files(arc, f)
         if not files:
@@ -523,6 +525,8 @@ def main(argv):
                     rgb = list(struct.unpack_from(">3i", o["payload"], len(o["payload"]) - 12))
                     if all(0 <= c <= 255 for c in rgb) and rgb != [255, 255, 255]:
                         extra = {"tint": rgb}
+                if typ == "BoxTelesa":   # TBoxTelesa::reset: the pink body colour (cTelesaColor[1] vs [0])
+                    extra = {"tint": [round(255 * c / 350) for c in (600, 270, 220)], "tintMat": "_mat_body"}
                 if typ == "Shine":   # TShine::loadBeforeInit: "normal" shown from the start, "quickly", else
                     try:             # hidden until its event (red coins, boss, ...) makes it appear
                         mode, q = _lstr(o["payload"], actor_tail(o["payload"]))

@@ -259,7 +259,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       </div>
       <label><input type="checkbox" id="optPath" checked> Show full route lines</label>
       <label><input type="checkbox" id="optObjects" checked> Show objects</label>
-      <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Tick to show every shine in the level."><input type="checkbox" id="optShines"> Show all shines</label>
+      <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Red coins that a red switch brings out stay hidden until the ghost presses it. Tick to show every shine and red coin in the level."><input type="checkbox" id="optShines"> Show all shines and red coins</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
       <label title="An on-screen stick that flies the camera around the stage, with buttons to raise and lower it. On by default on touch screens."><input type="checkbox" id="optJoy"> Movement joystick</label>
@@ -756,7 +756,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           });
           if (/_hidden$/.test(pick)) [].concat(o.material).forEach((m) => { m.transparent = true; m.opacity = 0.35; m.depthWrite = false; });
           // Wood blocks carry a colour in their placement (TWoodBlock), e.g. Ricco 4 secret's blue pillars.
-          if (ex.tint) [].concat(o.material).forEach((m) => { m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
+          if (ex.tint) [].concat(o.material).forEach((m) => { if (ex.tintMat && !(m.name || '').endsWith(ex.tintMat)) return; m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
         });
         if (node.userData.npcColors) applyNpcColors(node);
         group.add(node);
@@ -1350,12 +1350,32 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const idx = [];
     objList.forEach((it, i) => { if (it[12]) idx.push(i); });
     const d = g.data;
+    const spawn = new Float64Array(objList.length).fill(-Infinity);
+    // Red coin switches (TRedCoinSwitch): the switch only exists once the secret's shine is
+    // collected (a revisit), and its stage's red coins stay dead until Mario ground-pounds it.
+    const sw = objList.findIndex((it) => it[1] === 'RedCoinSwitch');
+    if (sw >= 0) {
+      const it = objList[sw], hr = (it[13] || 100) + 60;
+      let press = Infinity, revisit = false;
+      for (let s = 0; s < d.qf.length; s++) {
+        const r = d.segments[d.segIndex[s]].route;
+        if (r.area !== a || r.episode !== e) continue;
+        if (FLUDD_ANIMS.has(d.anim[s])) revisit = true;
+        if (press === Infinity && HIP_ANIMS.has(d.anim[s])) {
+          const dx = d.pos[s * 3] - it[3], dz = d.pos[s * 3 + 2] - it[5], dy = d.pos[s * 3 + 1] - it[4];
+          if (dx * dx + dz * dz < hr * hr && dy > -50 && dy < 400) press = d.qf[s];
+        }
+      }
+      if (press !== Infinity) revisit = true;
+      spawn[sw] = revisit ? -Infinity : Infinity;
+      objList.forEach((o, i) => { if (o[12] === 'coin_red') spawn[i] = press + QF_PER_SECOND; });
+    }
     for (let s = 0; s < d.qf.length; s++) {
       const r = d.segments[d.segIndex[s]].route;
       if (r.area !== a || r.episode !== e) continue;
       const mx = d.pos[s * 3], my = d.pos[s * 3 + 1], mz = d.pos[s * 3 + 2];
       for (const i of idx) {
-        if (out[i] !== Infinity) continue;
+        if (out[i] !== Infinity || d.qf[s] < spawn[i]) continue;
         const it = objList[i];
         const hr = it[13] || 50, hh = it[14] || 80;
         const dx = mx - it[3], dz = mz - it[5];
@@ -1366,7 +1386,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // Shines placed as "demo" only exist once their event fires, so passing through one isn't a
     // pickup unless the run ends on it (the shine get ends the segment). They appear when the
     // stage's red coins are all in, if that came first, otherwise just before the ghost reaches them.
-    const spawn = new Float64Array(objList.length).fill(-Infinity);
     const reds = idx.filter((i) => objList[i][12] === 'coin_red');
     const lastRed = reds.length && reds.every((i) => out[i] !== Infinity) ? Math.max(...reds.map((i) => out[i])) : Infinity;
     // The 100-coin shine (at its own spawn point) appears with the 100th gold coin of the visit
@@ -1834,10 +1853,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }
       if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
       const pick = node.userData.pick;
-      if (!pick) return;
+      const gate = g && g.shineSpawn && !$('optShines').checked ? g.shineSpawn.get(objectsKey) : null;
+      if (!pick) {   // a red coin switch before its secret's revisit
+        if (objList[i] && objList[i][1] === 'RedCoinSwitch') node.visible = !(gate && !(t >= gate[i]));
+        return;
+      }
       if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
       const got = times && t >= times[i];
       node.visible = !got;
+      if (gate && pick === 'coin_red' && !(t >= gate[i])) node.visible = false;
       if (node.userData.shineMode === 'demo' && !$('optShines').checked) {   // only once it has appeared
         const sp = g && g.shineSpawn ? g.shineSpawn.get(objectsKey) : null;
         if (!sp || !(t >= sp[i])) node.visible = false;
@@ -2163,6 +2187,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // tell us about its save file, so a secret counts as FLUDD-less unless the run uses FLUDD there.
   const NO_FLUDD_AREAS = new Set([31, 32, 40, 41, 42, 46, 47, 48, 50, 51]);
   const FLUDD_ANIMS = new Set([245, 286, 287]);   // turbo_dash, fepmp, swpmp
+  const HIP_ANIMS = new Set([58, 60, 61]);   // hiped, hipsr, hipat (ground pound)
   function inferFludd(g, time) {
     const d = g.data, s = ghostSampleAt(d, time);
     if (d.yoshi && d.yoshi[s.i]) return false;
