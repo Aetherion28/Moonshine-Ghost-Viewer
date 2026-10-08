@@ -47,6 +47,16 @@ def area_name(area: int, scene: str) -> str:
     return f"Secret ({scene})"
 
 
+def secret_name(e: dict) -> None:
+    parents = []
+    for a, _ in e["routes"]:
+        p = SECRET_PARENT.get(a)
+        if p is not None and a not in AREA_NAMES and AREA_NAMES.get(p) not in parents:
+            parents.append(AREA_NAMES.get(p))
+    if len(parents) > 1:
+        e["name"] = f"{' / '.join(parents)} secret ({e['id']})"
+
+
 def main(argv):
     scene_dir, table, site = Path(argv[0]), json.load(open(argv[1])), Path(argv[2])
     max_tex = int(argv[argv.index("--max-tex") + 1]) if "--max-tex" in argv else 512
@@ -100,6 +110,8 @@ def main(argv):
         entry = {"id": first, "name": name, "file": f"maps/{fname}", "routes": g["routes"], "scenes": g["scenes"]}
         by_output[digest] = entry
         entries.append(entry)
+    for e in entries:   # a secret shared by several levels (coro_ex2 / coro_ex5) names all of them
+        secret_name(e)
     entries.sort(key=lambda e: (e["routes"][0][0], e["routes"][0][1]))
     json.dump(entries, open(out_dir / "index.json", "w"), indent=1)
     print(f"{len(entries)} stage models, {total / 1e6:.1f} MB")

@@ -964,7 +964,7 @@
  },
  {
   "id": "mam_ex0",
-  "name": "Gelato Beach secret (mam_ex0)",
+  "name": "Gelato Beach / Bianco Hills secret (mam_ex0)",
   "file": "maps/mam_ex0.glb.b64.txt",
   "routes": [
    [
@@ -1117,7 +1117,7 @@
  },
  {
   "id": "coro_ex2",
-  "name": "Ricco Harbor secret (coro_ex2)",
+  "name": "Ricco Harbor / Sirena Beach secret (coro_ex2)",
   "file": "maps/coro_ex2.glb.b64.txt",
   "routes": [
    [

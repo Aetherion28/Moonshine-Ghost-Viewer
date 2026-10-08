@@ -91,8 +91,17 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
                 alpha = {"alphaMode": "MASK", "alphaCutoff": round(mat.alpha_ref, 3)}
             elif mat.translucent or mat.blend:
                 alpha = {"alphaMode": "BLEND"}
+        sky_mul = None
         if kind == "sky":
             alpha = None
+            st = (mat.tev or {}).get("stages") or [] if mat is not None else []
+            # Sky TEV: stage 0 texture x C0 (not the material colour), stage 1 previous x a second
+            # texture (e.g. the secret courses' dot grid times a blue pattern).
+            if st and st[0]["c"][:4] == (15, 8, 2, 15):
+                factor = tuple(c / 255 for c in mat.tev["regs"][0][:3]) + (1,)
+                color = None
+            if len(st) > 1 and st[1]["c"][:4] == (15, 0, 8, 15) and mat.layer is not None:
+                sky_mul = mat.layer
         base_color = color
         if color is not None and mat is not None and mat.layer is not None:
             # Vertex alpha is the blend weight of the second layer, not base opacity.
@@ -120,6 +129,15 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
         mi = w.custom_material(um)
         w.add_arrays(name, mesh["pos"], mesh["tris"], mi, uv if tex else None, base_color)
         tris += len(mesh["tris"])
+        if sky_mul is not None:
+            t = model.textures[sky_mul[0]]
+            mtex = w.texture_rgba(f"{prefix}:{t[0]}", t[1], t[2], t[3])
+            muv = uv_for(mesh, sky_mul)
+            if mtex is not None and muv is not None:
+                mm = unlit(f"skymul {prefix} {mat.name}", mtex[0], {"alphaMode": "BLEND"})
+                mm["extras"] = {"multiply": True}
+                w.add_arrays(name + "_mul", mesh["pos"], mesh["tris"], w.custom_material(mm), muv, None)
+                tris += len(mesh["tris"])
         if mat is not None and mat.layer is not None and color is not None:
             t = model.textures[mat.layer[0]]
             ltex = w.texture_rgba(f"{prefix}:{t[0]}", t[1], t[2], t[3])
