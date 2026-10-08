@@ -710,9 +710,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           node.userData.mole = mole;
         }
         node.userData.pick = pick;
-        node.userData.spin = /^coin/.test(pick);
-        node.userData.faceCam = /^shine/.test(pick);
-        node.userData.shineMode = (it[17] && it[17].shine) || '';   // Shine Sprites turn to face the camera (Y billboard root joint)
+        node.userData.spin = /^(coin|shine)/.test(pick);
+        node.userData.faceCam = /^shine/.test(pick);   // shines: the glow card faces the camera
+        node.userData.shineMode = (it[17] && it[17].shine) || '';
         node.traverse((o) => {
           if (!o.isMesh) return;
           o.material = [].concat(o.material).map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; });
@@ -721,7 +721,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const tint = PICKUP_TINT[pick.replace(/_hidden$/, '')];
           if (tint) [].concat(o.material).forEach((m) => { if (m.onBeforeCompile !== gxClamp) m.color = new THREE.Color(tint); });
           // The Shine Sprite's glow card adds light (game: additive blend) rather than covering.
-          [].concat(o.material).forEach((m) => { if (/starglow/i.test(m.name)) { m.blending = THREE.AdditiveBlending; m.transparent = true; m.depthWrite = false; } });
+          [].concat(o.material).forEach((m) => {
+            if (!/starglow/i.test(m.name)) return;
+            m.blending = THREE.AdditiveBlending; m.transparent = true; m.depthWrite = false;
+            (node.userData.glow = node.userData.glow || []).push(o);
+          });
           if (/_hidden$/.test(pick)) [].concat(o.material).forEach((m) => { m.transparent = true; m.opacity = 0.35; m.depthWrite = false; });
           // Wood blocks carry a colour in their placement (TWoodBlock), e.g. Ricco 4 secret's blue pillars.
           if (ex.tint) [].concat(o.material).forEach((m) => { m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
@@ -1752,7 +1756,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }
       if (got) { const k = pick.replace(/_hidden$/, ''); if (k in counts) counts[k]++; }
       if (node.userData.spin) node.rotation.y = node.userData.baseRotY + spin;
-      if (node.userData.faceCam) node.rotation.y = Math.atan2(camera.position.x - node.position.x, camera.position.z - node.position.z);
+      if (node.userData.glow) {   // the glow card turns to the camera while the body spins
+        const yaw = Math.atan2(camera.position.x - node.position.x, camera.position.z - node.position.z);
+        node.userData.glow.forEach((o) => { o.rotation.y = yaw - node.rotation.y; });
+      }
     });
     if (plan && plan.dyn.length) {
       const nodes = dynNodes(plan);
