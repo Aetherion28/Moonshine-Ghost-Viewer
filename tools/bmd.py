@@ -70,6 +70,7 @@ class Material:
     amb_vtx: bool = False          # ambient from vertex colour instead of the register
     diff_fn: int = 0               # 0 none, 1 sign, 2 clamp
     env: list = field(default_factory=list)   # normal-mapped (environment) textures added in TEV
+    blend_mode: tuple = (0, 1, 0, 3)            # GX blend type, src factor, dst factor, logic op
 
 
 @dataclass
@@ -496,5 +497,6 @@ def _parse_materials(mat: bytes) -> list[Material]:
             c0 = mat[chan_o + ch * 8: chan_o + ch * 8 + 6]   # enable, matSrc, litMask, diffFn, attnFn, ambSrc
             m_out.lit, m_out.lit_mask, m_out.diff_fn, m_out.amb_vtx = bool(c0[0]), c0[2], c0[3], c0[5] == 1
         m_out.env = env_layers
+        m_out.blend_mode = tuple(mat[bm:bm + 4])
         out.append(m_out)
     return out

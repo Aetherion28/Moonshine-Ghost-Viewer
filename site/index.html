@@ -580,6 +580,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         group.userData.sky = skyMeshes.length ? sky : null;
         group.userData.materials = [];
         group.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => group.userData.materials.push(m)); });
+        // Glow cards the game adds on top (blend destination GX_BL_ONE).
+        group.userData.materials.forEach((m) => {
+          if (m.userData && m.userData.additive) { m.blending = THREE.AdditiveBlending; m.transparent = true; m.depthWrite = false; }
+        });
         // Frame on the playable area: skip sky domes and far-away sea planes when sizing the view.
         const box = new THREE.Box3();
         group.updateMatrixWorld(true);

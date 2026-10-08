@@ -80,7 +80,26 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             # Vertex alpha is the blend weight of the second layer, not base opacity.
             base_color = color.copy()
             base_color[:, 3] = 255
-        mi = w.custom_material(unlit(f"{prefix} {mat.name if mat else ''}", tex[0] if tex else None, alpha, factor))
+        extras = None
+        if mat is not None and mat.translucent and mat.blend_mode[0] == 1 and mat.blend_mode[2] == 1:
+            # Additive glow cards (e.g. the hotel's Boo-shaped light, GX_BL_ONE destination). When the
+            # only TEV stage outputs a KONST colour, the texture gives just the shape (its alpha).
+            extras = {"additive": True}
+            st = (mat.tev or {}).get("stages") or []
+            if len(st) == 1 and st[0]["c"][:4] == (15, 15, 15, 14) and 12 <= st[0]["kc"] <= 15:
+                k = mat.tev["kregs"][st[0]["kc"] - 12]
+                factor = tuple(c / 255 for c in k[:3]) + (1,)
+                color = base_color = None
+                if mat.base is not None:
+                    t = model.textures[mat.base[0]]
+                    if t[1] is not None:
+                        rgba = t[1].copy(); rgba[..., :3] = 255
+                        tex = w.texture_rgba(f"{prefix}:{t[0]}:alpha", rgba, t[2], t[3])
+            alpha = {"alphaMode": "BLEND"}
+        um = unlit(f"{prefix} {mat.name if mat else ''}", tex[0] if tex else None, alpha, factor)
+        if extras:
+            um["extras"] = extras
+        mi = w.custom_material(um)
         w.add_arrays(name, mesh["pos"], mesh["tris"], mi, uv if tex else None, base_color)
         tris += len(mesh["tris"])
         if mat is not None and mat.layer is not None and color is not None:
