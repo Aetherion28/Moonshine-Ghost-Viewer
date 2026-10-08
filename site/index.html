@@ -141,6 +141,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 .browse li.msg { display: block; color: var(--muted); text-align: center; padding: 24px 14px; border: 0; }
 .browse footer { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .browse footer span { flex: 1; }
+.shared { font-size: 13px; }
+.shared .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.shared .head span { flex: 1; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.shared .head button, .shared li button { padding: 2px 8px; font-size: 12px; }
+.shared ul { list-style: none; margin: 0; padding: 0; }
+.shared li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); }
+.shared li .time { font-family: var(--mono); }
+.shared li .who { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shared .msg { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
 </style>
 
 <div class="app">
@@ -206,6 +215,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   <aside>
     <h2>Ghosts</h2>
     <div id="ghostList"></div>
+    <h2>Shared ghosts</h2>
+    <div class="shared" id="shared">
+      <div class="head"><span id="sharedLevel">Pick a stage</span><button type="button" id="sharedAll">Browse all</button></div>
+      <ul id="sharedList"></ul>
+      <p class="msg" id="sharedMsg" hidden></p>
+    </div>
     <h2>Playback</h2>
     <div class="opts">
       <div class="speed">
@@ -245,7 +260,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         <p class="inputsNone" id="inputsNone">This ghost has no recorded inputs.</p>
       </div>
     </div>
-    <p class="help">Drag to orbit, scroll or pinch to zoom. Keys: <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. You can also drop ghost files onto the stage.</p>
+    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera.</p>
+    <p class="help">To load a ghost, drag .smsghost files from your computer and drop them anywhere on the page, use <b>Add ghost</b>, or pick one from <b>Shared ghosts</b>.</p>
   </aside>
 </div>
 
@@ -384,6 +400,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     $('mapSelect').value = id;
     fillEpisodes(entry, routeKey);
     loadObjects(entry, $('episodeSelect').value);
+    dgStageChanged();
     if (mapGroup && mapGroup.userData.id === id) return;
     const request = ++mapRequest;
     try {
@@ -1889,6 +1906,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         camera.position.add(delta);
       }
     }
+    moveCamera(dt);
     controls.update();
     if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
     renderer.render(scene, camera);
@@ -1924,6 +1942,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if ($('optAutoStage').checked && ghosts.length) $('optAutoStage').checked = false;
     const entry = maps.find((m) => m.id === $('mapSelect').value);
     if (entry) loadObjects(entry, e.target.value);
+    dgStageChanged();
   };
   $('mapSelect').addEventListener('change', () => { if ($('optAutoStage').checked && ghosts.length) { $('optAutoStage').checked = false; } });
   $('addGhost').onclick = () => $('ghostFile').click();
@@ -1943,7 +1962,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
 
   // ---- Delfino Ghosts (zeldocto.github.io/delfino-ghosts): public Supabase listing + storage ----
-  const DG = { url: 'https://cvadewafbthfhvzgdgay.supabase.co', key: 'sb_publishable_mrh55bmXKXF_paQ7WTb3lA_oeJHWILU', page: 0, size: 25, total: 0, seq: 0, levels: false };
+  const DG = { url: 'https://cvadewafbthfhvzgdgay.supabase.co', key: 'sb_publishable_mrh55bmXKXF_paQ7WTb3lA_oeJHWILU', page: 0, size: 25, total: 0, seq: 0, levels: false, loaded: new Set() };
   const dgRpc = (fn, body) => fetch(`${DG.url}/rest/v1/rpc/${fn}`, { method: 'POST',
     headers: { apikey: DG.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .then((r) => r.ok ? r.json() : r.text().then((t) => { throw new Error(t || r.status); }));
@@ -1958,13 +1977,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       g.created_at ? new Date(g.created_at).toLocaleDateString() : null].filter(Boolean);
     if (g.time_ms != null) { const tm = document.createElement('span'); tm.className = 'time'; tm.textContent = fmtMs(g.time_ms); m.append(tm, ' · '); }
     m.append(bits.join(' · '));
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'primary'; b.textContent = 'Load';
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'primary';
+    b.textContent = DG.loaded.has(g.id) ? 'Added' : 'Load'; if (DG.loaded.has(g.id)) b.title = 'Already added; click to add another copy';
     b.onclick = async () => {
       b.disabled = true; b.textContent = 'Loading…';
       try {
         const r = await fetch(dgFileUrl(g.file_path)); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        DG.loaded.add(g.id); b.textContent = 'Added';
         loadBuffers([[await r.arrayBuffer(), g.original_filename || (g.title + '.smsghost')]]);
-        b.textContent = 'Added';
       } catch (err) { b.disabled = false; b.textContent = 'Retry'; console.warn('[delfino]', err); }
     };
     li.append(t, m, b); return li;
@@ -1975,8 +1995,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     try {
       if (!DG.levels) {
         DG.levels = true;
-        dgRpc('levels_in_use', { p_user: null }).then((ls) => {
-          const sel = $('browseLevel');
+        dgLevels().then((ls) => {
+          const sel = $('browseLevel'); if (sel.options.length > 1) return;
           ls.forEach((l) => { const o = document.createElement('option'); o.value = l.level; o.textContent = `${l.level} (${l.ghost_count})`; sel.append(o); });
         }).catch(() => { DG.levels = false; });
       }
@@ -1999,11 +2019,97 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   $('browseNext').onclick = () => { DG.page++; dgLoad(); };
   $('browseDlg').addEventListener('click', (e) => { if (e.target === $('browseDlg')) $('browseDlg').close(); });
 
+  // Sidebar: shared ghosts for the stage and episode on screen, fastest first. Delfino Ghosts level
+  // names are free text ("Noki Bay 6 Secret", "Noki Bay 3 Bottle"), so a level counts when it is the
+  // episode's name or starts with it.
+  const DG_WORLDS = { BH: 'Bianco Hills', RH: 'Ricco Harbor', GB: 'Gelato Beach', PP: 'Pinna Park', SB: 'Sirena Beach',
+    NB: 'Noki Bay', PV: 'Pianta Village', DP: 'Delfino Plaza', CM: 'Corona Mountain' };
+  let dgLevelsP = null, dgShareSeq = 0, dgShareLevels = [];
+  const dgLevels = () => (dgLevelsP ||= dgRpc('levels_in_use', { p_user: null }).catch((e) => { dgLevelsP = null; throw e; }));
+  function stageLevelName() {
+    const key = $('episodeSelect').value; if (!key) return null;
+    const m = /^([A-Z]{2})(\d+)$/.exec(routeLabel(key)); if (!m || !DG_WORLDS[m[1]]) return null;
+    return { name: `${DG_WORLDS[m[1]]} ${Number(m[2])}`, world: DG_WORLDS[m[1]], single: m[1] === 'CM' || m[1] === 'DP' };
+  }
+  function sharedMsg(text) { $('sharedMsg').textContent = text; $('sharedMsg').hidden = !text; }
+  async function dgStageChanged() {
+    const seq = ++dgShareSeq, lv = stageLevelName(), list = $('sharedList');
+    list.textContent = ''; dgShareLevels = [];
+    $('sharedLevel').textContent = lv ? lv.name : ($('mapSelect').selectedOptions[0]?.textContent || 'This stage');
+    if (!lv) { sharedMsg('No shared ghosts are listed for this stage.'); return; }
+    sharedMsg('Loading…');
+    try {
+      const want = [lv.name.toLowerCase()].concat(lv.single ? [lv.world.toLowerCase()] : []);
+      const levels = (await dgLevels()).map((l) => l.level).filter((l) => { const x = l.toLowerCase();
+        return want.some((w) => x === w || x.startsWith(w + ' ')); });
+      if (seq !== dgShareSeq) return;
+      dgShareLevels = levels;
+      if (!levels.length) { sharedMsg(`No ghosts shared for ${lv.name} yet.`); return; }
+      const rows = (await Promise.all(levels.map((l) => dgRpc('list_ghosts', { p_search: null, p_sort: 'time', p_level: l, p_user: null, p_limit: 25, p_offset: 0 }))))
+        .flat().sort((a, b) => (a.time_ms ?? 1e12) - (b.time_ms ?? 1e12));
+      if (seq !== dgShareSeq) return;
+      sharedMsg(rows.length ? '' : `No ghosts shared for ${lv.name} yet.`);
+      rows.forEach((g) => {
+        const li = document.createElement('li');
+        const tm = document.createElement('span'); tm.className = 'time'; tm.textContent = fmtMs(g.time_ms) || '—';
+        const who = document.createElement('span'); who.className = 'who';
+        who.textContent = [g.author_display_name || g.author_username, g.level !== levels[0] || levels.length > 1 ? g.level.slice(lv.name.length).trim() : '', g.is_tas ? 'TAS' : ''].filter(Boolean).join(' · ');
+        who.title = `${g.title} — ${g.level}`;
+        const full = dgRow(g).querySelector('button'); full.className = '';
+        li.append(tm, who, full); list.append(li);
+      });
+    } catch (err) { if (seq === dgShareSeq) sharedMsg('Couldn\'t reach Delfino Ghosts.'); console.warn('[delfino]', err); }
+  }
+  $('sharedAll').onclick = () => {
+    const sel = $('browseLevel'), lv = dgShareLevels[0] || '';
+    $('browseDlg').showModal();
+    const go = () => { if ([...sel.options].some((o) => o.value === lv)) sel.value = lv; DG.page = 0; dgLoad(); };
+    if (lv && sel.options.length < 2) dgLevels().then((ls) => {
+      if (sel.options.length < 2) ls.forEach((l) => { const o = document.createElement('option'); o.value = l.level; o.textContent = `${l.level} (${l.ghost_count})`; sel.append(o); });
+      DG.levels = true; go();
+    }).catch(go); else go();
+  };
+
   let dragDepth = 0;
-  stageEl.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('drop').hidden = false; });
-  stageEl.addEventListener('dragover', (e) => e.preventDefault());
-  stageEl.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true; } });
-  stageEl.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('drop').hidden = true; readFiles(e.dataTransfer.files); });
+  // Files can be dropped anywhere on the page (dropping outside the stage would otherwise open the file).
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('drop').hidden = false; });
+  window.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true; } });
+  window.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').hidden = true;
+    const files = [...e.dataTransfer.files].filter((f) => /\.smsghost$/i.test(f.name) || !/\.[a-z0-9]+$/i.test(f.name));
+    if (files.length) readFiles(files); else showNotice('Drop .smsghost files to load them.'); });
+
+  // WASD / arrow keys fly the camera (Q/E down/up, Shift faster); the orbit target moves with it.
+  const MOVE_KEYS = { KeyW: [0, 0, 1], ArrowUp: [0, 0, 1], KeyS: [0, 0, -1], ArrowDown: [0, 0, -1],
+    KeyA: [-1, 0, 0], ArrowLeft: [-1, 0, 0], KeyD: [1, 0, 0], ArrowRight: [1, 0, 0], KeyQ: [0, -1, 0], KeyE: [0, 1, 0] };
+  const heldKeys = new Set();
+  let fastMove = false;
+  const typingIn = (el) => el && el.closest && el.closest('input, select, textarea, dialog');
+  window.addEventListener('keydown', (e) => {
+    fastMove = e.shiftKey;
+    if (MOVE_KEYS[e.code] && !typingIn(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      heldKeys.add(e.code); e.preventDefault();
+      if (cameraMode === 'follow') setCameraMode('free');
+    }
+  });
+  window.addEventListener('keyup', (e) => { fastMove = e.shiftKey; heldKeys.delete(e.code); });
+  window.addEventListener('blur', () => heldKeys.clear());
+  function moveCamera(dt) {
+    if (!heldKeys.size) return;
+    const v = [0, 0, 0];
+    heldKeys.forEach((k) => MOVE_KEYS[k].forEach((x, i) => { v[i] += x; }));
+    const fwd = controls.target.clone().sub(camera.position); fwd.y = 0;
+    if (fwd.lengthSq() < 1e-6) camera.getWorldDirection(fwd).setY(0);
+    fwd.normalize();
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    const dist = camera.position.distanceTo(controls.target);
+    const speed = Math.max(800, Math.min(dist, 12000) * 1.2) * (fastMove ? 3 : 1) * dt;
+    const d = fwd.multiplyScalar(v[2]).add(right.multiplyScalar(v[0])).add(new THREE.Vector3(0, v[1], 0));
+    if (d.lengthSq() === 0) return;
+    d.normalize().multiplyScalar(speed);
+    camera.position.add(d); controls.target.add(d);
+  }
 
   window.addEventListener('keydown', (e) => {
     if (e.target.closest('input[type=text], input[type=search], select, dialog')) return;
