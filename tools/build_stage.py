@@ -58,6 +58,16 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             w.add_arrays(name, mesh["pos"], mesh["tris"], wm)
             tris += len(mesh["tris"])
             continue
+        if kind == "map" and mat is not None and mat.lit and mesh.get("nrm") is not None:
+            # Lit stage parts (secret courses, the hotel's glass Boo, the Plaza's Shine statue...):
+            # exported like objects, with normals, for the viewer's GX lighting.
+            from build_mario_iso import material_for
+            mi, entry = material_for(w, model, mat, prefix)
+            luv = uv_for(mesh, entry) if entry is not None else None
+            lcol = color if mat.use_vertex_color else None
+            w.add_arrays(name, mesh["pos"], mesh["tris"], mi, luv, lcol, mesh.get("nrm"))
+            tris += len(mesh["tris"])
+            continue
         tex = uv = None
         alpha = None
         factor = (1, 1, 1, 1)
