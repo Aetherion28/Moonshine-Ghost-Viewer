@@ -244,7 +244,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       </div>
       <label><input type="checkbox" id="optPath" checked> Show full route lines</label>
       <label><input type="checkbox" id="optObjects" checked> Show objects</label>
-      <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them. Tick to show every shine in the level."><input type="checkbox" id="optShines"> Show all shines</label>
+      <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Tick to show every shine in the level."><input type="checkbox" id="optShines"> Show all shines</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
       <label><input type="checkbox" id="optWire"> Wireframe stage</label>
@@ -1341,9 +1341,26 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const spawn = new Float64Array(objList.length).fill(-Infinity);
     const reds = idx.filter((i) => objList[i][12] === 'coin_red');
     const lastRed = reds.length && reds.every((i) => out[i] !== Infinity) ? Math.max(...reds.map((i) => out[i])) : Infinity;
+    // The 100-coin shine (at its own spawn point) appears with the 100th gold coin of the visit
+    // (TCoin::taken; red and blue coins don't count). Coins from enemies and objects aren't seen here.
+    const gold = idx.filter((i) => /^coin(_hidden)?$/.test(objList[i][12]) && out[i] !== Infinity).map((i) => out[i]).sort((x, y) => x - y);
+    const coin100 = gold.length >= 100 ? gold[99] : Infinity;
     idx.forEach((i) => {
       const ex = objList[i][17];
       if (!ex || ex.shine !== 'demo') return;
+      if (ex.coin100) {   // collected on the first touch after it appears
+        spawn[i] = coin100;
+        out[i] = Infinity;
+        const it = objList[i], hr = it[13] || 50, hh = it[14] || 80;
+        for (let k = 0; k < d.qf.length && coin100 !== Infinity; k++) {
+          if (d.qf[k] < coin100) continue;
+          const r = d.segments[d.segIndex[k]].route;
+          if (r.area !== a || r.episode !== e) continue;
+          const dx = d.pos[k * 3] - it[3], dz = d.pos[k * 3 + 2] - it[5], my = d.pos[k * 3 + 1];
+          if (dx * dx + dz * dz <= (hr + MARIO_HIT_RADIUS) ** 2 && my < it[4] + hh && my + MARIO_HIT_HEIGHT > it[4] - hh * 0.5) { out[i] = d.qf[k]; break; }
+        }
+        return;
+      }
       const q = out[i];
       const seg = q === Infinity ? null : d.segments.find((sg) => sg.route.area === a && sg.route.episode === e
         && q >= sg.startQf - d.header.startQf && q <= sg.endQf - d.header.startQf);

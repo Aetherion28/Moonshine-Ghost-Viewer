@@ -521,6 +521,10 @@ def main(argv):
                         mode, q = _lstr(o["payload"], actor_tail(o["payload"]))
                         ev = struct.unpack_from(">i", o["payload"], q)[0]
                         extra = {**(extra or {}), "shine": mode.decode("ascii", "replace"), "ev": ev}
+                        if "１００枚" in o.get("name", ""):   # appears once 100 gold coins are collected
+                            extra["coin100"] = 1
+                        if "１００枚" in o.get("name", ""):   # appears at the 100th gold coin (TCoin::taken)
+                            extra["coin100"] = 1
                     except (struct.error, ValueError):
                         pass
                 if typ in ROLL_TYPES or typ in RAIL_TYPES or typ in LIFT_TYPES:
