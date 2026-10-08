@@ -582,6 +582,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const tint = PICKUP_TINT[pick.replace(/_hidden$/, '')];
           if (tint) [].concat(o.material).forEach((m) => { m.color = new THREE.Color(tint); });
           if (/_hidden$/.test(pick)) [].concat(o.material).forEach((m) => { m.transparent = true; m.opacity = 0.35; m.depthWrite = false; });
+          // Wood blocks carry a colour in their placement (TWoodBlock), e.g. Ricco 4 secret's blue pillars.
+          if (ex.tint) [].concat(o.material).forEach((m) => { m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
         });
         if (node.userData.npcColors) applyNpcColors(node);
         group.add(node);
@@ -1212,7 +1214,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // start of the intro cutscene, which is also where the ghost segment and the timer start). As with
   // the thrown bombs (THROW_PACE), the game's per-step rates match footage when applied once per QF:
   // the Ricco 4 secret's first rod is at ~45 degrees 1.57 s in, i.e. 0.25 degrees x 188 QF.
-  // TRollBlock: base placement, then a spin about the local Z axis of `roll` degrees per frame.
+  // TRollBlock: base placement, then a spin about the local Z axis of `roll` degrees per step.
   // TRailBlock: walks its rail node to node (back and forth at the ends), `speed`/100 units per
   // step (2 until the first node), and rolls by each node's pitch/yaw/roll on the way there.
   const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v3 = new THREE.Vector3(), _v3b = new THREE.Vector3(), _s3 = new THREE.Vector3();

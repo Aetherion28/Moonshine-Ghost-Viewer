@@ -484,6 +484,11 @@ def main(argv):
                     track = cork_track(arc)
                     if track:
                         extra = {"cork": track}
+                if typ == "WoodBlock" and len(o["payload"]) >= 12:
+                    # TWoodBlock colour: the payload's last three s32 (r, g, b), e.g. the blue pillars.
+                    rgb = list(struct.unpack_from(">3i", o["payload"], len(o["payload"]) - 12))
+                    if all(0 <= c <= 255 for c in rgb) and rgb != [255, 255, 255]:
+                        extra = {"tint": rgb}
                 if typ in ROLL_TYPES or typ in RAIL_TYPES:
                     extra = move_extra(typ, o["payload"], rails) or extra
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
