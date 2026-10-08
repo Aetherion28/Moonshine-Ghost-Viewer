@@ -1279,7 +1279,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // improvement on no offset at all.
       const tol = Math.max(1, Math.round(N * 0.05));
       const band = coarse.filter((c) => c[1] >= top - tol).map((c) => c[0]);
-      if (top - coarse[0][1] >= Math.max(4, N * 0.2)) {
+      // ...and only when it explains most of them (at least 80% supported).
+      if (top - coarse[0][1] >= Math.max(4, N * 0.2) && top >= N * 0.6) {
         let run = [band[0]];
         for (let k = 1; k < band.length && band[k] === run[run.length - 1] + 16; k++) run.push(band[k]);
         const fine = [];
