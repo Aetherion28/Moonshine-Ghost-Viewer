@@ -1252,38 +1252,40 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     while (samples.length > 120) for (let k = samples.length - 1; k > 0; k -= 2) samples.splice(k, 1);   // thin evenly
     let best = 0;
-    if (samples.length >= 4) {
-      const score = (phi) => {
-        let sc = 0;
-        samples.forEach((sm) => {
-          let ok = false;
-          for (const k of sm.near) {
-            const n = movers[k];
-            placeMoving(n, sm.q + phi, null, 0);
-            if (!n.visible) continue;
-            n.updateMatrixWorld(true);
-            _rc.set(_o3.set(sm.x, sm.y + 60, sm.z), _down3); _rc.far = 120;
-            const h = _rc.intersectObject(n, true);
-            if (h.length && Math.abs(h[0].distance - 60) < 20) { ok = true; break; }
-          }
-          sc += ok ? 1 : -1;
-        });
-        return sc;
-      };
-      // Coarse pass over 20 s, then refine the first best band to single frames.
-      const coarse = [];
-      for (let phi = 0; phi <= 2400; phi += 16) coarse.push([phi, score(phi)]);
+    const supported = (sm, phi) => {
+      for (const k of sm.near) {
+        const n = movers[k];
+        placeMoving(n, sm.q + phi, null, 0);
+        if (!n.visible) continue;
+        n.updateMatrixWorld(true);
+        _rc.set(_o3.set(sm.x, sm.y + 60, sm.z), _down3); _rc.far = 120;
+        const h = _rc.intersectObject(n, true);
+        if (h.length && Math.abs(h[0].distance - 60) < 20) return true;
+      }
+      return false;
+    };
+    const phis = [];
+    for (let phi = 0; phi <= 2400; phi += 16) phis.push(phi);
+    const table = samples.map((sm) => phis.map((phi) => supported(sm, phi)));
+    // Keep the samples the offset actually decides (supported for some offsets, not all): the rest
+    // are Mario on things the viewer can't see as ground, and only add noise.
+    const keep = samples.map((sm, k) => table[k].some(Boolean) && !table[k].every(Boolean));
+    const used = samples.filter((sm, k) => keep[k]), N = used.length;
+    if (N >= 4) {
+      const coarse = phis.map((phi, j) => [phi, table.reduce((a, row, k) => a + (keep[k] ? (row[j] ? 1 : -1) : 0), 0)]);
       const top = Math.max(...coarse.map((c) => c[1]));
       // Cycles repeat, so several offsets can fit about as well: take the earliest that is within a
       // whisker of the best (a short intro is the usual case), and only if it is a clear
       // improvement on no offset at all.
-      const tol = Math.max(1, Math.round(samples.length * 0.05));
+      const tol = Math.max(1, Math.round(N * 0.05));
       const band = coarse.filter((c) => c[1] >= top - tol).map((c) => c[0]);
-      if (top - coarse[0][1] >= Math.max(4, samples.length * 0.2)) {
+      if (top - coarse[0][1] >= Math.max(4, N * 0.2)) {
         let run = [band[0]];
         for (let k = 1; k < band.length && band[k] === run[run.length - 1] + 16; k++) run.push(band[k]);
-        let lo = run[0] - 16, hi = run[run.length - 1] + 16, fine = [];
-        for (let phi = Math.max(0, lo); phi <= hi; phi += 4) fine.push([phi, score(phi)]);
+        const fine = [];
+        for (let phi = Math.max(0, run[0] - 16); phi <= run[run.length - 1] + 16; phi += 4) {
+          fine.push([phi, used.reduce((a, sm) => a + (supported(sm, phi) ? 1 : -1), 0)]);
+        }
         const m = Math.max(...fine.map((f) => f[1])), ok = fine.filter((f) => f[1] === m).map((f) => f[0]);
         best = Math.round((ok[0] + ok[ok.length - 1]) / 2 / 4) * 4;
       }
