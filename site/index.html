@@ -599,6 +599,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const MARIO_HIT_RADIUS = 42, MARIO_HIT_HEIGHT = 110;   // TMario damage cylinder (MarioInit.cpp)
   const objLibCache = new Map(), objListCache = new Map();
   const PICKUP_TINT = { coin: 0xffc21a, coin_blue: 0x3d7dff, coin_red: 0xff2b2b, shine: 0xffd640 };
+  let objNoFludd = false;
   let objectsGroup = null, objectsKey = '', objList = [], objNodes = [], wireMeshes = [], objDyn = {}, objProtos = {};
 
   function routeLabel(key) {
@@ -671,6 +672,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const [libScene, data] = await Promise.all([lib, list]);
       if (key !== objectsKey) return;
       setStageLights(data.lights);
+      objNoFludd = !!data.noFludd;
       const items = Array.isArray(data) ? data : data.o;
       const protos = {};
       libScene.children.forEach((c) => { if (/^m\d+(_s\d+)?$/.test(c.name)) protos[c.name.slice(1)] = c; });
@@ -2090,6 +2092,28 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
 
   // Applies FLUDD state to a ghost's model and water stream. Returns the state for the readout.
+  // Ghosts before Moonshine V6 don't record FLUDD. The game takes it away in secret stages whose
+  // shine isn't collected yet (TMarDirector, exShineTable in StageUtil.cpp) and in scenes whose
+  // Mario starts without it (TMario::load flag), and Mario never wears it on Yoshi. A ghost can't
+  // tell us about its save file, so a secret counts as FLUDD-less unless the run uses FLUDD there.
+  const NO_FLUDD_AREAS = new Set([31, 32, 40, 41, 42, 46, 47, 48, 50, 51]);
+  const FLUDD_ANIMS = new Set([245, 286, 287]);   // turbo_dash, fepmp, swpmp
+  function inferFludd(g, time) {
+    const d = g.data, s = ghostSampleAt(d, time);
+    if (d.yoshi && d.yoshi[s.i]) return false;
+    const si = d.segIndex[s.i], seg = d.segments[si];
+    if (!seg) return true;
+    const key = `${seg.route.area}:${seg.route.episode}`;
+    const noScene = objectsKey.split('|').pop() === key && objNoFludd;
+    if (!NO_FLUDD_AREAS.has(seg.route.area) && !noScene) return true;
+    g.fluddUse = g.fluddUse || new Map();
+    if (!g.fluddUse.has(si)) {
+      let used = false;
+      for (let k = seg.firstSample; k < seg.firstSample + seg.sampleCount && !used; k++) used = FLUDD_ANIMS.has(d.anim[k]);
+      g.fluddUse.set(si, used);
+    }
+    return g.fluddUse.get(si);
+  }
   function applyFludd(g, s) {
     const f = ghostFluddAt(g.data, t);
     const rig = g.marker.userData.rig;
@@ -2101,7 +2125,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
         secondary = g.secondary[lo];
       }
-      const hasFludd = !f || f.present;
+      const hasFludd = f ? f.present : inferFludd(g, t);
       if (rig.parts.fludd_body) {
         rig.parts.fludd_body.visible = hasFludd;
         // Retail backpack tilt (TWaterGun::setBaseTRMtx, as Moonshine reproduces it).
@@ -2115,7 +2139,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (rig.parts[part]) rig.parts[part].visible = hasFludd && (active === null ? Number(n) === secondary : Number(n) === active);
       });
     }
-    if (!g.visible || s.gap) { g.water.visible = false; g.burst.visible = false; return f; }
+    const fluddOn = f ? f.present : inferFludd(g, t);
+    if (!g.visible || s.gap || !fluddOn) { g.water.visible = false; g.burst.visible = false; return f; }   // no FLUDD, no spray
     updateSpray(g, s);
     return f;
   }

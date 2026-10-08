@@ -547,6 +547,9 @@ def main(argv):
                                   round(rx, 2), round(ry, 2), round(rz, 2), round(sx, 3), round(sy, 3), round(sz, 3),
                                   pick, hit[0], hit[1], o["hash"], CARRY_TYPES.get(typ, "")] + ([extra] if extra else []))
             data = {"o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
+            for o in scene_bin.parse(arc["map/scene.bin"]):   # TMario::load: flag bit 1 = starts without FLUDD
+                if o["type"] == "Mario" and len(o["payload"]) >= 4 and struct.unpack_from(">I", o["payload"], len(o["payload"]) - 4)[0] & 1:
+                    data["noFludd"] = 1
             dyn = {}
             for atype, (path, kind, pname) in DYNAMIC_CARRY.items():
                 if path not in arc:
