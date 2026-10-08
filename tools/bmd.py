@@ -69,6 +69,7 @@ class Material:
     lit_mask: int = 0              # which lights (bit per GX light)
     amb_vtx: bool = False          # ambient from vertex colour instead of the register
     diff_fn: int = 0               # 0 none, 1 sign, 2 clamp
+    env: list = field(default_factory=list)   # normal-mapped (environment) textures added in TEV
 
 
 @dataclass
@@ -428,6 +429,7 @@ def _parse_materials(mat: bytes) -> list[Material]:
             ti = u16(mat, e + 0x94 + j * 2)
             kregs.append(tuple(mat[kcolor_o + ti * 4:kcolor_o + ti * 4 + 4]) if ti != 0xFFFF and kcolor_o else (255, 255, 255, 255))
         tev = {"stages": tev_stages, "regs": regs, "kregs": kregs}
+        env_layers = []
         used = []
         for tc, tm in stages:
             if tm != 0xFF and tm < 8 and texnos[tm] >= 0 and tc < 8 and texgens[tc] is not None:
@@ -448,8 +450,39 @@ def _parse_materials(mat: bytes) -> list[Material]:
         blend = mat[bm] == 1 and mode == 4 and not (mat[bm + 1] == 1 and mat[bm + 2] == 0)
         m_out = Material(names[i] if i < len(names) else f"mat{i}", mode == 4, alpha_ref, blend, use_vtx,
                          mat_color, used[0] if used else None, used[1] if len(used) > 1 else None, cull, used, tev)
+        # Environment layers: TEV stages adding KONST * texture where the texcoord comes from the
+        # normal (GX_TG_NRM) through a J3D env texture matrix (mode 6): a view-space sphere map.
+        texmtx_raw = []
+        for j in range(8):
+            ti = s16(mat, e + 0x48 + j * 2)
+            if ti >= 0 and texmtx_o:
+                o = texmtx_o + ti * 0x64
+                sx, sy = struct.unpack_from(">2f", mat, o + 0x10)
+                tx, ty = struct.unpack_from(">2f", mat, o + 0x1C)
+                texmtx_raw.append((mat[o + 1], sx, sy, tx, ty))
+            else:
+                texmtx_raw.append(None)
+        for st_i, (tc, tm) in enumerate(stages):
+            ts = tev_stages[st_i]
+            if tm >= 8 or texnos[tm] < 0 or tc >= 8 or texgens[tc] is None or texgens[tc][1] != 1:
+                continue
+            gm = texgens[tc][2]
+            tmx = texmtx_raw[(gm - 30) // 3] if 30 <= gm < 60 and (gm - 30) % 3 == 0 else None
+            if ts["c"][0] != 15 or ts["c"][1] != 14 or ts["c"][2] != 8:
+                continue
+            ksel = ts["kc"]
+            if 0x0C <= ksel <= 0x0F:
+                kcol = tuple(kregs[ksel - 0x0C][:3])
+            elif 0x10 <= ksel <= 0x1F:
+                v = kregs[(ksel - 0x10) % 4][(ksel - 0x10) // 4]
+                kcol = (v, v, v)
+            else:
+                kcol = (255, 255, 255)
+            env_layers.append({"tex": texnos[tm], "k": kcol,
+                               "s": [tmx[1], tmx[2]] if tmx else [1.0, 1.0], "t": [tmx[3], tmx[4]] if tmx else [0.0, 0.0]})
         if ch != 0xFFFF:
             c0 = mat[chan_o + ch * 8: chan_o + ch * 8 + 6]   # enable, matSrc, litMask, diffFn, attnFn, ambSrc
             m_out.lit, m_out.lit_mask, m_out.diff_fn, m_out.amb_vtx = bool(c0[0]), c0[2], c0[3], c0[5] == 1
+        m_out.env = env_layers
         out.append(m_out)
     return out

@@ -107,6 +107,17 @@ def material_for(w, model, mat, prefix):
         toon = toon_stages(w, model, mat)
         if toon:
             spec["extras"]["toon"] = toon
+    env = []
+    for layer in mat.env:   # sphere-mapped highlight textures (e.g. the Shine Sprite body)
+        t = model.textures[layer["tex"]]
+        if t[1] is None:
+            continue
+        tx = w.texture_rgba(f"tex:{t[0]}:env", t[1], 33071, 33071)
+        if tx:
+            env.append({"tex": tx[0], "k": [round(c / 255, 4) for c in layer["k"]],
+                        "s": [round(v, 4) for v in layer["s"]], "t": [round(v, 4) for v in layer["t"]]})
+    if env:
+        spec.setdefault("extras", {})["env"] = env
     mi = w.custom_material(spec)
     return mi, entry
 

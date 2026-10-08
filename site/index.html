@@ -336,7 +336,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     sh.uniforms.gxAmbCol = { value: m.gx.amb };
     sh.uniforms.gxSign = { value: m.userData && m.userData.diff === 1 ? 1 : 0 };
     const toon = m.userData && m.userData.toon && GX_TOON.get(m.userData.toon.tex);
-    const head = (toon ? '#define GX_TOON\n' : '') + 'varying vec3 vGxSpec;\n';
+    const env = m.gxEnvTex && m.userData && m.userData.env;
+    const head = (toon ? '#define GX_TOON\n' : '') + (env ? '#define GX_ENV\n' : '') + 'varying vec3 vGxSpec;\nvarying vec3 vGxN;\n';
+    if (env) {   // up to two sphere-mapped highlight layers: KONST * texture(view normal), added in TEV
+      [0, 1].forEach((k) => {
+        const e = env[Math.min(k, env.length - 1)];
+        sh.uniforms['gxEnv' + k] = { value: m.gxEnvTex[Math.min(k, env.length - 1)] };
+        sh.uniforms['gxEnvK' + k] = { value: new THREE.Vector3(...(k < env.length ? e.k : [0, 0, 0])) };
+        sh.uniforms['gxEnvS' + k] = { value: new THREE.Vector4(e.s[0], e.s[1], e.t[0], e.t[1]) };
+      });
+    }
     if (toon) {
       const T = m.userData.toon;
       sh.uniforms.gxToonMap = { value: toon };
@@ -357,8 +366,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // axis, attenuation c^2 / (25 - 24 c^2).
       vec3 gxH = normalize( gxL + vec3( 0.0, 0.0, 1.0 ) );
       float gxC = max( dot( gxN, gxH ), 0.0 );
+      vGxN = gxN;
       vGxSpec = gxD > 0.0 ? gxLightCol * clamp( gxC * gxC / max( 25.0 - 24.0 * gxC * gxC, 1e-3 ), 0.0, 1.0 ) : vec3( 0.0 );`);
-    sh.fragmentShader = head + (toon ? 'uniform sampler2D gxToonMap;\nuniform vec3 gxReg0;\nuniform vec3 gxK;\n' : '') + sh.fragmentShader.replace(
+    sh.fragmentShader = head + (toon ? 'uniform sampler2D gxToonMap;\nuniform vec3 gxReg0;\nuniform vec3 gxK;\n' : '')
+      + (env ? 'uniform sampler2D gxEnv0;\nuniform sampler2D gxEnv1;\nuniform vec3 gxEnvK0;\nuniform vec3 gxEnvK1;\nuniform vec4 gxEnvS0;\nuniform vec4 gxEnvS1;\n' : '') + sh.fragmentShader.replace(
       'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
       `vec3 gxC0 = clamp( vLightFront + vIndirectFront, 0.0, 1.0 );
       #ifdef GX_TOON
@@ -367,16 +378,26 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         vec3 outgoingLight = clamp( diffuseColor.rgb + mix( gxR1, gxK.z * clamp( vGxSpec, 0.0, 1.0 ), gxK.y ) - 0.5, 0.0, 1.0 );
       #else
         vec3 outgoingLight = gxC0 * diffuseColor.rgb + totalEmissiveRadiance;
+      #endif
+      #ifdef GX_ENV
+        vec3 gxNn = normalize( vGxN );
+        vec2 gxUv = vec2( 0.5 + 0.5 * gxNn.x, 0.5 - 0.5 * gxNn.y );
+        outgoingLight = clamp( outgoingLight
+          + gxEnvK0 * texture2D( gxEnv0, ( gxUv - 0.5 ) * gxEnvS0.xy + 0.5 + gxEnvS0.zw ).rgb
+          + gxEnvK1 * texture2D( gxEnv1, ( gxUv - 0.5 ) * gxEnvS1.xy + 0.5 + gxEnvS1.zw ).rgb, 0.0, 1.0 );
       #endif`);
   }
   const GX_TOON = new Map();   // toon ramp textures by glTF texture index (Mario's model)
-  function gxCacheKey() { return this.userData && this.userData.toon && GX_TOON.has(this.userData.toon.tex) ? 'gx-toon' : 'gx'; }
+  function gxCacheKey() {
+    return 'gx' + (this.userData && this.userData.toon && GX_TOON.has(this.userData.toon.tex) ? '-toon' : '') + (this.gxEnvTex ? '-env' : '');
+  }
   function gxClamp(sh) { gxCompile.call(this, sh); }
   function gxMaterial(m) {   // unlit glTF material flagged lit by the converter -> lit like the game
     if (!m || !m.userData || !m.userData.lit || m.isMeshLambertMaterial) return m;
     const n = new THREE.MeshLambertMaterial({ map: m.map, color: m.color.clone(), vertexColors: m.vertexColors,
       transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, side: m.side, depthWrite: m.depthWrite });
     n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp; n.customProgramCacheKey = gxCacheKey;
+    if (m.gxEnvTex) n.gxEnvTex = m.gxEnvTex;
     return n;
   }
   // Point a model's lit materials at a light set (materials are per placed object after cloning).
@@ -390,9 +411,20 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       });
     });
   }
+  // Highlight textures named in a material's extras.env, fetched from the glTF before first use.
+  async function gxEnvTextures(gltf) {
+    const mats = [];
+    gltf.scene.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.userData.env && !mats.includes(m)) mats.push(m); }); });
+    await Promise.all(mats.map(async (m) => {
+      try {
+        m.gxEnvTex = await Promise.all(m.userData.env.map((e) => gltf.parser.getDependency('texture', e.tex)));
+        m.gxEnvTex.forEach((tx) => { tx.wrapS = tx.wrapT = THREE.ClampToEdgeWrapping; tx.needsUpdate = true; });
+      } catch (e) { m.gxEnvTex = null; }
+    }));
+  }
   // Clones (one per ghost / placed object) keep the shader; their light values are set by gxApply.
   const lambertCopy = THREE.MeshLambertMaterial.prototype.copy;
-  THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) { this.onBeforeCompile = gxClamp; this.customProgramCacheKey = gxCacheKey; } return this; };
+  THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) { this.onBeforeCompile = gxClamp; this.customProgramCacheKey = gxCacheKey; if (src.gxEnvTex) this.gxEnvTex = src.gxEnvTex; } return this; };
   function gxLight(root) {
     root.traverse((o) => { if (o.isMesh && o.geometry.attributes.normal) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material); });
   }
@@ -622,7 +654,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!info || !info.scenes[routeKey]) { update(); return; }
     let lib = objLibCache.get(info.lib);
     if (!lib) {
-      lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', (g) => { gxLight(g.scene); res(g.scene); }, rej)));
+      lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', async (g) => {
+        await gxEnvTextures(g); gxLight(g.scene); res(g.scene);
+      }, rej)));
       objLibCache.set(info.lib, lib);
     }
     const file = info.scenes[routeKey];
@@ -675,14 +709,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           node.userData.mole = mole;
         }
         node.userData.pick = pick;
-        node.userData.spin = /^(coin|shine)/.test(pick);
+        node.userData.spin = /^coin/.test(pick);
+        node.userData.faceCam = /^shine/.test(pick);   // Shine Sprites turn to face the camera (Y billboard root joint)
         node.traverse((o) => {
           if (!o.isMesh) return;
           o.material = [].concat(o.material).map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; });
           if (o.material.length === 1) o.material = o.material[0];
           // Coins and shines use environment-mapped materials the viewer can't reproduce; tint them instead.
           const tint = PICKUP_TINT[pick.replace(/_hidden$/, '')];
-          if (tint) [].concat(o.material).forEach((m) => { m.color = new THREE.Color(tint); });
+          if (tint) [].concat(o.material).forEach((m) => { if (m.onBeforeCompile !== gxClamp) m.color = new THREE.Color(tint); });
+          // The Shine Sprite's glow card adds light (game: additive blend) rather than covering.
+          [].concat(o.material).forEach((m) => { if (/starglow/i.test(m.name)) { m.blending = THREE.AdditiveBlending; m.transparent = true; m.depthWrite = false; } });
           if (/_hidden$/.test(pick)) [].concat(o.material).forEach((m) => { m.transparent = true; m.opacity = 0.35; m.depthWrite = false; });
           // Wood blocks carry a colour in their placement (TWoodBlock), e.g. Ricco 4 secret's blue pillars.
           if (ex.tint) [].concat(o.material).forEach((m) => { m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
@@ -1692,6 +1729,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       node.visible = !got;
       if (got) { const k = pick.replace(/_hidden$/, ''); if (k in counts) counts[k]++; }
       if (node.userData.spin) node.rotation.y = node.userData.baseRotY + spin;
+      if (node.userData.faceCam) node.rotation.y = Math.atan2(camera.position.x - node.position.x, camera.position.z - node.position.z);
     });
     if (plan && plan.dyn.length) {
       const nodes = dynNodes(plan);
