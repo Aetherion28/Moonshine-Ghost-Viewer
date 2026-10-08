@@ -9,6 +9,8 @@ in game units, the same space Moonshine records ghosts in.
 from __future__ import annotations
 
 import base64
+import re
+import hashlib
 import sys
 from pathlib import Path
 
@@ -49,8 +51,14 @@ def uv_for(mesh, entry):
 
 def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") -> int:
     tris = 0
+    seen = set()
     for mesh in model.meshes:
         mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
+        # Exact copies of a shape under a copied material ("_Bill1F_5(2)") would stack; draw one.
+        dup = (re.sub(r"\(\d+\)$", "", mat.name) if mat else "", hashlib.sha1(np.ascontiguousarray(mesh["pos"], np.float32).tobytes()).hexdigest())
+        if dup in seen:
+            continue
+        seen.add(dup)
         name = f"{prefix}_{mat.name if mat else 'shape'}{mesh['shape']}"
         color = mesh.get("color")
         if kind == "water":
