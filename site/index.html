@@ -1199,15 +1199,85 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 
   // QF since the shown stage was entered: the latest ghost segment on this stage that started by
   // `time` (a stage's objects restart each time it loads). Without one, the ghost clock.
+  // The stage itself starts earlier than the ghost's segment by however long the run sat in the
+  // intro (skipped at once in an IL, watched for a few seconds in a full run), so that offset comes
+  // from the ghost: see stageOffset.
   function stageTime(g, time) {
     if (!g) return time;
     const d = g.data, base = d.header.startQf;
-    let start = null;
+    let seg0 = null;
     d.segments.forEach((seg) => {
       const k = `${seg.route.area}:${seg.route.episode}`, s0 = seg.startQf - base;
-      if (k === objectsKey.split('|').pop() && s0 <= time && (start === null || s0 > start)) start = s0;
+      if (k === objectsKey.split('|').pop() && s0 <= time && (seg0 === null || s0 > seg0.s0)) seg0 = { s0, s1: seg.endQf - base };
     });
-    return start === null ? time : time - start;
+    return seg0 === null ? time : time - seg0.s0 + stageOffset(g, seg0.s0, seg0.s1);
+  }
+
+  // How far into its cycle the stage already was when the ghost's segment began, found from the
+  // ghost: try each offset and keep the one where Mario's standing samples (that aren't on fixed
+  // ground) sit on top of a moving object at its posed position. Objects that wait for Mario are
+  // left out, since they depend on the answer. 0 when nothing moving is stood on.
+  const _rc = new THREE.Raycaster(), _down3 = new THREE.Vector3(0, -1, 0), _o3 = new THREE.Vector3();
+  function stageOffset(g, s0, s1) {
+    const cache = g.stageOffsets || (g.stageOffsets = new Map());
+    const key = objectsKey + '@' + s0;
+    if (cache.has(key)) return cache.get(key);
+    const movers = objNodes.filter((n) => n.userData.move && !(n.userData.move.lift && n.userData.move.lift.some((nd) => nd[7] & 0x180)));
+    if (!movers.length || !mapGroup) return 0;   // not ready yet: try again next update
+    const d = g.data, samples = [];
+    const areas = movers.map((n) => {
+      const b = n.userData.base, mv = n.userData.move, pts = mv.rail || mv.lift || [b.p];
+      const r = Math.max(...n.userData.base.s) * 2500;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      pts.forEach((p) => { x0 = Math.min(x0, p[0] - r); x1 = Math.max(x1, p[0] + r); z0 = Math.min(z0, p[2] - r); z1 = Math.max(z1, p[2] + r); });
+      return { x0, x1, z0, z1 };
+    });
+    for (let i = 1; i < d.qf.length; i++) {
+      const q = d.qf[i];
+      if (q < s0 || q > s1 || d.segIndex[i] !== d.segIndex[i - 1]) continue;
+      const x = d.pos[i * 3], y = d.pos[i * 3 + 1], z = d.pos[i * 3 + 2];
+      if (Math.abs(y - d.pos[i * 3 - 2]) > 1.5) continue;
+      const near = areas.map((a, k) => (x >= a.x0 && x <= a.x1 && z >= a.z0 && z <= a.z1 ? k : -1)).filter((k) => k >= 0);
+      if (!near.length || Math.abs(groundY(x, y + 20, z) - y) < 15) continue;
+      samples.push({ q: q - s0, x, y, z, near });
+    }
+    while (samples.length > 120) for (let k = samples.length - 1; k > 0; k -= 2) samples.splice(k, 1);   // thin evenly
+    let best = 0;
+    if (samples.length >= 4) {
+      const score = (phi) => {
+        let sc = 0;
+        samples.forEach((sm) => {
+          let ok = false;
+          for (const k of sm.near) {
+            const n = movers[k];
+            placeMoving(n, sm.q + phi, null, 0);
+            if (!n.visible) continue;
+            n.updateMatrixWorld(true);
+            _rc.set(_o3.set(sm.x, sm.y + 60, sm.z), _down3); _rc.far = 120;
+            const h = _rc.intersectObject(n, true);
+            if (h.length && Math.abs(h[0].distance - 60) < 20) { ok = true; break; }
+          }
+          sc += ok ? 1 : -1;
+        });
+        return sc;
+      };
+      // Coarse pass over 20 s, then refine the first best band to single frames.
+      let top = -Infinity, band = [];
+      for (let phi = 0; phi <= 2400; phi += 16) {
+        const sc = score(phi);
+        if (sc > top) { top = sc; band = [phi]; } else if (sc === top) band.push(phi);
+      }
+      if (top > -samples.length / 2) {
+        let run = [band[0]];
+        for (let k = 1; k < band.length && band[k] === run[run.length - 1] + 16; k++) run.push(band[k]);
+        let lo = run[0] - 16, hi = run[run.length - 1] + 16, fine = [];
+        for (let phi = Math.max(0, lo); phi <= hi; phi += 4) fine.push([phi, score(phi)]);
+        const m = Math.max(...fine.map((f) => f[1])), ok = fine.filter((f) => f[1] === m).map((f) => f[0]);
+        best = Math.round((ok[0] + ok[ok.length - 1]) / 2 / 4) * 4;
+      }
+    }
+    cache.set(key, best);
+    return best;
   }
 
   // Moving blocks, per MapObjRailBlock.cpp. Their clock starts with the stage (for secrets, the
