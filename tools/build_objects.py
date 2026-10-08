@@ -516,6 +516,13 @@ def main(argv):
                     rgb = list(struct.unpack_from(">3i", o["payload"], len(o["payload"]) - 12))
                     if all(0 <= c <= 255 for c in rgb) and rgb != [255, 255, 255]:
                         extra = {"tint": rgb}
+                if typ == "Shine":   # TShine::loadBeforeInit: "normal" shown from the start, "quickly", else
+                    try:             # hidden until its event (red coins, boss, ...) makes it appear
+                        mode, q = _lstr(o["payload"], actor_tail(o["payload"]))
+                        ev = struct.unpack_from(">i", o["payload"], q)[0]
+                        extra = {**(extra or {}), "shine": mode.decode("ascii", "replace"), "ev": ev}
+                    except (struct.error, ValueError):
+                        pass
                 if typ in ROLL_TYPES or typ in RAIL_TYPES or typ in LIFT_TYPES:
                     mv = move_extra(typ, o["payload"], rails)
                     if mv:

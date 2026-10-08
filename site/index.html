@@ -244,6 +244,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       </div>
       <label><input type="checkbox" id="optPath" checked> Show full route lines</label>
       <label><input type="checkbox" id="optObjects" checked> Show objects</label>
+      <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them. Tick to show every shine in the level."><input type="checkbox" id="optShines"> Show all shines</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
       <label><input type="checkbox" id="optWire"> Wireframe stage</label>
@@ -710,7 +711,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         node.userData.pick = pick;
         node.userData.spin = /^coin/.test(pick);
-        node.userData.faceCam = /^shine/.test(pick);   // Shine Sprites turn to face the camera (Y billboard root joint)
+        node.userData.faceCam = /^shine/.test(pick);
+        node.userData.shineMode = (it[17] && it[17].shine) || '';   // Shine Sprites turn to face the camera (Y billboard root joint)
         node.traverse((o) => {
           if (!o.isMesh) return;
           o.material = [].concat(o.material).map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; });
@@ -1329,6 +1331,23 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (my < it[4] + hh && my + MARIO_HIT_HEIGHT > it[4] - hh * 0.5) out[i] = d.qf[s];
       }
     }
+    // Shines placed as "demo" only exist once their event fires, so passing through one isn't a
+    // pickup unless the run ends on it (the shine get ends the segment). They appear when the
+    // stage's red coins are all in, if that came first, otherwise just before the ghost reaches them.
+    const spawn = new Float64Array(objList.length).fill(-Infinity);
+    const reds = idx.filter((i) => objList[i][12] === 'coin_red');
+    const lastRed = reds.length && reds.every((i) => out[i] !== Infinity) ? Math.max(...reds.map((i) => out[i])) : Infinity;
+    idx.forEach((i) => {
+      const ex = objList[i][17];
+      if (!ex || ex.shine !== 'demo') return;
+      const q = out[i];
+      const seg = q === Infinity ? null : d.segments.find((sg) => sg.route.area === a && sg.route.episode === e
+        && q >= sg.startQf - d.header.startQf && q <= sg.endQf - d.header.startQf);
+      if (!seg || seg.endQf - d.header.startQf - q > 3 * QF_PER_SECOND) { out[i] = Infinity; spawn[i] = lastRed; return; }
+      spawn[i] = lastRed <= q ? lastRed : q - QF_PER_SECOND;
+    });
+    g.shineSpawn = g.shineSpawn || new Map();
+    g.shineSpawn.set(objectsKey, spawn);
     g.pickups.set(objectsKey, out);
   }
 
@@ -1727,6 +1746,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
       const got = times && t >= times[i];
       node.visible = !got;
+      if (node.userData.shineMode === 'demo' && !$('optShines').checked) {   // only once it has appeared
+        const sp = g && g.shineSpawn ? g.shineSpawn.get(objectsKey) : null;
+        if (!sp || !(t >= sp[i])) node.visible = false;
+      }
       if (got) { const k = pick.replace(/_hidden$/, ''); if (k in counts) counts[k]++; }
       if (node.userData.spin) node.rotation.y = node.userData.baseRotY + spin;
       if (node.userData.faceCam) node.rotation.y = Math.atan2(camera.position.x - node.position.x, camera.position.z - node.position.z);
@@ -2411,6 +2434,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   $('optWire').onchange = (e) => setWireframe(e.target.checked);
   $('optAutoStage').onchange = () => { autoStageRoute = ''; update(); updateMapNotice(); };
   $('optObjects').onchange = (e) => { if (objectsGroup) objectsGroup.visible = e.target.checked; };
+  $('optShines').onchange = () => update();
   $('episodeSelect').onchange = (e) => {
     if ($('optAutoStage').checked && ghosts.length) $('optAutoStage').checked = false;
     const entry = maps.find((m) => m.id === $('mapSelect').value);
