@@ -580,7 +580,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           [].concat(o.material).forEach((m) => {
             m.depthWrite = false; m.depthTest = false; m.fog = false;
             // Second sky texture multiplied over the first (TEV: previous x texture).
-            if (m.userData && m.userData.multiply) { m.blending = THREE.CustomBlending; m.blendEquation = THREE.AddEquation; m.blendSrc = THREE.DstColorFactor; m.blendDst = THREE.ZeroFactor; m.transparent = true; }
+            if (m.userData && m.userData.multiply) { m.blending = THREE.CustomBlending; m.blendEquation = THREE.AddEquation; m.blendSrc = THREE.DstColorFactor; m.blendDst = THREE.ZeroFactor; m.transparent = false; }   // stays in the opaque pass so it draws right after the sky, under the stage
           });
           sky.add(o);
         });
