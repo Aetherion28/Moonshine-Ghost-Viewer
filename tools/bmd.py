@@ -89,6 +89,8 @@ def read_chunks(data: bytes) -> dict:
     chunks = {}
     off = 0x20
     for _ in range(u32(data, 0x0C)):
+        if off + 8 > len(data):   # some .bmt files count more sections than they hold
+            break
         cid = data[off:off + 4].decode()
         size = u32(data, off + 4)
         chunks[cid] = data[off:off + size]
@@ -101,9 +103,15 @@ def parse(data: bytes, decode_textures: bool = True, bmt: bytes | None = None,
     """bmt: optional material/texture file (.bmt) that overrides the model's MAT3/TEX1.
     pose: optional {joint index: 4x4 local matrix} to bake the model in an animated pose."""
     chunks = read_chunks(data)
+    # J3DModelData::setMaterialTable: the table's materials replace the model's of the same name
+    # (unless only textures are taken), and its textures replace the model's whole texture list.
+    table_mat = None
     if bmt is not None:
         over = read_chunks(bmt)
-        chunks.update({"TEX1": over["TEX1"]} if bmt_tex_only and "TEX1" in over else over)
+        if "TEX1" in over and u16(over["TEX1"], 8):
+            chunks["TEX1"] = over["TEX1"]
+        if not bmt_tex_only:
+            table_mat = over.get("MAT3") or over.get("MAT2")
     m = Model()
     inf, vtx, evp, drw, jnt, shp = (chunks[k] for k in ("INF1", "VTX1", "EVP1", "DRW1", "JNT1", "SHP1"))
     mat = chunks.get("MAT3") or chunks.get("MAT2")
@@ -220,6 +228,9 @@ def parse(data: bytes, decode_textures: bool = True, bmt: bytes | None = None,
     # --- MAT3
     if mat is not None:
         m.materials = _parse_materials(mat)
+        if table_mat is not None:
+            by_name = {t.name: t for t in _parse_materials(table_mat)}
+            m.materials = [by_name.get(x.name, x) for x in m.materials]
 
     # --- TEX1
     if tex is not None:
