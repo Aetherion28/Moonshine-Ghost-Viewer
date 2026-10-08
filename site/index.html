@@ -291,7 +291,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         <p class="inputsNone" id="inputsNone">This ghost has no recorded inputs.</p>
       </div>
     </div>
-    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. On a touch screen, tick <b>Movement joystick</b> for an on-screen stick that flies the camera.</p>
+    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. On a touch screen, tick <b>Movement joystick</b> for an on-screen stick that flies the camera; dragging with one finger then turns the camera where it stands.</p>
     <p class="help">To load a ghost, drag .smsghost files from your computer and drop them anywhere on the page, use <b>Add ghost</b>, or pick one from <b>Shared ghosts</b>.</p>
   </aside>
 </div>
@@ -2800,7 +2800,33 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     });
     const opt = $('optJoy');
     if (window.matchMedia && matchMedia('(pointer: coarse)').matches) opt.checked = true;
-    const show = () => { $('joy').hidden = !opt.checked; if (!opt.checked) { joy.x = joy.z = joy.y = 0; } };
+    // With the stick on, a one-finger drag turns the camera where it stands (looking around)
+    // instead of orbiting it around a point; two fingers still pinch to zoom.
+    let look = null;
+    const el = renderer.domElement;
+    el.addEventListener('touchstart', (e) => {
+      look = opt.checked && e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+    }, { passive: true });
+    el.addEventListener('touchmove', (e) => {
+      if (!look || e.touches.length !== 1) { look = null; return; }
+      const t = e.touches[0], dx = t.clientX - look.x, dy = t.clientY - look.y;
+      look.x = t.clientX; look.y = t.clientY;
+      if (!dx && !dy) return;
+      if (cameraMode !== 'free') setCameraMode('free');
+      const k = (2 * Math.PI) / Math.max(el.clientHeight, 1) * 0.6;
+      const dir = controls.target.clone().sub(camera.position);
+      const sph = new THREE.Spherical().setFromVector3(dir);
+      sph.theta -= dx * k;
+      sph.phi = Math.min(Math.PI - 0.05, Math.max(0.05, sph.phi - dy * k));
+      controls.target.copy(camera.position).add(new THREE.Vector3().setFromSpherical(sph));
+      camera.lookAt(controls.target);
+    }, { passive: true });
+    el.addEventListener('touchend', () => { look = null; }, { passive: true });
+    const show = () => {
+      $('joy').hidden = !opt.checked;
+      if (!opt.checked) { joy.x = joy.z = joy.y = 0; }
+      controls.touches.ONE = opt.checked ? -1 : THREE.TOUCH.ROTATE;
+    };
     opt.addEventListener('change', show); show();
   }
   function moveCamera(dt) {
