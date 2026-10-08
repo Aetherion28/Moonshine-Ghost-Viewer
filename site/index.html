@@ -2106,10 +2106,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const key = `${seg.route.area}:${seg.route.episode}`;
     const noScene = objectsKey.split('|').pop() === key && objNoFludd;
     if (!NO_FLUDD_AREAS.has(seg.route.area) && !noScene) return true;
+    // A revisit (shine already collected) has FLUDD; runs show that by using it or by collecting
+    // the secret's red coins, which is what the revisit is for.
     g.fluddUse = g.fluddUse || new Map();
     if (!g.fluddUse.has(si)) {
       let used = false;
       for (let k = seg.firstSample; k < seg.firstSample + seg.sampleCount && !used; k++) used = FLUDD_ANIMS.has(d.anim[k]);
+      const times = objectsKey.split('|').pop() === key && g.pickups ? g.pickups.get(objectsKey) : null;
+      if (!used && !times) return false;   // pickups not worked out yet: decide on a later frame
+      if (!used && times) {
+        const s0 = seg.startQf - d.header.startQf, s1 = seg.endQf - d.header.startQf;
+        used = objList.some((it, i) => it[12] === 'coin_red' && times[i] >= s0 && times[i] <= s1);
+      }
       g.fluddUse.set(si, used);
     }
     return g.fluddUse.get(si);
