@@ -80,7 +80,9 @@ ROLL_TYPES = {"Umaibou", "GetaGreen", "GetaOrange", "RollBlock", "RollBlockR", "
 RAIL_TYPES = {"EXRollCube", "RailBlock", "RailBlockR", "RailBlockY", "RailBlockB"}
 # TNormalLift and TWoodBlock: ride a rail without rolling; nodes can pause them, make them wait for
 # Mario, or send them back to the start.
-LIFT_TYPES = {"NormalLift", "EXKickBoard", "Kamaboko", "Uirou", "Castella", "Hikidashi", "WoodBlock", "YoshiBlock"}
+# RideCloud (MapObjCloud.cpp) runs the same rail logic as a lift, at 2 units per step by default,
+# and sinks into a cushion while Mario stands on it.
+LIFT_TYPES = {"NormalLift", "EXKickBoard", "Kamaboko", "Uirou", "Castella", "Hikidashi", "WoodBlock", "YoshiBlock", "RideCloud"}
 
 
 def _lstr(b: bytes, p: int):
@@ -145,8 +147,13 @@ def move_extra(typ: str, payload: bytes, rails: dict):
         if typ in RAIL_TYPES or typ in LIFT_TYPES:
             name, _ = _lstr(payload, actor_tail(payload))
             name = name.decode("ascii", "replace")
+            if typ == "RideCloud" and (name not in rails or name.startswith("S_")):
+                return {"lift": [], "cloud": 1}   # a cloud that stays put (still sinks when ridden)
             if name in rails and not name.startswith("S_"):
-                return {"lift" if typ in LIFT_TYPES else "rail": rails[name]}
+                ex = {"lift" if typ in LIFT_TYPES else "rail": rails[name]}
+                if typ == "RideCloud":
+                    ex["cloud"] = 1
+                return ex
     except (struct.error, ValueError):
         pass
     return None

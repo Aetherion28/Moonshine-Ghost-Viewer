@@ -58,6 +58,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   background: color-mix(in srgb, var(--panel) 82%, transparent); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
   pointer-events: none; font-variant-numeric: tabular-nums; }
 .hud b { font-weight: 500; color: var(--muted); display: inline-block; width: 5.5ch; }
+.joy { position: absolute; left: 14px; bottom: 14px; display: flex; align-items: flex-end; gap: 10px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.joy[hidden] { display: none; }
+.joy .pad { width: 96px; height: 96px; border-radius: 50%; position: relative; background: rgba(0,0,0,.28); border: 2px solid rgba(255,255,255,.45); touch-action: none; }
+.joy .knob { position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; background: rgba(255,255,255,.75); box-shadow: 0 1px 4px rgba(0,0,0,.4); pointer-events: none; }
+.joy .ud { display: flex; flex-direction: column; gap: 8px; }
+.joy .ud button { width: 40px; height: 40px; border-radius: 50%; padding: 0; font-size: 18px; line-height: 1; background: rgba(0,0,0,.28); color: #fff; border: 2px solid rgba(255,255,255,.45); touch-action: none; }
+.joy .ud button.on { background: rgba(255,255,255,.35); }
 .inputsStage { position: absolute; right: 12px; bottom: 12px; width: min(340px, 50%); pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
 .inputsStage[hidden] { display: none; }
 .inputsBox { background: #0b0f12; border-radius: 8px; padding: 10px 10px 8px; }
@@ -193,6 +200,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     <div class="hud" id="hud" aria-live="off"></div>
     <div class="notice" id="notice" hidden></div>
     <div class="inputsStage" id="inputsStage" hidden></div>
+    <div class="joy" id="joy" hidden>
+      <div class="pad" id="joyPad" role="application" aria-label="Move the camera: drag the knob"><div class="knob" id="joyKnob"></div></div>
+      <div class="ud"><button id="joyUp" aria-label="Raise the camera" title="Raise the camera">&#9650;</button><button id="joyDown" aria-label="Lower the camera" title="Lower the camera">&#9660;</button></div>
+    </div>
     <div class="drop" id="drop" hidden>Drop .smsghost files to add them</div>
   </div>
 
@@ -251,6 +262,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Tick to show every shine in the level."><input type="checkbox" id="optShines"> Show all shines</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
+      <label title="An on-screen stick that flies the camera around the stage, with buttons to raise and lower it. On by default on touch screens."><input type="checkbox" id="optJoy"> Movement joystick</label>
       <label><input type="checkbox" id="optWire"> Wireframe stage</label>
     </div>
     <h2>Inputs</h2>
@@ -279,7 +291,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         <p class="inputsNone" id="inputsNone">This ghost has no recorded inputs.</p>
       </div>
     </div>
-    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera.</p>
+    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. On a touch screen, tick <b>Movement joystick</b> for an on-screen stick that flies the camera.</p>
     <p class="help">To load a ghost, drag .smsghost files from your computer and drop them anywhere on the page, use <b>Add ghost</b>, or pick one from <b>Shared ghosts</b>.</p>
   </aside>
 </div>
@@ -708,7 +720,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         node.userData.baseMatrix = node.matrix.clone();
         node.userData.carry = it[16] || '';
         const ex = it[17] || {};
-        if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]) };
+        if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]), cloud: !!ex.cloud };
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
           ex.npc.parts.forEach(([pi, m, specs]) => {
             if (!protos[pi]) return;
@@ -1430,11 +1442,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const cache = g.stageOffsets || (g.stageOffsets = new Map());
     const key = objectsKey + '@' + s0;
     if (cache.has(key)) return cache.get(key);
-    const movers = objNodes.filter((n) => n.userData.move && !(n.userData.move.lift && n.userData.move.lift.some((nd) => nd[7] & 0x180)));
+    const movers = objNodes.filter((n) => n.userData.move && !n.userData.move.cloud && !(n.userData.move.lift && n.userData.move.lift.some((nd) => nd[7] & 0x180)));
     if (!movers.length || !mapGroup) return 0;   // not ready yet: try again next update
     const d = g.data, samples = [];
     const areas = movers.map((n) => {
-      const b = n.userData.base, mv = n.userData.move, pts = mv.rail || mv.lift || [b.p];
+      const b = n.userData.base, mv = n.userData.move, pts = mv.rail || (mv.lift && mv.lift.length ? mv.lift : [b.p]);
       const r = Math.max(...n.userData.base.s) * 2500;
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
       pts.forEach((p) => { x0 = Math.min(x0, p[0] - r); x1 = Math.max(x1, p[0] + r); z0 = Math.min(z0, p[2] - r); z1 = Math.max(z1, p[2] + r); });
@@ -1523,6 +1535,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const s0 = c[i], s1 = c[i + 1];
       _v3.fromArray(s0.p);
       if (s0.vis && s1.vis) _v3.lerp(_v3b.fromArray(s1.p), a);
+      if (s0.cy) _v3.y += s0.cy;
       _q.setFromEuler(_e.set(b.r[0], b.r[1], b.r[2], 'ZYX'));
       node.matrix.compose(_v3, _q, _s3);
       node.matrixWorldNeedsUpdate = true;
@@ -1585,12 +1598,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }
       const b = node.userData.base, N = mv.lift;
       const start = new THREE.Vector3(b.p[0], b.p[1], b.p[2]);
-      st = { N, start, pos: start.clone(), cur: 0, prev: -1, spd: 1, steps: 0, stop: false, ride: false, pause: 0,
+      st = { N, start, pos: start.clone(), cur: 0, prev: -1, spd: mv.cloud ? 2 : 1, cush: 0, cy: 0, steps: 0, stop: false, ride: false, pause: 0,
         hide: 0, hidden: false, recycle: 0, rc: 180, vis: true, tick: 0, frames: [], g, stageStart };
-      st.cur = nearestNode(N, st.pos);
-      st.cur = nextNode(st);
-      if (N[st.cur][7] & 0x80) st.stop = true;
-      st.steps = Math.trunc(st.pos.distanceTo(nodeV(N[st.cur])) / st.spd);
+      if (!N.length) st.stop = true;   // a ride cloud with no rail
+      else {
+        st.cur = nearestNode(N, st.pos);
+        st.cur = nextNode(st);
+        if (N[st.cur][7] & 0x80) st.stop = true;
+        st.steps = Math.trunc(st.pos.distanceTo(nodeV(N[st.cur])) / st.spd);
+      }
       st.frames.push({ p: st.pos.toArray(), vis: true, fade: 1 });
       visits.set(stageStart, st);
     }
@@ -1611,8 +1627,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const s = ghostSampleAt(d, tq), seg = d.segments[d.segIndex[s.i]];
     if (s.gap || `${seg.route.area}:${seg.route.episode}` !== objectsKey.split('|').pop()) return false;
     const B = mv.box, p = st.pos, m = 20;
-    return s.x >= p.x + B.x0 - m && s.x <= p.x + B.x1 + m && s.z >= p.z + B.z0 - m && s.z <= p.z + B.z1 + m
-      && Math.abs(s.y - (p.y + B.top)) < 30;
+    const on = s.x >= p.x + B.x0 - m && s.x <= p.x + B.x1 + m && s.z >= p.z + B.z0 - m && s.z <= p.z + B.z1 + m
+      && Math.abs(s.y - (p.y + st.cy + B.top)) < 30;
+    if (!on) return 0;
+    // TRailMapObj::checkMarioRiding also wants a standing status (MARIO_STATUS_FLAG 0x200: wait,
+    // squat, the landing ends), so a stopped lift only sets off once Mario has come to rest on it.
+    const s0 = ghostSampleAt(d, Math.max(0, tq - QF_PER_FRAME));
+    const still = !s0.gap && Math.hypot(s.x - s0.x, s.z - s0.z) < 0.5 && Math.abs(s.y - s0.y) < 0.5;
+    return still ? 2 : 1;
   }
   function liftFlags(st) {   // TNormalLift::readRailFlag on the node just reached
     const n = st.N[st.cur], fl = n[7];
@@ -1624,7 +1646,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     st.tick++;
     let fade = 1;
     const on = marioOnLift(st, mv);
-    if (!st.ride) { if (on) { st.ride = true; st.stop = false; } } else if (!on) st.ride = false;
+    if (!st.ride) { if (on === 2) { st.ride = true; if (st.N.length) st.stop = false; } } else if (!on) st.ride = false;
     if (st.hidden && st.hide) { if (--st.hide === 0) st.hidden = false; }
     else if (st.pause) st.pause--;
     else if (!st.stop) {
@@ -1654,7 +1676,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         } else { st.pos.addScaledVector(d.normalize(), st.spd); if (st.steps > 0) st.steps--; }
       }
     }
-    st.frames.push({ p: st.pos.toArray(), vis: st.vis && !(st.hidden && st.hide), fade });
+    if (mv.cloud) {   // TRideCloud::calcRootMatrix: sinks up to 80 units, eased, while ridden
+      st.cush = Math.min(1, Math.max(0, st.cush + (st.ride ? 0.015 : -0.015)));
+      const t = st.cush; st.cy = -80 * (3 * t * t - 2 * t * t * t);
+    }
+    st.frames.push({ p: st.pos.toArray(), vis: st.vis && !(st.hidden && st.hide), fade, cy: st.cy });
   }
   function woodFade(node, fade) {
     node.traverse((o) => {
@@ -2663,9 +2689,46 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   });
   window.addEventListener('keyup', (e) => { fastMove = e.shiftKey; heldKeys.delete(e.code); });
   window.addEventListener('blur', () => heldKeys.clear());
+  // On-screen joystick (touch): the stick's tilt is the move direction and speed, the two buttons
+  // lower and raise the camera.
+  const joy = { x: 0, z: 0, y: 0 };
+  {
+    const pad = $("joyPad"), knob = $("joyKnob"), R = 34;
+    let id = null;
+    const set = (e) => {
+      const r = pad.getBoundingClientRect();
+      let dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+      const l = Math.hypot(dx, dy);
+      if (l > R) { dx *= R / l; dy *= R / l; }
+      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      const m = Math.min(1, l / R), dead = m < 0.12;
+      joy.x = dead ? 0 : dx / R; joy.z = dead ? 0 : -dy / R;
+    };
+    const end = (e) => { if (e.pointerId !== id) return; id = null; joy.x = joy.z = 0; knob.style.transform = ''; };
+    pad.addEventListener('pointerdown', (e) => {
+      if (id !== null) return;
+      id = e.pointerId; pad.setPointerCapture(id); e.preventDefault(); set(e);
+      if (cameraMode === 'follow') setCameraMode('free');
+    });
+    pad.addEventListener('pointermove', (e) => { if (e.pointerId === id) set(e); });
+    pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
+    [['joyUp', 1], ['joyDown', -1]].forEach(([b, dir]) => {
+      const el = $(b);
+      const off = () => { if (joy.y === dir) joy.y = 0; el.classList.remove('on'); };
+      el.addEventListener('pointerdown', (e) => { e.preventDefault(); el.setPointerCapture(e.pointerId); joy.y = dir; el.classList.add('on');
+        if (cameraMode === 'follow') setCameraMode('free'); });
+      el.addEventListener('pointerup', off); el.addEventListener('pointercancel', off);
+      el.addEventListener('contextmenu', (e) => e.preventDefault());
+    });
+    const opt = $('optJoy');
+    if (window.matchMedia && matchMedia('(pointer: coarse)').matches) opt.checked = true;
+    const show = () => { $('joy').hidden = !opt.checked; if (!opt.checked) { joy.x = joy.z = joy.y = 0; } };
+    opt.addEventListener('change', show); show();
+  }
   function moveCamera(dt) {
-    if (!heldKeys.size) return;
-    const v = [0, 0, 0];
+    const stick = joy.x || joy.z || joy.y;
+    if (!heldKeys.size && !stick) return;
+    const v = [joy.x, joy.y, joy.z];
     heldKeys.forEach((k) => MOVE_KEYS[k].forEach((x, i) => { v[i] += x; }));
     const fwd = controls.target.clone().sub(camera.position); fwd.y = 0;
     if (fwd.lengthSq() < 1e-6) camera.getWorldDirection(fwd).setY(0);
@@ -2675,7 +2738,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const speed = Math.max(800, Math.min(dist, 12000) * 1.2) * (fastMove ? 3 : 1) * dt;
     const d = fwd.multiplyScalar(v[2]).add(right.multiplyScalar(v[0])).add(new THREE.Vector3(0, v[1], 0));
     if (d.lengthSq() === 0) return;
-    d.normalize().multiplyScalar(speed);
+    d.normalize().multiplyScalar(speed * (heldKeys.size ? 1 : Math.min(1, Math.hypot(joy.x, joy.z) + Math.abs(joy.y))));
     camera.position.add(d); controls.target.add(d);
   }
 
