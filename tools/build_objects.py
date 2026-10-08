@@ -54,6 +54,7 @@ TYPE_FOLDERS = {"NPCMareM": "marem", "NPCMareMB": "maremb", "NPCMareW": "marew",
                 "ButterflyA": "butterfly", "ButterflyB": "butterfly", "ButterflyC": "butterfly",
                 "NPCBoard": "boardnpc", "NPCKinopio": "kinopio", "NPCKinojii": "kinojii", "NPCPeach": "peach",
                 "Amenbo": "amenbo", "AmenboManager": "amenbo", "HamuKuri": "hamukuri", "Hamukuri": "hamukuri",
+                "HaneHamuKuri": "hanekuri", "HaneHamuKuri2": "hanekuri", "DoroHaneKuri": "hanekuri",
                 "KageMario": "kagemario", "Kazekun": "kazekun", "Manta": "manta", "FireWanwan": "firewanwan",
                 "BeeHive": "beehive", "Kugu": "kug", "Aminoko": "aminoko", "GateKeeper": "gatekeeper",
                 "OrangeSeal": "seal", "BossPakkun": "kbosspakkun", "Gorogoro": "gorogoro"}
@@ -66,7 +67,7 @@ PREFERRED_FILES = {"poihana": "default.bmd", "sambohead": "sambohead.bmd", "tele
 NPC_BODIES = {**{f"NPCMareM{v}": ("marem", "marem.bmd") for v in ("", "A", "B", "C", "D")},
               **{f"NPCMareW{v}": ("marew", "marew.bmd") for v in ("", "A", "B")},
               "NPCRaccoonDog": ("raccoondog", "tanuki.bmd"), "RaccoonDog": ("raccoondog", "tanuki.bmd")}
-TYPE_FILES = {"Yumbo": "yumbo.bmd", "MarioModokiTelesa": "modoki.bmd", "FishoidA": "fisha.bmd",
+TYPE_FILES = {"Yumbo": "yumbo.bmd", "HaneHamuKuri": "hanekuri.bmd", "HaneHamuKuri2": "hanekuri.bmd", "DoroHaneKuri": "dorohane.bmd", "MarioModokiTelesa": "modoki.bmd", "FishoidA": "fisha.bmd",
               "FishoidB": "fishb.bmd", "FishoidC": "fishc.bmd", "FishoidD": "fishd.bmd",
               "ButterflyA": "butterflya.bmd", "ButterflyB": "butterflyb.bmd", "ButterflyC": "butterflyc.bmd"}
 SHRINK_STEPS = 6
