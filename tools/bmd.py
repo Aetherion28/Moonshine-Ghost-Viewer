@@ -97,12 +97,13 @@ def read_chunks(data: bytes) -> dict:
 
 
 def parse(data: bytes, decode_textures: bool = True, bmt: bytes | None = None,
-          pose: dict | None = None) -> Model:
+          pose: dict | None = None, bmt_tex_only: bool = False) -> Model:
     """bmt: optional material/texture file (.bmt) that overrides the model's MAT3/TEX1.
     pose: optional {joint index: 4x4 local matrix} to bake the model in an animated pose."""
     chunks = read_chunks(data)
     if bmt is not None:
-        chunks.update(read_chunks(bmt))
+        over = read_chunks(bmt)
+        chunks.update({"TEX1": over["TEX1"]} if bmt_tex_only and "TEX1" in over else over)
     m = Model()
     inf, vtx, evp, drw, jnt, shp = (chunks[k] for k in ("INF1", "VTX1", "EVP1", "DRW1", "JNT1", "SHP1"))
     mat = chunks.get("MAT3") or chunks.get("MAT2")

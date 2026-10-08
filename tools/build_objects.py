@@ -310,6 +310,33 @@ def _folder_files(arc, f):
                   and k.count("/") == 1)
 
 
+# TMapObjManager::load / TMapObjBase::initUnique: these objects' materials (or only textures) are
+# swapped for a shared table, e.g. the barrels' and signs' textures are 8x8 dummies in the .bmd.
+MAT_TABLES = {"ACTOR_TYPE_WOOD_BARREL": ("barrel.bmt", False), "ACTOR_TYPE_WOOD_BOX": ("kibako.bmt", False),
+              "ACTOR_TYPE_ARROW_BOARD_LR": ("arrowboard.bmt", False), "ACTOR_TYPE_BRICK_BLOCK": ("brickblock.bmt", False),
+              "ACTOR_TYPE_WATER_MELON_BLOCK": ("watermelonblock.bmt", False), "ACTOR_TYPE_FLOWER_ORANGE": ("flower.bmt", False),
+              "ACTOR_TYPE_RICCO_SHIP": ("riccoship.bmt", False), "ACTOR_TYPE_LEAF_BOAT": ("leafboat.bmt", False),
+              "ACTOR_TYPE_LEAF_BOAT_ROTTEN": ("leafboat.bmt", False), "ACTOR_TYPE_MIRROR_L": ("mirror.bmt", False),
+              "ACTOR_TYPE_SAND_LEAF_BASE00": ("sandbombbase.bmt", False), "ACTOR_TYPE_SAND_BOMB_BASE00": ("sandbombbase.bmt", False),
+              "ACTOR_TYPE_SAND_BOMB_BASE_FOOT": ("sandbombbase.bmt", False), "ACTOR_TYPE_SAND_CASTLE": ("sandbombbase.bmt", True),
+              "ACTOR_TYPE_NORMAL_NOZZLE_ITEM": ("nozzleitem.bmt", False), "ACTOR_TYPE_BACK_NOZZLE_ITEM": ("nozzleitem.bmt", False),
+              "ACTOR_TYPE_WATERGUN_ITEM": ("nozzleitem.bmt", False), "ACTOR_TYPE_ROCKET_NOZZLE_ITEM": ("nozzleitem.bmt", False),
+              "ACTOR_TYPE_NOZZLE_BOX": ("nozzlebox.bmt", True)}
+for _a in ("BIG_WINDMILL_BLOCK", "BIG_WINDMILL", "BIA_WATERMILL01", "BIA_TURN_BRIDGE", "BIA_BELL", "BIA_WATERMILL00",
+           "BIA_WATERMILL_VERTICAL", "LAMP_BIANCO", "BIA_DOOR", "MINI_WINDMILL_L"):
+    MAT_TABLES["ACTOR_TYPE_" + _a] = ("bianco.bmt", False)
+
+
+def mat_table(arc: dict, keys, table: dict):
+    """(bmt bytes, textures only) for the object's actor type, if its scene has the table."""
+    lower = {k.lower(): k for k in arc}
+    for key in keys or []:
+        ent = MAT_TABLES.get((table.get(key) or {}).get("actor"))
+        if ent and "mapobj/" + ent[0] in lower:
+            return arc[lower["mapobj/" + ent[0]]], ent[1]
+    return None, False
+
+
 def find_model(arc: dict, typ: str, keys, table: dict):
     """keys: candidate model keys from the payload, in order (e.g. ['NozzleBox', 'valid'])."""
     if isinstance(keys, str) or keys is None:
@@ -490,12 +517,13 @@ def main(argv):
                                         "r": cp.get("mSLChorobeiAttackRadius", 100.0),
                                         "h": cp.get("mSLChorobeiAttackHeight", 100.0)}}
                 elif mpath:
-                    digest = hashlib.sha1(arc[mpath]).hexdigest()
+                    bmt, tex_only = mat_table(arc, keys, objtable)
+                    digest = hashlib.sha1(arc[mpath] + (bmt or b"") + (b"T" if tex_only else b"")).hexdigest()
                     if digest not in lib:
                         try:
-                            raw = bmd.parse(arc[mpath])
+                            raw = bmd.parse(arc[mpath], bmt=bmt, bmt_tex_only=tex_only)
                             pose = idle_pose(arc, mpath, raw) if len(raw.joint_names) > 1 else None
-                            model = bmd.parse(arc[mpath], pose=pose) if pose else raw
+                            model = bmd.parse(arc[mpath], pose=pose, bmt=bmt, bmt_tex_only=tex_only) if pose else raw
                             posed[digest] = model
                             idx = len(lib)
                             add_model(w, model, f"m{idx}")
