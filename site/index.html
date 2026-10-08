@@ -1442,7 +1442,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const cache = g.stageOffsets || (g.stageOffsets = new Map());
     const key = objectsKey + '@' + s0;
     if (cache.has(key)) return cache.get(key);
-    const movers = objNodes.filter((n) => n.userData.move && !n.userData.move.cloud && !(n.userData.move.lift && n.userData.move.lift.some((nd) => nd[7] & 0x180)));
+    const movers = objNodes.filter((n) => n.userData.move && !n.userData.move.cloud && !((n.userData.move.lift || n.userData.move.rail || []).some((nd) => nd[7] & 0x180)));
     if (!movers.length || !mapGroup) return 0;   // not ready yet: try again next update
     const d = g.data, samples = [];
     const areas = movers.map((n) => {
@@ -1548,7 +1548,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       _q2.setFromAxisAngle(_v3.set(0, 0, 1), ((mv.roll * f) % 360) * DEG);
       node.matrix.compose(_v3.set(b.p[0], b.p[1], b.p[2]), _q.multiply(_q2), _s3);
     } else {
-      const c = railCache(node, mv, Math.ceil(f) + 1), i = Math.floor(f), a = f - i;
+      const c = railCache(node, mv, g, stageStart, Math.ceil(f) + 1), i = Math.floor(f), a = f - i;
       const s0 = c[i], s1 = c[i + 1];
       _v3.fromArray(s0.p).lerp(_v3b.fromArray(s1.p), a);
       _q.fromArray(s0.q).slerp(_q2.fromArray(s1.q), a);
@@ -1557,20 +1557,36 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     node.matrixWorldNeedsUpdate = true;
     node.visible = true;
   }
-  function railCache(node, mv, upTo) {
-    let st = mv.state;
+  // Rails with a 0x100 node (or 0x80 on the start node) wait there until Mario stands on the block,
+  // so those are simulated per ghost and stage visit, like the lifts.
+  function railCache(node, mv, g, stageStart, upTo) {
+    if (mv.waits === undefined) mv.waits = mv.rail.some((n) => n[7] & 0x180);
+    let st, visits;
+    if (mv.waits) {
+      if (!mv.sims) mv.sims = new WeakMap();
+      const owner = g ? g.data : NO_GHOST;
+      if (!mv.sims.has(owner)) mv.sims.set(owner, new Map());
+      visits = mv.sims.get(owner);
+      st = visits.get(stageStart);
+      liftBox(node, mv);
+    } else st = mv.state;
     if (!st) {
       const N = mv.rail, b = node.userData.base;
       const pos = new THREE.Vector3(b.p[0], b.p[1], b.p[2]);
       let cur = 0, best = Infinity;
       N.forEach((n, k) => { const d = pos.distanceToSquared(_v3.set(n[0], n[1], n[2])); if (d < best) { best = d; cur = k; } });
       const r0 = b.r.map((x) => x / DEG);
-      st = mv.state = { N, pos, cur, prev: -1, spd: 2, steps: 0, rot: r0.slice(), tgt: r0.slice(), d: [0, 0, 0],
-        acc: new THREE.Quaternion(), frames: [] };
+      st = { N, pos, cur, prev: -1, spd: 2, steps: 0, rot: r0.slice(), tgt: r0.slice(), d: [0, 0, 0],
+        acc: new THREE.Quaternion(), frames: [], g, stageStart, stop: false, ride: false, cy: 0, waits: mv.waits };
+      // TRailMapObj::initGraphTracer: the nearest node is the first target, reached at once, so its
+      // 0x80 / 0x100 flag stops the block where it was placed.
+      if (N[cur][7] & 0x180) railStop(st);
       st.cur = nextNode(st);
       st.steps = Math.trunc(st.pos.distanceTo(nodeV(st.N[st.cur])) / st.spd);
       pushRail(st);
+      if (mv.waits) visits.set(stageStart, st); else mv.state = st;
     }
+    while (st.frames.length <= upTo && st.frames.length < 864000) stepRail(st, mv);   // up to 2 hours
     while (st.frames.length <= upTo && st.frames.length < 864000) stepRail(st);   // up to 2 hours
     return st.frames;
   }
@@ -1589,13 +1605,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const visits = mv.sims.get(owner);
     let st = visits.get(stageStart);
     if (!st) {
-      if (!mv.box) {   // footprint and top surface, relative to the placement position
-        const b = node.userData.base;
-        node.matrixAutoUpdate = false;
-        node.matrix.copy(node.userData.baseMatrix); node.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(node);
-        mv.box = { x0: box.min.x - b.p[0], x1: box.max.x - b.p[0], z0: box.min.z - b.p[2], z1: box.max.z - b.p[2], top: box.max.y - b.p[1] };
-      }
+      liftBox(node, mv);
       const b = node.userData.base, N = mv.lift;
       const start = new THREE.Vector3(b.p[0], b.p[1], b.p[2]);
       st = { N, start, pos: start.clone(), cur: 0, prev: -1, spd: mv.cloud ? 2 : 1, cush: 0, cy: 0, steps: 0, stop: false, ride: false, pause: 0,
@@ -1614,6 +1624,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return st.frames;
   }
   const NO_GHOST = {};
+  function liftBox(node, mv) {   // footprint and top surface, relative to the placement position
+    if (mv.box) return;
+    const b = node.userData.base;
+    node.matrixAutoUpdate = false;
+    node.matrix.copy(node.userData.baseMatrix); node.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(node);
+    mv.box = { x0: box.min.x - b.p[0], x1: box.max.x - b.p[0], z0: box.min.z - b.p[2], z1: box.max.z - b.p[2], top: box.max.y - b.p[1] };
+  }
   function nearestNode(N, pos) {
     let cur = 0, best = Infinity;
     N.forEach((n, k) => { const d = pos.distanceToSquared(_v3.set(n[0], n[1], n[2])); if (d < best) { best = d; cur = k; } });
@@ -1710,17 +1728,28 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     _q.setFromEuler(_e.set(st.rot[0] * DEG, st.rot[1] * DEG, st.rot[2] * DEG, 'ZYX')).multiply(st.acc);
     st.frames.push({ p: st.pos.toArray(), q: _q.toArray() });
   }
-  function stepRail(st) {
+  function railStop(st) {   // TRailBlock::control on a stop: the roll is reset to none
+    st.stop = true;
+    st.acc.identity(); st.rot = [0, 0, 0]; st.tgt = [0, 0, 0]; st.d = [0, 0, 0];
+  }
+  function stepRail(st, mv) {
+    if (st.waits) {
+      const on = marioOnLift(st, mv);
+      if (!st.ride) { if (on === 2) { st.ride = true; st.stop = false; } } else if (!on) st.ride = false;
+      if (st.stop) { pushRail(st); return; }
+    }
     const tgt = nodeV(st.N[st.cur]), d = tgt.clone().sub(st.pos);
     let arrived = false;
     if (d.lengthSq() < st.spd * st.spd * 2 || st.steps === 0) { st.pos.copy(tgt); arrived = true; }
     else { st.pos.addScaledVector(d.normalize(), st.spd); if (st.steps > 0) st.steps--; }
     if (arrived) {
+      const stops = st.waits && (st.N[st.cur][7] & 0x100);
       st.cur = nextNode(st);
       const n = st.N[st.cur];
       if (n[6] !== 0xffff) st.spd = n[6] * 0.01;
       const dist = st.pos.distanceTo(nodeV(n));
       st.steps = Math.trunc(dist / st.spd);
+      if (stops) { railStop(st); pushRail(st); return; }
       // Bank the rotation reached so far, then roll towards the next node's angles.
       st.acc.premultiply(_q.setFromEuler(_e.set(st.tgt[0] * DEG, st.tgt[1] * DEG, st.tgt[2] * DEG, 'ZYX')));
       st.rot = [0, 0, 0];
