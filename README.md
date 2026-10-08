@@ -31,4 +31,4 @@ python3 tools/build_collision.py <scene_dir> site
 
 `raw/npc_init.json` comes from the sms decompilation (`tools/npc_init_data.py src/NPC/NpcInitData.cpp`).
 
-Game data belongs to Nintendo; keep this repository private.
+Game data (models, textures, stages) belongs to Nintendo and is included for the speedrunning community's use.
