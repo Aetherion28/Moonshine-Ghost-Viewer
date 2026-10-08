@@ -321,7 +321,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     sh.uniforms.gxLightCol = { value: m.gx.col };
     sh.uniforms.gxAmbCol = { value: m.gx.amb };
     sh.uniforms.gxSign = { value: m.userData && m.userData.diff === 1 ? 1 : 0 };
-    sh.vertexShader = 'uniform vec3 gxLightPos;\nuniform vec3 gxLightCol;\nuniform vec3 gxAmbCol;\nuniform float gxSign;\n' + sh.vertexShader.replace('#include <lights_lambert_vertex>', `
+    const toon = m.userData && m.userData.toon && GX_TOON.get(m.userData.toon.tex);
+    const head = (toon ? '#define GX_TOON\n' : '') + 'varying vec3 vGxSpec;\n';
+    if (toon) {
+      const T = m.userData.toon;
+      sh.uniforms.gxToonMap = { value: toon };
+      sh.uniforms.gxReg0 = { value: new THREE.Vector3(...T.reg0) };
+      sh.uniforms.gxK = { value: new THREE.Vector3(T.k3, T.k4, T.spec ? 1 : 0) };
+    }
+    sh.vertexShader = head + 'uniform vec3 gxLightPos;\nuniform vec3 gxLightCol;\nuniform vec3 gxAmbCol;\nuniform float gxSign;\n' + sh.vertexShader.replace('#include <lights_lambert_vertex>', `
       vec3 gxN = normalize( transformedNormal );
       vec3 gxL = normalize( ( viewMatrix * vec4( gxLightPos, 1.0 ) ).xyz - mvPosition.xyz );
       float gxD = dot( gxN, gxL );
@@ -330,17 +338,31 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       #ifdef DOUBLE_SIDED
         vLightBack = vLightFront;
         vIndirectBack = gxAmbCol;
-      #endif`);
-    sh.fragmentShader = sh.fragmentShader.replace(
+      #endif
+      // GX_LIGHT2 specular (GXInitSpecularDir + GXInitLightShininess(50)): half vector with the view
+      // axis, attenuation c^2 / (25 - 24 c^2).
+      vec3 gxH = normalize( gxL + vec3( 0.0, 0.0, 1.0 ) );
+      float gxC = max( dot( gxN, gxH ), 0.0 );
+      vGxSpec = gxD > 0.0 ? gxLightCol * clamp( gxC * gxC / max( 25.0 - 24.0 * gxC * gxC, 1e-3 ), 0.0, 1.0 ) : vec3( 0.0 );`);
+    sh.fragmentShader = head + (toon ? 'uniform sampler2D gxToonMap;\nuniform vec3 gxReg0;\nuniform vec3 gxK;\n' : '') + sh.fragmentShader.replace(
       'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
-      'vec3 outgoingLight = clamp( vLightFront + vIndirectFront, 0.0, 1.0 ) * diffuseColor.rgb + totalEmissiveRadiance;');
+      `vec3 gxC0 = clamp( vLightFront + vIndirectFront, 0.0, 1.0 );
+      #ifdef GX_TOON
+        // Mario's TEV: toon ramp looked up by the lit colour, added to the base texture around 0.5.
+        vec3 gxR1 = clamp( gxReg0 + mix( texture2D( gxToonMap, gxC0.rg ).rgb, gxC0, gxK.x ) - 0.5, 0.0, 1.0 );
+        vec3 outgoingLight = clamp( diffuseColor.rgb + mix( gxR1, gxK.z * clamp( vGxSpec, 0.0, 1.0 ), gxK.y ) - 0.5, 0.0, 1.0 );
+      #else
+        vec3 outgoingLight = gxC0 * diffuseColor.rgb + totalEmissiveRadiance;
+      #endif`);
   }
+  const GX_TOON = new Map();   // toon ramp textures by glTF texture index (Mario's model)
+  function gxCacheKey() { return this.userData && this.userData.toon && GX_TOON.has(this.userData.toon.tex) ? 'gx-toon' : 'gx'; }
   function gxClamp(sh) { gxCompile.call(this, sh); }
   function gxMaterial(m) {   // unlit glTF material flagged lit by the converter -> lit like the game
     if (!m || !m.userData || !m.userData.lit || m.isMeshLambertMaterial) return m;
     const n = new THREE.MeshLambertMaterial({ map: m.map, color: m.color.clone(), vertexColors: m.vertexColors,
       transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, side: m.side, depthWrite: m.depthWrite });
-    n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp;
+    n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp; n.customProgramCacheKey = gxCacheKey;
     return n;
   }
   // Point a model's lit materials at a light set (materials are per placed object after cloning).
@@ -356,7 +378,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   // Clones (one per ghost / placed object) keep the shader; their light values are set by gxApply.
   const lambertCopy = THREE.MeshLambertMaterial.prototype.copy;
-  THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) this.onBeforeCompile = gxClamp; return this; };
+  THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) { this.onBeforeCompile = gxClamp; this.customProgramCacheKey = gxCacheKey; } return this; };
   function gxLight(root) {
     root.traverse((o) => { if (o.isMesh && o.geometry.attributes.normal) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material); });
   }
@@ -1742,6 +1764,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       .then(async (gltf) => {
         MarioRig.setData(await anims);
         marioModel = gltf.scene;
+        // Toon ramps referenced by Mario's materials (extras.toon.tex), loaded before first compile.
+        const toonIdx = new Set();
+        marioModel.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.userData.toon) toonIdx.add(m.userData.toon.tex); }); });
+        await Promise.all([...toonIdx].map((i) => gltf.parser.getDependency('texture', i).then((tx) => {
+          tx.magFilter = tx.minFilter = THREE.LinearFilter; tx.generateMipmaps = false;
+          tx.wrapS = tx.wrapT = THREE.ClampToEdgeWrapping; tx.needsUpdate = true; GX_TOON.set(i, tx);
+        }).catch(() => {})));
         gxLight(marioModel);
         marioModel.traverse((o) => {
           if (o.isMesh) { o.frustumCulled = false; [].concat(o.material).forEach((m) => { m.side = THREE.DoubleSide; }); }

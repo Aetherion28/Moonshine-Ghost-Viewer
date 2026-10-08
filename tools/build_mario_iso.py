@@ -60,6 +60,30 @@ def pick_base(model, mat):
 SUBSTITUTE: dict[str, tuple] = {}
 
 
+KCSEL = [1, 7 / 8, 3 / 4, 5 / 8, 1 / 2, 3 / 8, 1 / 4, 1 / 8]
+
+
+def toon_stages(w, model, mat):
+    """Mario's 5-stage TEV (ma_mdl1 / cap / hands): base texture, then
+    REG1 = clamp(REG0 + lerp(toon(COLOR0.rg), COLOR0, k3) - 0.5) with the toon ramp looked up by the
+    lit colour (GX_TG_SRTG), then out = clamp(base + lerp(REG1, COLOR1 specular, k4) - 0.5).
+    Returns the constants for the viewer's shader, or None for other setups."""
+    st = (mat.tev or {}).get("stages") or []
+    if len(st) != 5 or st[3]["chan"] != 4 or st[3]["texmap"] < 0 or st[4]["texmap"] >= 0:
+        return None
+    t = model.textures[st[3]["texmap"]]
+    if "toon" not in t[0].lower() or t[1] is None:
+        return None
+    c3, c4 = st[3]["c"], st[4]["c"]
+    if c3[:4] != (8, 10, 14, 2) or c4[0] != 4 or c4[2] != 14 or c4[3] != 0:
+        return None
+    k = lambda sel: KCSEL[sel] if sel < 8 else 0.5
+    tex = w.texture_rgba(f"tex:{t[0]}", t[1], t[2], t[3])
+    reg0 = mat.tev["regs"][1]
+    return {"tex": tex[0], "reg0": [round(min(255, max(0, v)) / 255, 4) for v in reg0[:3]],
+            "k3": k(st[3]["kc"]), "k4": k(st[4]["kc"]), "spec": int(st[4]["chan"] == 5 and c4[1] == 10)}
+
+
 def material_for(w, model, mat, prefix):
     if mat is None:
         return w.custom_material(unlit(f"{prefix}"), ), None
@@ -80,6 +104,9 @@ def material_for(w, model, mat, prefix):
     spec = unlit(f"{prefix} {mat.name}", tex[0] if tex else None, alpha, factor)
     if mat.lit:   # the viewer lights these like GX: ambient + stage lights, times material/vertex colour
         spec["extras"] = {"lit": 1, "mask": mat.lit_mask, "ambVtx": int(mat.amb_vtx), "diff": mat.diff_fn}
+        toon = toon_stages(w, model, mat)
+        if toon:
+            spec["extras"]["toon"] = toon
     mi = w.custom_material(spec)
     return mi, entry
 
