@@ -1,0 +1,6 @@
+# Models Resource rips and other bulky source material (rebuild from your own ISO instead)
+raw/fludd/
+raw/mario/
+raw/noki/
+__pycache__/
+*.pyc

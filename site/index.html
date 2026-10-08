@@ -1,0 +1,1941 @@
+<title>Sunshine Ghost Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one-screen tool. Top bar (stage + ghosts), 3D stage fills the middle, transport strip at the bottom.
+   Wide screens get a right-hand ghost panel; phones stack it under the transport. */
+:root {
+  --bg: #eef2f5;
+  --panel: #ffffff;
+  --line: #d3dce3;
+  --fg: #14212b;
+  --muted: #5b6b77;
+  --accent: #d98a00;       /* Shine Sprite gold */
+  --accent-ink: #1b1300;
+  --water: #1c7fa6;
+  --scene-bg: #cfdde6;
+  --danger: #b3261e;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b141b; --panel: #111d26; --line: #23333f; --fg: #e3ecf2; --muted: #8fa1ae;
+  --accent: #f2b33d; --accent-ink: #1b1300; --water: #45b3d9; --scene-bg: #0e1b24; --danger: #ff8a80; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0b141b; --panel: #111d26; --line: #23333f; --fg: #e3ecf2; --muted: #8fa1ae;
+  --accent: #f2b33d; --accent-ink: #1b1300; --water: #45b3d9; --scene-bg: #0e1b24; --danger: #ff8a80; color-scheme: dark; }
+
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--display); font-size: 14px; }
+.app { height: 100%; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 1fr 300px;
+  grid-template-areas: "top top" "stage side" "transport side"; }
+header { grid-area: top; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+h1 { margin: 0; font-size: 16px; font-weight: 800; letter-spacing: 0.01em; display: flex; align-items: center; gap: 8px; }
+h1 .sun { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+.field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.field label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; }
+select, button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+select { max-width: 52vw; }
+button { cursor: pointer; font-weight: 700; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--water); outline-offset: 2px; }
+.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.primary:hover { filter: brightness(1.05); border-color: transparent; }
+.spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 6px 10px; font-weight: 600; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+.stage { grid-area: stage; position: relative; min-height: 0; background: var(--scene-bg); }
+.stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.hud { position: absolute; left: 12px; top: 12px; display: grid; gap: 2px; font-family: var(--mono); font-size: 12px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  pointer-events: none; font-variant-numeric: tabular-nums; }
+.hud b { font-weight: 500; color: var(--muted); display: inline-block; width: 5.5ch; }
+.inputsStage { position: absolute; right: 12px; bottom: 12px; width: min(340px, 50%); pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+.inputsStage[hidden] { display: none; }
+.inputsBox { background: #0b0f12; border-radius: 8px; padding: 10px 10px 8px; }
+.inputsBox[hidden] { display: none; }
+.inputs { display: block; width: 100%; height: auto; --in: #ffffff; }
+.inputsNone { margin: 0; font-size: 12px; color: #9aa7b1; text-align: center; padding: 18px 0; }
+.inputs .o { fill: none; stroke: var(--in); stroke-width: 5; }
+.inputs .o.thin { stroke-width: 4; }
+.inputs .o.thick { stroke-width: 6; }
+.inputs .o.on { fill: var(--in); }
+.inputs .f { fill: var(--in); opacity: 0; }
+.inputs .f.on { opacity: 1; }
+.inputs .solid { fill: var(--in); }
+.notice { position: absolute; right: 12px; top: 12px; max-width: min(320px, 70%); font-size: 13px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 10px; }
+.drop { position: absolute; inset: 10px; border: 2px dashed var(--accent); border-radius: 10px; display: grid; place-items: center;
+  font-weight: 800; font-size: 18px; background: color-mix(in srgb, var(--panel) 75%, transparent); pointer-events: none; }
+
+.transport { grid-area: transport; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px 14px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); background: var(--panel); }
+.buttons { display: flex; gap: 6px; }
+.buttons button { min-width: 40px; font-family: var(--mono); }
+#play { min-width: 64px; }
+.timeline { position: relative; min-width: 0; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.clock { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; line-height: 1.25; }
+.clock .now { font-size: 20px; font-weight: 500; }
+.clock .sub { font-size: 11px; color: var(--muted); }
+.speed { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.speed input[type=range] { flex: 1; min-width: 90px; accent-color: var(--accent); }
+.speed #speedOut { width: 4.2em; text-align: right; font: inherit; font-variant-numeric: tabular-nums; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 1px 4px; cursor: text; }
+.speed #speedOut:hover { border-color: var(--line); }
+.speed #speedOut:focus { outline: none; border-color: var(--accent); background: var(--bg); }
+
+aside { grid-area: side; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 14px 16px; display: grid; align-content: start; gap: 14px; }
+aside h2 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.ghost { display: grid; grid-template-columns: 12px 1fr auto; gap: 4px 10px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+.ghost:first-of-type { border-top: 0; }
+.swatch { width: 12px; height: 12px; border-radius: 50%; margin-top: 4px; }
+.ghost .name { font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+.ghost .meta { grid-column: 2 / 4; font-size: 12px; color: var(--muted); font-family: var(--mono); display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.ghost .tag { font-size: 10px; font-family: var(--display); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--muted); }
+.ghost .actions { display: flex; gap: 4px; }
+.ghost .actions button { padding: 2px 7px; font-size: 12px; }
+.ghost.off .name, .ghost.off .meta { opacity: 0.45; }
+.warn { color: var(--danger); font-size: 12px; grid-column: 2 / 4; }
+.empty { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.opts { display: grid; gap: 8px; font-size: 13px; }
+.opts label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.help { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
+kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(260px, 1fr) auto auto;
+    grid-template-areas: "top" "stage" "transport" "side"; height: auto; min-height: 100%; }
+  .stage { height: 58vh; }
+  aside { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+  .transport { grid-template-columns: 1fr auto; }
+  .timeline { grid-column: 1 / -1; grid-row: 2; }
+  header { gap: 8px 10px; }
+  .hide-narrow { display: none; }
+  .notice { top: auto; bottom: 10px; left: 10px; right: 10px; max-width: none; }
+  .hud { font-size: 11px; padding: 6px 8px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="app">
+  <header>
+    <h1><span class="sun" aria-hidden="true"></span>Sunshine Ghost Viewer</h1>
+    <div class="field">
+      <label for="mapSelect">Stage</label>
+      <select id="mapSelect"></select>
+      <select id="episodeSelect" aria-label="Episode" hidden></select>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" role="group" aria-label="Camera">
+      <button id="camFollow" aria-pressed="true">Follow</button>
+      <button id="camFree" aria-pressed="false">Free</button>
+      <button id="camTop" aria-pressed="false">Top</button>
+    </div>
+    <button class="primary" id="addGhost">Add ghost</button>
+    <input type="file" id="ghostFile" accept=".smsghost" multiple hidden>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="hud" id="hud" aria-live="off"></div>
+    <div class="notice" id="notice" hidden></div>
+    <div class="inputsStage" id="inputsStage" hidden></div>
+    <div class="drop" id="drop" hidden>Drop .smsghost files to add them</div>
+  </div>
+
+  <div class="transport">
+    <div class="buttons">
+      <button id="back" title="Back one frame (,)" aria-label="Back one frame">&minus;1f</button>
+      <button id="play" class="primary" aria-label="Play">Play</button>
+      <button id="fwd" title="Forward one frame (.)" aria-label="Forward one frame">+1f</button>
+    </div>
+    <div class="timeline">
+      <input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position">
+    </div>
+    <div class="clock">
+      <div class="now" id="clockNow">0.000</div>
+      <div class="sub" id="clockSub">frame 0 · 0.000 total</div>
+    </div>
+  </div>
+
+  <aside>
+    <h2>Ghosts</h2>
+    <div id="ghostList"></div>
+    <h2>Playback</h2>
+    <div class="opts">
+      <div class="speed">
+        <label for="speed">Speed</label>
+        <input type="range" id="speed" min="-4" max="3" step="0.05" value="0" aria-describedby="speedOut" title="Playback speed (double-click for 1×)">
+        <input type="text" id="speedOut" inputmode="decimal" value="1×" aria-label="Playback speed, type a value" title="Click to type a speed">
+      </div>
+      <label><input type="checkbox" id="optPath" checked> Show full route lines</label>
+      <label><input type="checkbox" id="optObjects" checked> Show objects</label>
+      <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
+      <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
+      <label><input type="checkbox" id="optWire"> Wireframe stage</label>
+    </div>
+    <h2>Inputs</h2>
+    <div class="opts">
+      <div style="display:flex;align-items:center;gap:8px"><label><input type="checkbox" id="optInputs" checked> Show</label>
+        <select id="inputsWhere" aria-label="Where to show the input display" style="font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg)"><option value="stage">On stage</option><option value="side">In sidebar</option></select>
+        <input type="color" id="inputColor" value="#ffffff" aria-label="Show input display colour" title="Show input display colour" style="margin-left:auto;width:34px;height:22px;padding:0;border:1px solid var(--line);border-radius:4px;background:none"></div>
+      <div class="inputsBox" id="inputsBox">
+        <svg class="inputs" id="inputDisplay" viewBox="0 0 475 150" role="img" aria-label="Controller inputs" hidden>
+          <rect id="in_L" class="o" x="13" y="11" width="108" height="14" rx="7"/><rect id="in_Lf" class="solid" x="13" y="11" width="0" height="14" rx="7"/>
+          <rect id="in_R" class="o" x="129" y="11" width="108" height="14" rx="7"/><rect id="in_Rf" class="solid" x="129" y="11" width="0" height="14" rx="7"/>
+          <circle id="in_S" class="o thin" cx="288" cy="30" r="11"/>
+          <polygon class="o thick" points="67,42 102.4,56.6 117,92 102.4,127.4 67,142 31.6,127.4 17,92 31.6,56.6"/>
+          <circle id="in_main" class="o thick" cx="67" cy="92" r="25"/>
+          <polygon class="o thick" points="182,48 213.1,60.9 226,92 213.1,123.1 182,136 150.9,123.1 138,92 150.9,60.9"/>
+          <circle id="in_c" class="solid" cx="182" cy="92" r="19"/>
+          <path id="in_D" class="o thin" d="M262,72 h16 v20 h20 v16 h-20 v20 h-16 v-20 h-20 v-16 h20 z"/>
+          <path id="in_Du" class="f" d="M262,72 h16 v20 h-16 z"/><path id="in_Dd" class="f" d="M262,108 h16 v20 h-16 z"/>
+          <path id="in_Dl" class="f" d="M242,92 h20 v16 h-20 z"/><path id="in_Dr" class="f" d="M278,92 h20 v16 h-20 z"/>
+          <circle id="in_B" class="o" cx="332" cy="114" r="17"/>
+          <circle id="in_A" class="o thick" cx="388" cy="96" r="29"/>
+          <path id="in_Y" class="o" d="M352,40 C351,27 378,21 400,25 C413,27 414,40 405,46 C393,52 373,49 363,52 C355,54 352,48 352,40 Z"/>
+          <path id="in_X" class="o" d="M437,70 C439,60 452,58 458,66 C466,80 466,110 458,124 C452,132 440,130 438,120 C436,108 442,96 439,86 C437,80 435,76 437,70 Z"/>
+          <path id="in_Z" class="o" d="M421,13 C425,8 433,10 441,16 L458,31 C464,37 462,46 456,46 C450,46 444,41 438,36 L422,24 C418,20 418,16 421,13 Z"/>
+        </svg>
+        <p class="inputsNone" id="inputsNone">This ghost has no recorded inputs.</p>
+      </div>
+    </div>
+    <p class="help">Drag to orbit, scroll or pinch to zoom. Keys: <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. You can also drop ghost files onto the stage.</p>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
+<script src="ghost.js"></script>
+<script src="mario_anims.js"></script>
+<script src="mario_rig.js"></script>
+<script>
+(() => {
+  const QF_PER_FRAME = 4;
+  const QF_PER_SECOND = 120000 / 1001;
+  const GHOST_COLORS = ['#e8402a', '#2f7de1', '#2aa36b', '#a35ad8', '#e07b1c', '#0fa3a3'];
+  const $ = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  // ---------------------------------------------------------------- three.js scene
+  const stageEl = $('stage');
+  const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  stageEl.prepend(renderer.domElement);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, 1, 10, 200000);
+  camera.position.set(0, 3000, 5000);
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.12;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 0.55));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.55);
+  sun.position.set(0.4, 1, 0.3);
+  scene.add(sun);
+
+  function applySceneTheme() {
+    scene.background = new THREE.Color(css('--scene-bg') || '#cfdde6');
+  }
+  applySceneTheme();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applySceneTheme);
+  new MutationObserver(applySceneTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  function resize() {
+    const w = stageEl.clientWidth, h = stageEl.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / Math.max(h, 1);
+    camera.updateProjectionMatrix();
+  }
+  new ResizeObserver(resize).observe(stageEl);
+
+  // Binary assets may be published as base64 text (*.b64.txt) where raw binaries can't be served.
+  async function fetchBinary(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('A file for this page is missing from the site.');
+    if (!url.endsWith('.b64.txt')) return res.arrayBuffer();
+    const bin = atob((await res.text()).trim());
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out.buffer;
+  }
+
+  // ---------------------------------------------------------------- stage maps
+  let maps = [];
+  let mapGroup = null;
+  let mapBounds = null;
+  const mapMaterials = [];
+
+  function showNotice(text) {
+    const n = $('notice');
+    n.textContent = text || '';
+    n.hidden = !text;
+  }
+
+  // Collision mesh (.smsmap): colour faces by slope, as Sunshine practice tools do.
+  function buildCollisionMesh(buf) {
+    const dv = new DataView(buf);
+    if (String.fromCharCode(...new Uint8Array(buf, 0, 4)) !== 'SMAP') throw new Error('Map file is not in the expected format.');
+    const vc = dv.getUint32(8, true), tc = dv.getUint32(12, true);
+    const verts = new Float32Array(buf, 40, vc * 3);
+    const idx = new Uint32Array(buf, 40 + vc * 12, tc * 3);
+    const pos = new Float32Array(tc * 9), col = new Float32Array(tc * 9);
+    const floor = new THREE.Color('#8fa7b8'), wall = new THREE.Color('#c9b48a'), ceil = new THREE.Color('#b86a5e');
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+    for (let t = 0; t < tc; t++) {
+      for (let k = 0; k < 3; k++) {
+        const v = idx[t * 3 + k];
+        pos.set([verts[v * 3], verts[v * 3 + 1], verts[v * 3 + 2]], t * 9 + k * 3);
+      }
+      a.fromArray(pos, t * 9); b.fromArray(pos, t * 9 + 3); c.fromArray(pos, t * 9 + 6);
+      n.subVectors(c, b).cross(a.clone().sub(b)).normalize();
+      const ny = n.y;
+      const base = ny > 0.2 ? floor : ny < -0.2 ? ceil : wall;
+      const shade = 0.82 + 0.18 * Math.abs(ny);
+      for (let k = 0; k < 3; k++) col.set([base.r * shade, base.g * shade, base.b * shade], t * 9 + k * 3);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.computeVertexNormals();
+    const m = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, flatShading: true });
+    mapMaterials.push(m);
+    const group = new THREE.Group();
+    group.add(new THREE.Mesh(g, m));
+    return group;
+  }
+
+  // Textured model (.glb). Entries may carry {scale, rotateY, offset} to align with game units.
+  function loadGlb(entry) {
+    return new Promise((resolve, reject) => {
+      fetchBinary(entry.file).then((buf) => new THREE.GLTFLoader().parse(buf, '', (gltf) => {
+        const group = new THREE.Group();
+        const root = gltf.scene;
+        if (entry.scale) root.scale.setScalar(entry.scale);
+        if (entry.rotateY) root.rotation.y = THREE.MathUtils.degToRad(entry.rotateY);
+        if (entry.offset) root.position.fromArray(entry.offset);
+        root.traverse((o) => {
+          if (!o.isMesh) return;
+          [].concat(o.material).forEach((m) => {
+            m.side = THREE.DoubleSide;
+            // Second texture layers (grass over rock, etc.) sit exactly on their base surface.
+            if (m.name && m.name.startsWith('layer2')) { m.depthWrite = false; m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
+            mapMaterials.push(m);
+          });
+        });
+        group.add(root);
+        resolve(group);
+      }, () => reject(new Error('The stage model could not be loaded.')))).catch(reject);
+    });
+  }
+
+  // Loaded stages stay in memory so switching back (e.g. leaving a secret) is instant.
+  const mapCache = new Map();
+  let mapRequest = 0;
+  async function loadMap(id, routeKey) {
+    const entry = maps.find((m) => m.id === id);
+    if (!entry) return;
+    $('mapSelect').value = id;
+    fillEpisodes(entry, routeKey);
+    loadObjects(entry, $('episodeSelect').value);
+    if (mapGroup && mapGroup.userData.id === id) return;
+    const request = ++mapRequest;
+    try {
+      let group = mapCache.get(id);
+      if (!group) {
+        showNotice(`Loading ${entry.name}…`);
+        group = /\.glb(\.b64\.txt)?$/.test(entry.file) ? await loadGlb(entry) : buildCollisionMesh(await fetchBinary(entry.file));
+        group.userData.id = id;
+        // The sky dome follows the camera, as in the game, and is drawn behind everything.
+        const sky = new THREE.Group();
+        const skyMeshes = [];
+        group.traverse((o) => { if (o.isMesh && /^sky_/.test(o.name)) skyMeshes.push(o); });
+        skyMeshes.forEach((o) => {
+          o.updateMatrixWorld(true);
+          o.applyMatrix4(o.parent.matrixWorld);
+          o.parent.remove(o);
+          o.frustumCulled = false;
+          o.renderOrder = -1000;
+          [].concat(o.material).forEach((m) => { m.depthWrite = false; m.depthTest = false; m.fog = false; });
+          sky.add(o);
+        });
+        group.userData.sky = skyMeshes.length ? sky : null;
+        group.userData.materials = [];
+        group.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => group.userData.materials.push(m)); });
+        // Frame on the playable area: skip sky domes and far-away sea planes when sizing the view.
+        const box = new THREE.Box3();
+        group.updateMatrixWorld(true);
+        group.traverse((o) => {
+          if (!o.isMesh) return;
+          const b = new THREE.Box3().setFromObject(o);
+          if (b.getSize(new THREE.Vector3()).length() < 40000) box.union(b);
+        });
+        group.userData.bounds = box.isEmpty() ? new THREE.Box3().setFromObject(group) : box;
+        group.userData.id = id;
+        mapCache.set(id, group);
+      }
+      if (request !== mapRequest) return;
+      if (mapGroup) { scene.remove(mapGroup); if (mapGroup.userData.sky) scene.remove(mapGroup.userData.sky); }
+      mapGroup = group;
+      if (group.userData.sky) scene.add(group.userData.sky);
+      mapMaterials.length = 0;
+      mapMaterials.push(...group.userData.materials);
+      mapBounds = group.userData.bounds;
+      scene.add(mapGroup);
+      setWireframe($('optWire').checked);
+      updateMapNotice();
+      if (ghosts.length) update();   // thrown-object simulations need this stage's geometry
+      loadCollision(entry);
+      if (cameraMode !== 'follow' || !ghosts.length) frameView();
+    } catch (err) {
+      if (request === mapRequest) showNotice(err.message);
+    }
+  }
+
+  // ---------------------------------------------------------------- stage objects
+  // Each episode's objects come from its scene.bin (tools/build_objects.py): instances
+  // [model, type, key, x, y, z, rotX, rotY, rotZ (degrees), sx, sy, sz, pickup, hitRadius, hitHeight].
+  const MARIO_HIT_RADIUS = 42, MARIO_HIT_HEIGHT = 110;   // TMario damage cylinder (MarioInit.cpp)
+  const objLibCache = new Map(), objListCache = new Map();
+  const PICKUP_TINT = { coin: 0xffc21a, coin_blue: 0x3d7dff, coin_red: 0xff2b2b, shine: 0xffd640 };
+  let objectsGroup = null, objectsKey = '', objList = [], objNodes = [], wireMeshes = [], objDyn = {}, objProtos = {};
+
+  function routeLabel(key) {
+    const [a, e] = key.split(':').map(Number);
+    return ghostRouteLabel({ area: a, episode: e, parentArea: 0xff, variant: -1 });
+  }
+
+  function fillEpisodes(entry, routeKey) {
+    const sel = $('episodeSelect');
+    const keys = entry.objects ? Object.keys(entry.objects.scenes) : [];
+    const want = routeKey && keys.includes(routeKey) ? routeKey : (keys.includes(sel.value) && sel.dataset.map === entry.id ? sel.value : keys[0]);
+    if (sel.dataset.map !== entry.id) {
+      sel.textContent = '';
+      keys.forEach((k) => { const o = document.createElement('option'); o.value = k; o.textContent = routeLabel(k); sel.append(o); });
+      sel.dataset.map = entry.id;
+    }
+    sel.hidden = keys.length < 2;
+    if (want) sel.value = want;
+  }
+
+  // NPC colours (TBaseNPC::setIndividualDifference_ / SMS_InitChangeNpcColor). The game tints
+  // greyscale textures through TEV colour registers; here 'mul' multiplies the material by a colour
+  // and 'grad' maps texture brightness from a dark to a light colour (TEV colours 1 and 2).
+  function npcMaterial(m, spec) {
+    const [, mode, a, b] = spec;
+    const col = (c) => new THREE.Vector3(...c.map((v) => Math.min(1, v / 255)));
+    if (mode === 'mul') { m.color = new THREE.Color(...a.map((v) => Math.min(1, v / 255))); return; }
+    const lo = col(a), hi = col(b);
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.npcLo = { value: lo }; sh.uniforms.npcHi = { value: hi };
+      sh.fragmentShader = 'uniform vec3 npcLo;\nuniform vec3 npcHi;\n' + sh.fragmentShader.replace('#include <map_fragment>',
+        '#include <map_fragment>\n  { float l = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114)); diffuseColor.rgb = mix(npcLo, npcHi, l); }');
+    };
+    m.customProgramCacheKey = () => 'npc' + a.join(',') + b.join(',');
+    m.needsUpdate = true;
+  }
+  function applyNpcColors(root) {
+    root.traverse((g) => {
+      const specs = g.userData.npcColors;
+      if (!specs || !specs.length) return;
+      g.traverse((o) => {
+        if (!o.isMesh) return;
+        [].concat(o.material).forEach((m) => {
+          const spec = specs.find((sp) => m.name && (m.name.endsWith(' ' + sp[0]) || m.name.endsWith(sp[0])));
+          if (spec) npcMaterial(m, spec);
+        });
+      });
+    });
+  }
+
+  async function loadObjects(entry, routeKey) {
+    const key = entry.id + '|' + routeKey;
+    if (key === objectsKey) return;
+    objectsKey = key;
+    if (objectsGroup) scene.remove(objectsGroup);
+    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {};
+    const info = entry.objects;
+    if (!info || !info.scenes[routeKey]) { update(); return; }
+    let lib = objLibCache.get(info.lib);
+    if (!lib) {
+      lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', (g) => res(g.scene), rej)));
+      objLibCache.set(info.lib, lib);
+    }
+    const file = info.scenes[routeKey];
+    let list = objListCache.get(file);
+    if (!list) { list = fetch(file).then((r) => r.json()); objListCache.set(file, list); }
+    try {
+      const [libScene, data] = await Promise.all([lib, list]);
+      if (key !== objectsKey) return;
+      const items = Array.isArray(data) ? data : data.o;
+      const protos = {};
+      libScene.children.forEach((c) => { if (/^m\d+(_s\d+)?$/.test(c.name)) protos[c.name.slice(1)] = c; });
+      const group = new THREE.Group();
+      const D = Math.PI / 180;
+      const fallback = new THREE.MeshBasicMaterial({ color: 0xf2b33d });
+      items.forEach((it) => {
+        const [mi, , , px, py, pz, rx, ry, rz, sx, sy, sz, pick] = it;
+        let node;
+        if (mi >= 0 && protos[mi + '_s0']) {
+          // Springs: frames along the game's shrink animation, shown one at a time.
+          node = new THREE.Group();
+          node.userData.variants = [];
+          for (let k = 0; protos[mi + '_s' + k]; k++) { const v = protos[mi + '_s' + k].clone(true); v.visible = k === 0; node.add(v); node.userData.variants.push(v); }
+        } else if (mi >= 0 && protos[mi]) node = protos[mi].clone(true);
+        else { node = new THREE.Mesh(new THREE.SphereGeometry(30, 10, 8), fallback); node.position.y = 40; node = new THREE.Group().add(node); }
+        node.position.set(px, py, pz);
+        node.rotation.set(rx * D, ry * D, rz * D, 'ZYX');
+        node.scale.set(sx, sy, sz);
+        node.userData.baseRotY = ry * D;
+        node.userData.base = { p: [px, py, pz], r: [rx * D, ry * D, rz * D], s: [sx, sy, sz] };
+        node.updateMatrix();
+        node.userData.baseMatrix = node.matrix.clone();
+        node.userData.carry = it[16] || '';
+        const ex = it[17] || {};
+        if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
+          ex.npc.parts.forEach(([pi, m, specs]) => {
+            if (!protos[pi]) return;
+            const part = protos[pi].clone(true);
+            part.matrixAutoUpdate = false;
+            part.matrix.fromArray(m);
+            part.userData.npcColors = specs;
+            node.add(part);
+          });
+          node.userData.npcColors = ex.npc.mats;
+        }
+        if (ex.cannon && ex.cannon.mole >= 0 && protos[ex.cannon.mole]) {   // the Monty Mole rides in the cannon
+          const mole = protos[ex.cannon.mole].clone(true);
+          node.add(mole);
+          node.userData.mole = mole;
+        }
+        node.userData.pick = pick;
+        node.userData.spin = /^(coin|shine)/.test(pick);
+        node.traverse((o) => {
+          if (!o.isMesh) return;
+          o.material = [].concat(o.material).map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; });
+          if (o.material.length === 1) o.material = o.material[0];
+          // Coins and shines use environment-mapped materials the viewer can't reproduce; tint them instead.
+          const tint = PICKUP_TINT[pick.replace(/_hidden$/, '')];
+          if (tint) [].concat(o.material).forEach((m) => { m.color = new THREE.Color(tint); });
+          if (/_hidden$/.test(pick)) [].concat(o.material).forEach((m) => { m.transparent = true; m.opacity = 0.35; m.depthWrite = false; });
+        });
+        if (node.userData.npcColors) applyNpcColors(node);
+        group.add(node);
+        objNodes.push(node);
+      });
+      wireMeshes = (Array.isArray(data) ? [] : data.w || []).map((w) => makeWire(group, w));
+      objectsGroup = group;
+      objList = items;
+      objDyn = (!Array.isArray(data) && data.dyn) || {};
+      objProtos = {};
+      Object.values(objDyn).forEach((def) => [def.m, def.sprayed].forEach((mi) => {
+        const p = mi >= 0 ? protos[mi] : null;
+        if (!p) return;
+        const c = p.clone(true);
+        c.traverse((o) => { if (o.isMesh) { o.material = [].concat(o.material).map((m) => { const x = m.clone(); x.side = THREE.DoubleSide; return x; }); if (o.material.length === 1) o.material = o.material[0]; } });
+        objProtos[mi] = c;
+      }));
+      group.visible = $('optObjects').checked;
+      scene.add(group);
+      ghosts.forEach((g) => { computePickups(g); computeCarry(g); });
+      update();
+    } catch (err) {
+      console.error(err);
+      showNotice('This episode\'s objects could not be loaded.');
+    }
+  }
+
+  // ---------------------------------------------------------------- carried and thrown actors
+  // Moonshine records what Mario holds each frame (held index -> attachment table of retail actor
+  // type + name hash), so pickups and releases are exact. What happens after a release is simulated
+  // with the game's own rules, frame by frame (30 Hz) against the stage geometry:
+  //   springs  TJumpBase::control (MapObjItem2.cpp): thrown -> velocity (sin, 0, cos) of Mario's yaw,
+  //            put -> dropped from the hand; TLiveActor::bind gravity 0.15, extends again on landing.
+  //   fruit    TMapObjGeneral::thrown/put + calcVelocity/touchGround with each fruit's physical data.
+  //   bombs    TNerveBombHeiThrown (bombhei.cpp): velocity rate*power*(sin, -, cos), VY and gravity
+  //            from the stage's bombhei.prm; explode on landing or when they reach the Monty Mole.
+  const THROW_POWER = 2.8;      // mThrowPower in params.szs mario/mario.prm (2.0 default in MarioInit.cpp)
+  // shrinkF/extendF: jumpbase_shrink and jumpbase_set (39 and 29 frames) play at THROW_PACE speed like the throws.
+  const SPRING = { gravity: 0.15, head: 50, shrinkF: 39, extendF: 29 };
+  // TMapObjPhysicalData (MapObjInit.cpp): gravity, bounce, wallReflect, minSpeed, groundFriction, ?,
+  // airDrag, wallY, ?, ?, ?, throwSpeed, throwVY. Damage radius from the fruit hit tables.
+  const FRUIT = {
+    coconut: { p: [0.3, 0.6, 0.3, 0.3, 0.97, 0.98, 1, 5, 0.5, 0.72, 0, 2, 15], r: 50 },
+    papaya: { p: [0.3, 0.6, 0.3, 0.3, 0.97, 0.98, 1, 5, 0.5, 0.72, 0, 5, 20], r: 50 },
+    pine: { p: [0.3, 0.6, 0.3, 0.3, 0.97, 0.98, 1, 5, 0.5, 0.72, 0, 2, 22], r: 40 },
+    durian: { p: [0.3, 0.6, 0.2, 0.2, 0.97, 0.98, 1, 5, 0.5, 0.72, 0, 0.01, 5], r: 60 },
+    banana: { p: [0.3, 0.4, 0.2, 1, 0.4, 0.5, 1, 5, 0.5, 0.72, 0, 2.5, 14], r: 60 },
+    pepper: { p: [0.3, 0.6, 0.3, 0.3, 0.97, 0.98, 1, 5, 0.5, 0.72, 0, 5, 12], r: 50 },
+  };
+  const FRUIT_ACTOR = { 0x40000390: 'coconut', 0x40000391: 'papaya', 0x40000392: 'pine', 0x40000393: 'durian', 0x40000394: 'banana' };
+  // damageF: how long a hit mole ignores further bombs. The decomp ties it to tyorobe_damage1 (59
+  // frames), but footage shows hits 46 frames apart, so it is shorter in play. corkF: from the last
+  // hit to the cork starting to wobble out, measured from footage (the decomp's chain of demo
+  // animations would be ~11 s, but the cork already wobbles during the mole's defeat scene).
+  const MOLE = { throwXZ: 9, gravity: 0.15, walk: 2, damageF: 45, downF: 189, corkF: 10 };
+  const ANIM_THROW = 101, ANIM_PUT = 110;
+  const MAX_SIM_F = 900;
+  // Everything thrown or dropped moves THROW_PACE times faster than the raw per-frame values in the
+  // game files suggest (same paths, gravity scaled by the square), matching gameplay footage of the
+  // Noki Bay Bob-omb throws and the ghost's own hit and Shine timing.
+  const THROW_PACE = 4;
+  const BOMB_PACE = THROW_PACE;
+
+  const _ray = new THREE.Raycaster(), _down = new THREE.Vector3(0, -1, 0), _o = new THREE.Vector3(), _dir = new THREE.Vector3();
+  // Stage collision (the game's map.col, tools/build_collision.py) for physics: where thrown
+  // objects land and where water hits. A coarse XZ grid keeps the queries cheap.
+  const COL_CELL = 400;
+  let stageCol = null;
+  const colCache = new Map();
+  function parseCollision(buf) {
+    const dv = new DataView(buf);
+    if (dv.getUint32(0, true) !== 0x4c4f4353) return null;   // 'SCOL'
+    const nv = dv.getUint32(4, true), nt = dv.getUint32(8, true);
+    const ox = dv.getFloat32(12, true), oy = dv.getFloat32(16, true), oz = dv.getFloat32(20, true), st = dv.getFloat32(24, true);
+    let o = 28;
+    const q = new Int16Array(buf.slice(o, o + nv * 6)); o += nv * 6; o = (o + 3) & ~3;
+    const v = new Float32Array(nv * 3);
+    for (let i = 0; i < nv; i++) { v[i * 3] = ox + q[i * 3] * st; v[i * 3 + 1] = oy + q[i * 3 + 1] * st; v[i * 3 + 2] = oz + q[i * 3 + 2] * st; }
+    const big = nv > 65535;
+    const t = big ? new Uint32Array(buf.slice(o, o + nt * 12)) : Uint32Array.from(new Uint16Array(buf.slice(o, o + nt * 6)));
+    // grid
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (let i = 0; i < nv; i++) { x0 = Math.min(x0, v[i * 3]); x1 = Math.max(x1, v[i * 3]); z0 = Math.min(z0, v[i * 3 + 2]); z1 = Math.max(z1, v[i * 3 + 2]); }
+    const gw = Math.max(1, Math.ceil((x1 - x0) / COL_CELL) + 1), gh = Math.max(1, Math.ceil((z1 - z0) / COL_CELL) + 1);
+    const ranges = new Int32Array(nt * 4), counts = new Int32Array(gw * gh + 1);
+    for (let k = 0; k < nt; k++) {
+      const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
+      const cx0 = Math.floor((Math.min(v[a], v[b], v[c]) - x0) / COL_CELL), cx1 = Math.floor((Math.max(v[a], v[b], v[c]) - x0) / COL_CELL);
+      const cz0 = Math.floor((Math.min(v[a + 2], v[b + 2], v[c + 2]) - z0) / COL_CELL), cz1 = Math.floor((Math.max(v[a + 2], v[b + 2], v[c + 2]) - z0) / COL_CELL);
+      ranges.set([cx0, cx1, cz0, cz1], k * 4);
+      for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) counts[cz * gw + cx + 1]++;
+    }
+    for (let i = 1; i < counts.length; i++) counts[i] += counts[i - 1];
+    const cells = new Int32Array(counts[counts.length - 1]), fill = counts.slice(0, -1);
+    for (let k = 0; k < nt; k++) {
+      const [cx0, cx1, cz0, cz1] = ranges.subarray(k * 4, k * 4 + 4);
+      for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) cells[fill[cz * gw + cx]++] = k;
+    }
+    return { v, t, nt, x0, z0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0 };
+  }
+  function colCellRange(C, xa, xb, za, zb, fn) {
+    const cx0 = Math.max(0, Math.floor((Math.min(xa, xb) - C.x0) / COL_CELL)), cx1 = Math.min(C.gw - 1, Math.floor((Math.max(xa, xb) - C.x0) / COL_CELL));
+    const cz0 = Math.max(0, Math.floor((Math.min(za, zb) - C.z0) / COL_CELL)), cz1 = Math.min(C.gh - 1, Math.floor((Math.max(za, zb) - C.z0) / COL_CELL));
+    C.mark = (C.mark + 1) >>> 0;
+    if (C.mark === 0) { C.stamp.fill(0); C.mark = 1; }
+    for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) {
+      const c = cz * C.gw + cx;
+      for (let i = C.start[c]; i < C.start[c + 1]; i++) { const k = C.cells[i]; if (C.stamp[k] !== C.mark) { C.stamp[k] = C.mark; fn(k); } }
+    }
+  }
+  // Highest collision surface at (x, z) at or below y (TMap::checkGround), or -Infinity.
+  function colGround(C, x, y, z) {
+    let best = -Infinity;
+    const v = C.v, t = C.t;
+    colCellRange(C, x, x, z, z, (k) => {
+      const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
+      const d = (v[b + 2] - v[c + 2]) * (v[a] - v[c]) + (v[c] - v[b]) * (v[a + 2] - v[c + 2]);
+      if (Math.abs(d) < 1e-6) return;
+      const l1 = ((v[b + 2] - v[c + 2]) * (x - v[c]) + (v[c] - v[b]) * (z - v[c + 2])) / d;
+      const l2 = ((v[c + 2] - v[a + 2]) * (x - v[c]) + (v[a] - v[c]) * (z - v[c + 2])) / d;
+      const l3 = 1 - l1 - l2;
+      if (l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4) return;
+      const hy = l1 * v[a + 1] + l2 * v[b + 1] + l3 * v[c + 1];
+      // only floors (upward-facing): normal y from the cross product
+      const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+      const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      if (Math.abs(ny) / Math.hypot(nx, ny, nz) < 0.2) return;
+      if (hy <= y + 1 && hy > best) best = hy;
+    });
+    return best;
+  }
+  // First hit along segment p -> q: { f (0..1 along it), ny (|normal y|) } or null.
+  function colSegment(C, p, q) {
+    let best = null;
+    const v = C.v, t = C.t;
+    const dx = q[0] - p[0], dy = q[1] - p[1], dz = q[2] - p[2];
+    colCellRange(C, p[0], q[0], p[2], q[2], (k) => {
+      const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
+      const e1x = v[b] - v[a], e1y = v[b + 1] - v[a + 1], e1z = v[b + 2] - v[a + 2];
+      const e2x = v[c] - v[a], e2y = v[c + 1] - v[a + 1], e2z = v[c + 2] - v[a + 2];
+      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (Math.abs(det) < 1e-9) return;
+      const inv = 1 / det, sx = p[0] - v[a], sy = p[1] - v[a + 1], sz = p[2] - v[a + 2];
+      const u = (sx * px + sy * py + sz * pz) * inv;
+      if (u < 0 || u > 1) return;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const w = (dx * qx + dy * qy + dz * qz) * inv;
+      if (w < 0 || u + w > 1) return;
+      const f = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (f < 0 || f > 1 || (best && f >= best.f)) return;
+      const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+      best = { f, ny: Math.abs(ny) / Math.hypot(nx, ny, nz) };
+    });
+    return best;
+  }
+  async function loadCollision(entry) {
+    if (!entry.col) return;
+    let c = colCache.get(entry.id);
+    if (!c) { c = fetchBinary(entry.col).then(parseCollision).catch(() => null); colCache.set(entry.id, c); }
+    const C = await c;
+    if (!C || !mapGroup || mapGroup.userData.id !== entry.id) return;
+    C.id = entry.id;
+    if (stageCol === C) return;
+    stageCol = C;
+    // Re-run physics that may have used the drawn geometry before the collision arrived.
+    ghosts.forEach((g) => { if (g.carry) g.carry.forEach((pl) => { pl.ready = false; }); if (g.sprayHits) g.sprayHits.clear(); });
+    update();
+  }
+  function activeCol() { return stageCol && mapGroup && stageCol.id === mapGroup.userData.id ? stageCol : null; }
+
+  // Drawn stage geometry, used for ray casts when a stage has no collision file.
+  const rayMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  function rayTarget() {
+    if (!mapGroup) return null;
+    if (!mapGroup.userData.rayGroup) {
+      const rg = new THREE.Group();
+      mapGroup.updateMatrixWorld(true);
+      mapGroup.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        const m = new THREE.Mesh(o.geometry, rayMat);
+        m.matrixAutoUpdate = false;
+        m.matrix.copy(o.matrixWorld);
+        rg.add(m);
+      });
+      rg.updateMatrixWorld(true);
+      mapGroup.userData.rayGroup = rg;
+    }
+    return mapGroup.userData.rayGroup;
+  }
+  function groundY(x, y, z) {
+    const C = activeCol();
+    if (C) return colGround(C, x, y, z);
+    if (!mapGroup) return -Infinity;
+    _o.set(x, y, z); _ray.set(_o, _down); _ray.far = 40000;
+    const h = _ray.intersectObject(rayTarget(), true);
+    return h.length ? h[0].point.y : -Infinity;
+  }
+  // First hit of the stage along p -> q: fraction along it and |normal y|, or null.
+  function stageSegment(p, q) {
+    const C = activeCol();
+    if (C) return colSegment(C, p, q);
+    if (!mapGroup) return null;
+    _o.set(p[0], p[1], p[2]); _dir.set(q[0] - p[0], q[1] - p[1], q[2] - p[2]);
+    const len = _dir.length();
+    if (len < 1e-6) return null;
+    _dir.multiplyScalar(1 / len); _ray.set(_o, _dir); _ray.far = len;
+    const h = _ray.intersectObject(rayTarget(), true);
+    return h.length ? { f: h[0].distance / len, ny: Math.abs(h[0].face ? h[0].face.normal.y : 1) } : null;
+  }
+  // True when moving from p to q (at height y + lift) runs into a wall.
+  function hitsWall(p, q, lift, radius) {
+    const dx = q[0] - p[0], dz = q[2] - p[2], len = Math.hypot(dx, dz);
+    if (len < 1e-3) return false;
+    const k = (len + radius) / len;
+    const h = stageSegment([p[0], p[1] + lift, p[2]], [p[0] + dx * k, p[1] + lift, p[2] + dz * k]);
+    return !!h && h.ny < 0.7;
+  }
+
+  function fruitKind(it, desc) {
+    if (desc && FRUIT_ACTOR[desc.objectId]) return FRUIT_ACTOR[desc.objectId];
+    const s = ((it && (it[1] + ' ' + it[2])) || '').toLowerCase();
+    return Object.keys(FRUIT).find((k) => s.includes(k)) || 'coconut';
+  }
+
+  // Hold intervals per attachment within the current episode.
+  function holdRuns(d, a, e) {
+    const runs = {}, n = d.qf.length;
+    let cur = 0, start = 0;
+    for (let s = 0; s <= n; s++) {
+      let h = 0;
+      if (s < n) { const r = d.segments[d.segIndex[s]].route; h = r.area === a && r.episode === e ? d.held[s] : 0; }
+      if (h !== cur) {
+        if (cur && cur !== 15) (runs[cur] = runs[cur] || []).push([start, Math.min(s, n - 1)]);
+        cur = h; start = s;
+      }
+    }
+    return runs;
+  }
+
+  function computeCarry(g) {
+    if (!objList.length) return;
+    g.carry = g.carry || new Map();
+    if (g.carry.has(objectsKey)) return;
+    const d = g.data;
+    const [a, e] = objectsKey.split('|')[1].split(':').map(Number);
+    const plan = { placed: new Map(), dyn: [], ready: false, cannon: null };
+    const mk = ([s0, s1]) => ({ t0: d.qf[s0], t1: d.qf[s1], s0, s1, thrown: d.anim[s1 - 1] !== ANIM_PUT && d.anim[s1] !== ANIM_PUT });
+    Object.entries(holdRuns(d, a, e)).forEach(([att, list]) => {
+      const desc = d.attachments[att - 1];
+      const dynDef = desc && objDyn[desc.objectId.toString(16).padStart(8, '0')];
+      if (dynDef) {   // spawned at run time (bombs): every hold is a different actor
+        list.forEach((r) => plan.dyn.push({ def: dynDef, hold: mk(r) }));
+        return;
+      }
+      let inst = desc ? objList.findIndex((it) => it[16] && it[15] === desc.nameKey) : -1;
+      if (inst < 0) {
+        const s0 = list[0][0];
+        let best = 1e18;
+        objList.forEach((it, i) => {
+          if (!it[16]) return;
+          const dd = (it[3] - d.pos[s0 * 3]) ** 2 + (it[5] - d.pos[s0 * 3 + 2]) ** 2;
+          if (dd < best) { best = dd; inst = i; }
+        });
+      }
+      if (inst < 0) return;
+      const kind = objList[inst][16];
+      const holds = list.map(mk);
+      holds.forEach((h) => { h.kind = kind; if (kind === 'fruit') h.fruit = fruitKind(objList[inst], desc); });
+      if (kind === 'spring') {
+        // A spring is only grabbable once water has shrunk it: start the shrink at the last spray
+        // before each pickup.
+        const inp = d.inputs;
+        holds.forEach((hd, k) => {
+          const prev = k ? holds[k - 1] : null;
+          let at = hd.t0 - SPRING.shrinkF / THROW_PACE * QF_PER_FRAME;
+          if (inp && inp.hasFludd) {
+            for (let i = inp.count - 1; i >= 0; i--) {
+              const q = inp.qf[i];
+              if (q >= hd.t0) continue;
+              if (prev && q <= prev.t1) break;
+              if (inp.fluddMode[i] & 0x10) { at = q; break; }
+            }
+          }
+          hd.shrinkAt = Math.min(at, hd.t0 - 2 * QF_PER_FRAME);
+        });
+      }
+      plan.placed.set(inst, holds);
+    });
+    plan.dyn.sort((x, y) => x.hold.t0 - y.hold.t0);
+    g.carry.set(objectsKey, plan);
+  }
+
+  // Mario's right hand (Moonshine and TTakeActor use jnt_hand_R) at time tq.
+  function handAt(g, tq) {
+    const rig = g.marker.userData.rig, s = ghostSampleAt(g.data, tq);
+    g.marker.position.set(s.x, s.y, s.z);
+    g.marker.rotation.y = (s.yaw / 32768) * Math.PI;
+    if (!rig || !rig.handR) return { m: null, p: [s.x, s.y + 100, s.z] };
+    const an = ghostAnimAt(g.data, tq);
+    MarioRig.pose(rig, an.id, an.yoshi, an.phase);
+    g.marker.updateMatrixWorld(true);
+    const m = rig.handR.matrixWorld.clone();
+    return { m, p: [m.elements[12], m.elements[13], m.elements[14]] };
+  }
+
+  function releaseInfo(g, hd) {
+    const d = g.data, i = Math.max(hd.s0, hd.s1 - 1), j = Math.min(d.qf.length - 1, i + 1);
+    const yaw = d.yaw[i] / 32768 * Math.PI;
+    const frames = Math.max(1, (d.qf[j] - d.qf[i]) / QF_PER_FRAME);
+    const hand = handAt(g, d.qf[i]);
+    return { hand, yaw, mario: [d.pos[i * 3], d.pos[i * 3 + 1], d.pos[i * 3 + 2]],
+      mv: [(d.pos[j * 3] - d.pos[i * 3]) / frames, (d.pos[j * 3 + 2] - d.pos[i * 3 + 2]) / frames], tq: d.qf[i] };
+  }
+
+  // Frame-by-frame flight. step(p, v, f) may end it early ('hit'); returns {pts, end, how}.
+  function fly(p, v, opt) {
+    const pts = [p.slice()];
+    p = p.slice(); v = v.slice();
+    for (let f = 1; f < MAX_SIM_F; f++) {
+      if (opt.preMove) opt.preMove(p, v);
+      const n = [p[0] + v[0], p[1] + v[1], p[2] + v[2]];
+      v[1] = Math.max(v[1] - opt.gravity, opt.minVY !== undefined ? opt.minVY : -40);
+      if (opt.wall && hitsWall(p, n, opt.wall, opt.radius || 30)) { n[0] = p[0]; n[2] = p[2]; v[0] *= -(opt.reflect || 0); v[2] *= -(opt.reflect || 0); }
+      const gy = groundY(n[0], n[1] + (opt.head || 50), n[2]) + 1;
+      if (opt.hit && opt.hit(n, f)) { pts.push(n); return { pts, how: 'hit' }; }
+      if (n[1] <= gy + 0.05) {
+        n[1] = gy;
+        if (opt.bounce && opt.bounce(n, v)) { pts.push(n); p = n; continue; }
+        pts.push(n);
+        return { pts, how: gy === -Infinity ? 'lost' : 'land' };
+      }
+      pts.push(n); p = n;
+    }
+    return { pts, how: 'timeout' };
+  }
+
+  function simSpring(g, hd) {
+    const r = releaseInfo(g, hd);
+    const K = THROW_PACE;
+    const v = hd.thrown ? [K * Math.sin(r.yaw), 0, K * Math.cos(r.yaw)] : [0, 0, 0];
+    const p = r.hand.p.slice();
+    if (hd.thrown) { p[0] += v[0]; p[2] += v[2]; }
+    const f = fly(p, v, { gravity: SPRING.gravity * K * K, minVY: -40 * K, head: SPRING.head });
+    hd.sim = f;
+    hd.landT = hd.t1 + (f.pts.length - 1) * QF_PER_FRAME;
+    hd.extendAt = hd.thrown ? hd.landT : hd.t1;   // PUT -> state 2 at once, THROWN -> state 5 until landing
+  }
+
+  function simFruit(g, hd) {
+    const r = releaseInfo(g, hd), F = FRUIT[hd.fruit] || FRUIT.coconut, P = F.p;
+    const s = Math.sin(r.yaw), c = Math.cos(r.yaw);
+    const K = THROW_PACE, drag = P[6] ** K, friction = P[4] ** K;
+    let p, v;
+    if (hd.thrown) {
+      v = [K * (THROW_POWER * s * P[11] + 0.5 * r.mv[0]), K * P[12], K * (THROW_POWER * c * P[11] + 0.5 * r.mv[1])];
+      p = [r.mario[0] + v[0], r.mario[1] + v[1], r.mario[2] + v[2]];
+    } else {
+      const reach = F.r + MARIO_HIT_RADIUS + 10;
+      p = [r.mario[0] + s * reach, r.mario[1], r.mario[2] + c * reach];
+      v = [0, 0, 0];
+    }
+    let rest = 0;
+    hd.sim = fly(p, v, {
+      gravity: P[0] * K * K, head: 40, wall: P[7], radius: F.r, reflect: P[2], minVY: -F.r * K,
+      preMove: (pp, vv) => { vv[0] *= drag; vv[2] *= drag; },
+      bounce: (n, vv) => {     // TMapObjGeneral::touchGround
+        vv[0] *= friction; vv[2] *= friction;
+        if (Math.abs(vv[1]) > P[3] * K) { vv[1] *= -P[1]; return true; }
+        vv[1] = 0;
+        if (Math.hypot(vv[0], vv[2]) < P[3] * K || ++rest > 240 / K) return false;
+        return true;           // keeps rolling along the ground
+      },
+    });
+    hd.landT = hd.t1 + (hd.sim.pts.length - 1) * QF_PER_FRAME;
+  }
+
+  // The Monty Mole cannon(s) of this episode, with their hit cylinder (TChorobei) in world space.
+  function cannons() {
+    const out = [];
+    objList.forEach((it, i) => {
+      const x = it[17] && it[17].cannon;
+      if (!x) return;
+      const ry = it[7] * Math.PI / 180, [ox, oy, oz] = x.hit;
+      out.push({ i, x, pos: [it[3] + ox * Math.cos(ry) + oz * Math.sin(ry), it[4] + oy, it[5] - ox * Math.sin(ry) + oz * Math.cos(ry)], hits: [] });
+    });
+    return out;
+  }
+
+  function simBombs(g, plan) {
+    const guns = cannons();
+    plan.cannons = guns;
+    plan.dyn.forEach((b) => {
+      const hd = b.hold, P = b.def.prm || {};
+      const rate = P.ThrownRateXZ !== undefined ? P.ThrownRateXZ : 0.5;
+      const vy = P.ThrownVY !== undefined ? P.ThrownVY : 50, grav = P.ThrownGravityY !== undefined ? P.ThrownGravityY : 1.5;
+      const br = P.DamageRadius || 70, bh = P.DamageHeight || 150;
+      const r = releaseInfo(g, hd);
+      const p = r.hand.p.slice(); p[1] += 2;
+      // Same arc as bombhei.prm gives, but BOMB_PACE times faster (gravity scaled by its square):
+      // that is what gameplay footage shows (a ~1 s flight onto the mole, not ~4 s).
+      const K = BOMB_PACE;
+      const v = [K * rate * THROW_POWER * Math.sin(r.yaw), K * vy, K * rate * THROW_POWER * Math.cos(r.yaw)];
+      let hitGun = null;
+      hd.sim = fly(p, v, {
+        gravity: grav * K * K, minVY: -40 * K, head: 50, wall: 50, radius: br,
+        hit: (n, f) => {
+          const tq = hd.t1 + f * QF_PER_FRAME;
+          for (const gun of guns) {
+            if (gun.hits.length >= gun.x.hp) continue;
+            const dx = n[0] - gun.pos[0], dz = n[2] - gun.pos[2];
+            if (dx * dx + dz * dz > (br + gun.x.r) ** 2) continue;
+            if (n[1] > gun.pos[1] + gun.x.h || n[1] + bh < gun.pos[1]) continue;
+            const lastHit = gun.hits[gun.hits.length - 1];
+            if (lastHit !== undefined && tq < lastHit + MOLE.damageF * QF_PER_FRAME) continue;   // already in TNerveCannonDamage
+            gun.hits.push(tq); hitGun = gun; return true;
+          }
+          return false;
+        },
+      });
+      hd.endT = hd.t1 + (hd.sim.pts.length - 1) * QF_PER_FRAME;
+      hd.hitCannon = !!hitGun;
+      // Before the pickup: the mole lobbed it toward Mario (TCannon::bombShoot, XZ speed and VY
+      // mSLThrowXZSpeed), it landed and walked to him (march speed), then waited once sprayed.
+      // It waits where Mario grabs it: just in front of him (TMario::isTakeSituation hold radius).
+      const ty = g.data.yaw[hd.s0] / 32768 * Math.PI;
+      const target = [g.data.pos[hd.s0 * 3] + Math.sin(ty) * 70, g.data.pos[hd.s0 * 3 + 1], g.data.pos[hd.s0 * 3 + 2] + Math.cos(ty) * 70];
+      const gun = guns[0];
+      if (gun) {
+        const from = [gun.pos[0], gun.pos[1] + 150, gun.pos[2]];
+        const dx = target[0] - from[0], dz = target[2] - from[2], dl = Math.hypot(dx, dz) || 1;
+        const lob = fly(from, [dx / dl * MOLE.throwXZ * BOMB_PACE, MOLE.throwXZ * BOMB_PACE, dz / dl * MOLE.throwXZ * BOMB_PACE],
+          { gravity: MOLE.gravity * BOMB_PACE * BOMB_PACE, minVY: -40 * BOMB_PACE, head: 50,
+          hit: (n) => (n[0] - from[0]) * dx + (n[2] - from[2]) * dz >= dl * dl });
+        const land = lob.pts[lob.pts.length - 1];
+        const walkF = Math.min(180, Math.hypot(target[0] - land[0], target[2] - land[2]) / MOLE.walk);
+        const waitF = 30;
+        b.pre = { lob: lob.pts, land, target, walkF, start: hd.t0 - (waitF + walkF + lob.pts.length - 1) * QF_PER_FRAME };
+      } else b.pre = null;
+    });
+    // Cannon defeat: TNerveCannonDamage (mole damage anim), TNerveCannonDamageDemo (down anim),
+    // cannon break anim, then TMareCork pops out; its frame 250 brings out the Shine.
+    guns.forEach((gun) => {
+      if (gun.hits.length < gun.x.hp) return;
+      const t3 = gun.hits[gun.x.hp - 1];
+      gun.downAt = t3 + MOLE.damageF * QF_PER_FRAME;
+      gun.goneAt = gun.downAt + MOLE.downF * QF_PER_FRAME;
+      gun.objectAt = t3 + MOLE.corkF * QF_PER_FRAME;
+    });
+  }
+
+  function corkTiming(g, plan) {
+    plan.cork = null;
+    const ci = objList.findIndex((it) => it[17] && it[17].cork);
+    const gun = (plan.cannons || []).find((x) => x.objectAt !== undefined);
+    if (ci < 0 || !gun) return;
+    const tr = objList[ci][17].cork;
+    let start = gun.objectAt;
+    // The shine it frees: the one nearest the cork. If the ghost touched it earlier than the
+    // estimate allows, the estimate was long; pull the pop-out earlier to match.
+    let si = -1, best = 9e6;
+    objList.forEach((it, i) => { if (/^shine/.test(it[12])) { const dd = Math.hypot(it[3] - objList[ci][3], it[5] - objList[ci][5]); if (dd < best) { best = dd; si = i; } } });
+    const times = g.pickups ? g.pickups.get(objectsKey) : null;
+    const shineFrame = (tr.shineFrame || 250) * QF_PER_FRAME;
+    if (si >= 0 && times && times[si] !== Infinity) start = Math.min(start, times[si] - shineFrame - 30 * QF_PER_FRAME);
+    plan.cork = { i: ci, start, shine: si, shineAt: start + shineFrame, track: tr, gun };
+  }
+
+  // Run once per ghost and episode, when the stage geometry is loaded (simulations need it).
+  function ensureSims(g) {
+    const plan = g.carry ? g.carry.get(objectsKey) : null;
+    if (!plan || plan.ready || !mapGroup || mapGroup.userData.id !== objectsKey.split('|')[0]) return;
+    plan.placed.forEach((holds) => holds.forEach((hd) => (hd.kind === 'fruit' ? simFruit(g, hd) : simSpring(g, hd))));
+    simBombs(g, plan);
+    corkTiming(g, plan);
+    plan.ready = true;
+  }
+
+  function samplePts(pts, t0, t) {
+    const f = Math.max(0, (t - t0) / QF_PER_FRAME), i = Math.min(pts.length - 1, Math.floor(f)), j = Math.min(pts.length - 1, i + 1), u = Math.min(1, f - i);
+    return [pts[i][0] + (pts[j][0] - pts[i][0]) * u, pts[i][1] + (pts[j][1] - pts[i][1]) * u, pts[i][2] + (pts[j][2] - pts[i][2]) * u];
+  }
+
+  // A placed carryable at time t: {held} | {pos, shrink (0 = full size, 1 = shrunk)}.
+  function carryState(node, holds, t) {
+    const b = node.userData.base;
+    let pos = b.p, shrink = 0;
+    for (let k = 0; k < holds.length; k++) {
+      const hd = holds[k];
+      if (hd.shrinkAt !== undefined && t >= hd.shrinkAt && t < hd.t0) shrink = Math.min(1, (t - hd.shrinkAt) / (SPRING.shrinkF / THROW_PACE * QF_PER_FRAME));
+      if (t < hd.t0) break;
+      if (t < hd.t1) return { held: true, shrink: 1 };
+      if (!hd.sim) return { held: true, shrink: 1 };   // not simulated yet (stage still loading)
+      pos = samplePts(hd.sim.pts, hd.t1, t);
+      shrink = hd.extendAt !== undefined ? (t < hd.extendAt ? 1 : Math.max(0, 1 - (t - hd.extendAt) / (SPRING.extendF / THROW_PACE * QF_PER_FRAME))) : 0;
+    }
+    return { pos, shrink };
+  }
+
+  // A spawned bomb at time t: hidden, flying from the mole, walking, held, thrown, exploding.
+  function bombState(b, t) {
+    const hd = b.hold;
+    if (t >= hd.t0 && t < hd.t1) return { held: true };
+    if (t >= hd.t1) {
+      if (!hd.sim) return { held: true };
+      if (t < hd.endT) return { pos: samplePts(hd.sim.pts, hd.t1, t) };
+      const boom = (t - hd.endT) / (0.5 * QF_PER_SECOND);
+      return boom < 1 ? { boom, pos: hd.sim.pts[hd.sim.pts.length - 1] } : null;
+    }
+    const pre = b.pre;
+    if (!pre || t < pre.start) return null;
+    const lobEnd = pre.start + (pre.lob.length - 1) * QF_PER_FRAME;
+    if (t < lobEnd) return { walking: true, pos: samplePts(pre.lob, pre.start, t), scale: Math.min(1, 0.2 + (t - pre.start) / (8 * QF_PER_FRAME)) };
+    const u = Math.min(1, (t - lobEnd) / (Math.max(1, pre.walkF) * QF_PER_FRAME));
+    const p = pre.land.map((v, k) => v + (pre.target[k] - v) * u);
+    // Walking to Mario; for the last stretch it has been stopped by his water.
+    return { pos: p, walking: u < 1, yaw: Math.atan2(pre.target[0] - pre.land[0], pre.target[2] - pre.land[2]) };
+  }
+
+  const _m4 = new THREE.Matrix4(), _m4b = new THREE.Matrix4();
+  function trackMatrix(arr, out) {
+    const e = arr;
+    out.set(e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10], e[11], 0, 0, 0, 1);
+    return out;
+  }
+
+  // ---------------------------------------------------------------- wires
+  const wireMat = new THREE.MeshBasicMaterial({ color: 0x2b2b2b });
+  const wireGeo = new THREE.CylinderGeometry(5, 5, 1, 6, 1, true);
+  function makeWire(group, w) {
+    const a = new THREE.Mesh(wireGeo, wireMat), b = new THREE.Mesh(wireGeo, wireMat);
+    group.add(a, b);
+    const wire = { p0: new THREE.Vector3(w[0], w[1], w[2]), p1: new THREE.Vector3(w[3], w[4], w[5]), a, b };
+    setWire(wire, null);
+    return wire;
+  }
+  const _up = new THREE.Vector3(0, 1, 0), _d = new THREE.Vector3();
+  function placeSegment(mesh, p, q) {
+    _d.subVectors(q, p);
+    const len = _d.length() || 1;
+    mesh.position.addVectors(p, q).multiplyScalar(0.5);
+    mesh.quaternion.setFromUnitVectors(_up, _d.multiplyScalar(1 / len));
+    mesh.scale.set(1, len, 1);
+  }
+  function setWire(wire, mid) {
+    const m = mid || wire.p0.clone().lerp(wire.p1, 0.5);
+    placeSegment(wire.a, wire.p0, m);
+    placeSegment(wire.b, m, wire.p1);
+  }
+  // Sag a wire under the leading ghost while it is in a rope animation.
+  function updateWires(g, s) {
+    if (!wireMeshes.length) return;
+    const name = g && g.marker.userData.rig ? (g.marker.userData.rig.anim || '') : '';
+    let target = null, best = 250, hit = null;
+    if (/^rope_/.test(name)) {
+      const hanging = /^rope_(h|sw|wh)/.test(name);
+      const m = new THREE.Vector3(s.x, s.y + (hanging ? 165 : 0), s.z);
+      wireMeshes.forEach((w) => {
+        const seg = w.p1.clone().sub(w.p0);
+        const u = Math.min(1, Math.max(0, m.clone().sub(w.p0).dot(seg) / seg.lengthSq()));
+        const c = w.p0.clone().addScaledVector(seg, u);
+        const dist = Math.hypot(c.x - m.x, c.z - m.z);
+        if (dist < best && Math.abs(c.y - m.y) < 400) { best = dist; target = w; hit = new THREE.Vector3(c.x, Math.min(c.y, m.y), c.z); }
+      });
+    }
+    wireMeshes.forEach((w) => setWire(w, w === target ? hit : null));
+  }
+
+  // First time each pickup is touched by a ghost: Mario's damage cylinder against the item's
+  // hit cylinder (radius/height from the decomp's TMapObjHitInfo), only while the ghost is in
+  // this episode's area. Moonshine doesn't record pickups, so this is inferred from position.
+  function computePickups(g) {
+    if (!objList.length) return;
+    g.pickups = g.pickups || new Map();
+    if (g.pickups.has(objectsKey)) return;
+    const [a, e] = objectsKey.split('|')[1].split(':').map(Number);
+    const out = new Float64Array(objList.length).fill(Infinity);
+    const idx = [];
+    objList.forEach((it, i) => { if (it[12]) idx.push(i); });
+    const d = g.data;
+    for (let s = 0; s < d.qf.length; s++) {
+      const r = d.segments[d.segIndex[s]].route;
+      if (r.area !== a || r.episode !== e) continue;
+      const mx = d.pos[s * 3], my = d.pos[s * 3 + 1], mz = d.pos[s * 3 + 2];
+      for (const i of idx) {
+        if (out[i] !== Infinity) continue;
+        const it = objList[i];
+        const hr = it[13] || 50, hh = it[14] || 80;
+        const dx = mx - it[3], dz = mz - it[5];
+        if (dx * dx + dz * dz > (hr + MARIO_HIT_RADIUS) ** 2) continue;
+        if (my < it[4] + hh && my + MARIO_HIT_HEIGHT > it[4] - hh * 0.5) out[i] = d.qf[s];
+      }
+    }
+    g.pickups.set(objectsKey, out);
+  }
+
+  // Show or hide pickups for the leading ghost at time t, spin coins, and count what it has.
+  const boomMat = new THREE.MeshBasicMaterial({ color: 0xffa23a, transparent: true, depthWrite: false });
+  const boomGeo = new THREE.SphereGeometry(1, 16, 12);
+  function placeHeld(node, rig) {
+    // Same as Moonshine and TTakeActor: the held actor uses Mario's right-hand joint matrix.
+    node.matrixAutoUpdate = false;
+    node.matrix.copy(rig.handR.matrixWorld);
+    node.matrixWorldNeedsUpdate = true;
+    node.visible = true;
+  }
+  function placeFree(node, pos, r, s) {
+    node.matrixAutoUpdate = true;
+    node.position.set(pos[0], pos[1], pos[2]);
+    node.rotation.set(r[0], r[1], r[2], 'ZYX');
+    node.scale.set(s[0], s[1], s[2]);
+  }
+
+  function dynNodes(plan) {
+    if (plan.nodes && plan.nodes.group === objectsGroup) return plan.nodes.list;
+    const list = plan.dyn.map((b) => {
+      const proto = objProtos[b.def.m];
+      const node = proto ? proto.clone(true) : new THREE.Mesh(new THREE.SphereGeometry(40, 10, 8), boomMat);
+      // Walking bomb, and the stopped (sprayed) one Mario carries and throws.
+      const wet = objProtos[b.def.sprayed] ? objProtos[b.def.sprayed].clone(true) : null;
+      const boom = new THREE.Mesh(boomGeo, boomMat.clone());
+      boom.visible = false;
+      objectsGroup.add(node, boom);
+      if (wet) { wet.visible = false; objectsGroup.add(wet); }
+      return { node: wet || node, walker: node, wet, boom };
+    });
+    plan.nodes = { group: objectsGroup, list };
+    return list;
+  }
+
+  // Show or hide pickups for the leading ghost at time t, spin coins, move carried and thrown
+  // actors, and count what it has.
+  function updateObjects() {
+    if (!objectsGroup) return null;
+    const g = ghosts.find((x) => x.visible);
+    const times = g && g.pickups ? g.pickups.get(objectsKey) : null;
+    const counts = { coin: 0, coin_blue: 0, coin_red: 0, shine: 0, '1up': 0 };
+    const spin = (t / QF_PER_SECOND) * Math.PI * 1.5;
+    const plan = g && g.carry ? g.carry.get(objectsKey) : null;
+    const rig = g ? g.marker.userData.rig : null;
+    const handOk = rig && rig.handR && g.marker.visible;
+    if (rig) g.marker.updateMatrixWorld(true);
+    const cork = plan && plan.cork;
+    objNodes.forEach((node, i) => {
+      const b = node.userData.base;
+      if (node.userData.carry) {
+        const holds = plan ? plan.placed.get(i) : null;
+        const st = holds ? carryState(node, holds, t) : { pos: b.p, shrink: 0 };
+        const vars = node.userData.variants;
+        if (vars) { const k = Math.round(st.shrink * (vars.length - 1)); vars.forEach((v, j) => { v.visible = j === k; }); }
+        if (st.held && handOk) placeHeld(node, rig);
+        else { placeFree(node, st.pos || b.p, b.r, b.s); node.visible = !st.held; }
+        return;
+      }
+      if (node.userData.mole) {
+        const gun = plan && plan.cannons ? plan.cannons.find((x) => x.i === i) : null;
+        node.userData.mole.visible = !(gun && gun.goneAt !== undefined && t >= gun.goneAt);
+      }
+      // The cork's pop-out (and the cannon riding on it) once the mole is beaten.
+      if (cork && (i === cork.i || (cork.gun && i === cork.gun.i))) {
+        const tr = cork.track, f = (t - cork.start) / QF_PER_FRAME;
+        if (f >= 0) {
+          const k = Math.min(tr.cork.length - 1, Math.floor(f / tr.step));
+          const P = node.userData.baseMatrix;
+          if (i === cork.i) _m4.multiplyMatrices(P, trackMatrix(tr.cork[k], _m4b));
+          else {
+            const C = objNodes[cork.i].userData.baseMatrix;
+            _m4.multiplyMatrices(C, trackMatrix(tr.carry[k], _m4b)).multiply(_m4b.copy(C).invert()).multiply(P);
+          }
+          node.matrixAutoUpdate = false;
+          node.matrix.copy(_m4);
+          node.matrixWorldNeedsUpdate = true;
+          node.visible = f < (tr.cork.length - 1) * tr.step;
+        } else {
+          placeFree(node, b.p, b.r, b.s);
+          node.visible = true;
+        }
+        return;
+      }
+      const pick = node.userData.pick;
+      if (!pick) return;
+      if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
+      const got = times && t >= times[i];
+      node.visible = !got;
+      if (got) { const k = pick.replace(/_hidden$/, ''); if (k in counts) counts[k]++; }
+      if (node.userData.spin) node.rotation.y = node.userData.baseRotY + spin;
+    });
+    if (plan && plan.dyn.length) {
+      const nodes = dynNodes(plan);
+      plan.dyn.forEach((bomb, k) => {
+        const n = nodes[k], boom = n.boom;
+        const st = bombState(bomb, t);
+        boom.visible = false;
+        n.walker.visible = false;
+        if (n.wet) n.wet.visible = false;
+        if (!st) return;
+        const node = st.walking || !n.wet ? n.walker : n.wet;
+        if (st.held) { if (handOk) placeHeld(node, rig); else node.visible = false; return; }
+        if (st.boom !== undefined) {
+          node.visible = false;
+          const R = ((bomb.def.prm && bomb.def.prm.BombRange) || 150) * (bomb.hold.hitCannon ? 2 : 1.4);
+          boom.visible = true;
+          boom.position.set(st.pos[0], st.pos[1] + 60, st.pos[2]);
+          boom.scale.setScalar(Math.max(1, R * Math.min(1, st.boom * 3)));
+          boom.material.opacity = 0.85 * (1 - st.boom);
+          return;
+        }
+        const sc = st.scale || 1;
+        placeFree(node, st.pos, [0, st.yaw || 0, 0], [sc, sc, sc]);
+        node.visible = true;
+      });
+    }
+    if (g) updateWires(g, ghostSampleAt(g.data, t)); else updateWires(null, null);
+    return times ? counts : null;
+  }
+
+  // Stage for a route (area, episode). Moonshine records Sunshine's own area IDs, which index
+  // the game's stage table, so this is an exact match.
+  function mapForRoute(route) {
+    return maps.find((m) => m.routes?.some(([a, e]) => a === route.area && e === route.episode))
+      || maps.find((m) => m.routes?.some(([a]) => a === route.area));
+  }
+
+  // While playing, switch stages when the leading ghost moves into another area (a secret, say).
+  let autoStageRoute = '';
+  function followGhostStage() {
+    if (!$('optAutoStage').checked) return;
+    const g = ghosts.find((x) => x.visible);
+    if (!g) return;
+    const s = ghostSampleAt(g.data, t);
+    const seg = g.data.segments[g.data.segIndex[s.i]];
+    if (!seg) return;
+    const key = seg.route.area + ':' + seg.route.episode;
+    if (key === autoStageRoute) return;
+    autoStageRoute = key;
+    const m = mapForRoute(seg.route);
+    if (m) loadMap(m.id, key);
+  }
+
+  function setWireframe(on) { mapMaterials.forEach((m) => { m.wireframe = on; }); }
+
+  function updateMapNotice() {
+    const entry = maps.find((m) => m.id === $('mapSelect').value);
+    const g = ghosts.find((x) => x.visible);
+    if (!g || !entry) { showNotice(''); return; }
+    const s = ghostSampleAt(g.data, t);
+    const seg = g.data.segments[g.data.segIndex[s.i]] || g.data.segments[0];
+    const home = mapForRoute(seg.route);
+    if (home && home.id !== entry.id && !$('optAutoStage').checked) {
+      showNotice(`${seg.routeLabel} plays on ${home.name}. Pick it from the Stage menu.`);
+    } else if (!home) {
+      showNotice(`This viewer has no stage for ${seg.routeLabel} yet.`);
+    } else showNotice('');
+  }
+
+  // ---------------------------------------------------------------- ghosts
+  const ghosts = [];
+  let duration = 0;   // QF, longest loaded ghost
+  let t = 0;          // QF from start
+  let playing = false;
+
+  // Mario + FLUDD model, baked in a standing pose (tools/build_mario.py). Ghosts show a simple
+  // stand-in until it has loaded, then swap to the real model.
+  let marioModel = null;
+  // Mario + FLUDD from the game, skinned to his 29-joint skeleton, plus his animation set
+  // (tools/build_mario_iso.py). Ghosts show a stand-in until both have loaded.
+  function loadMarioModel() {
+    const anims = fetch('models/mario_bck.json').then((r) => r.json());
+    fetchBinary('models/mario.glb.b64.txt').then((buf) => new Promise((resolve, reject) => new THREE.GLTFLoader().parse(buf, '', resolve, reject)))
+      .then(async (gltf) => {
+        MarioRig.setData(await anims);
+        marioModel = gltf.scene;
+        marioModel.traverse((o) => {
+          if (o.isMesh) { o.frustumCulled = false; [].concat(o.material).forEach((m) => { m.side = THREE.DoubleSide; }); }
+        });
+        ghosts.forEach((g) => setMarkerBody(g.marker));
+        update();
+      }).catch(() => { /* keep the stand-in figure */ });
+  }
+
+  function setMarkerBody(group) {
+    const old = group.getObjectByName('body');
+    if (old) group.remove(old);
+    let body;
+    if (marioModel) {
+      body = THREE.SkeletonUtils.clone(marioModel);
+      group.userData.rig = MarioRig.attach(body);
+    } else {
+      body = new THREE.Group();
+      const mat = new THREE.MeshLambertMaterial({ color: group.userData.color, transparent: true, opacity: 0.85 });
+      const torso = new THREE.Mesh(new THREE.CylinderGeometry(38, 46, 120, 16), mat);
+      torso.position.y = 60;
+      const head = new THREE.Mesh(new THREE.SphereGeometry(42, 16, 12), mat);
+      head.position.y = 150;
+      body.add(torso, head);
+    }
+    body.name = 'body';
+    group.add(body);
+  }
+
+  function makeMarker(color) {
+    const group = new THREE.Group();
+    group.userData.color = color;
+    // Coloured ring at the feet tells ghosts apart.
+    const ring = new THREE.Mesh(new THREE.RingGeometry(60, 78, 32), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.75, depthWrite: false }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 2;
+    group.add(ring);
+    setMarkerBody(group);
+    return group;
+  }
+
+  // ---------------------------------------------------------------- FLUDD (Moonshine V6 ghosts)
+  // Model parts by node-name prefix (three.js turns the ':' separator into '_').
+  const NOZZLE_PARTS = { 1: 'nozzle_rocket_wg', 4: 'nozzle_hover_wg', 5: 'nozzle_back_wg' };
+
+  // FLUDD carries one secondary nozzle (Hover, Rocket or Turbo). A ghost only reveals which one
+  // when it is selected, so show the most recent one used, or the first one the run uses.
+  function buildSecondaryTimeline(data) {
+    const inp = data.inputs;
+    if (!inp || !inp.hasFludd) return null;
+    const out = new Uint8Array(inp.count);
+    let first = 4;
+    for (let i = 0; i < inp.count; i++) { const n = inp.fluddMode[i] & 7; if ((inp.fluddMode[i] & 8) && NOZZLE_PARTS[n]) { first = n; break; } }
+    let cur = first;
+    for (let i = 0; i < inp.count; i++) {
+      const n = inp.fluddMode[i] & 7;
+      if ((inp.fluddMode[i] & 8) && NOZZLE_PARTS[n]) cur = n;
+      out[i] = cur;
+    }
+    return out;
+  }
+
+  // FLUDD water as the game emits it (TNozzleBase::emitCommon with mario/watergun/nozzle*.prm):
+  // each frame the nozzle shoots particles at the recorded power along the recorded direction,
+  // with the nozzle's direction and power jitter and size; they fall with the nozzle's gravity and
+  // burst into a splash where they reach the stage. Drawn as soft translucent water blobs.
+  const SPRAY_KIND = {   // per nozzle: particles per frame, dir jitter, power jitter, size, size jitter, gravity, streams
+    0: { n: 8, dir: 0.08, pow: 0.8, size: 45, sizeJ: 0.3, g: 0.3, life: 40, jets: [0] },
+    2: { n: 8, dir: 0.08, pow: 0.8, size: 45, sizeJ: 0.3, g: 0.3, life: 40, jets: [0] },
+    4: { n: 5, dir: 0.03, pow: 0.5, size: 40, sizeJ: 0.1, g: 0.3, life: 24, jets: [-28, 28] },
+    1: { n: 6, dir: 0.25, pow: 3, size: 30, sizeJ: 0.2, g: 0.3, life: 18, jets: [0] },
+    5: { n: 4, dir: 0.06, pow: 1, size: 40, sizeJ: 0.1, g: 0.3, life: 20, jets: [-22, 22] },
+  };
+  const SPRAY_MAX = 1400;
+  function makeWaterStream(blob = 85, max = SPRAY_MAX) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 3), 3));
+    geo.setAttribute('size', new THREE.BufferAttribute(new Float32Array(max), 1));
+    geo.setAttribute('alpha', new THREE.BufferAttribute(new Float32Array(max), 1));
+    // Soft round water blob (white core, pale blue rim, a small highlight).
+    const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+    const cx = cv.getContext('2d');
+    const gr = cx.createRadialGradient(28, 28, 2, 32, 32, 31);
+    gr.addColorStop(0, 'rgba(255,255,255,0.95)'); gr.addColorStop(0.25, 'rgba(235,248,255,0.8)');
+    gr.addColorStop(0.75, 'rgba(160,215,255,0.55)'); gr.addColorStop(1, 'rgba(140,200,255,0)');
+    cx.fillStyle = gr; cx.beginPath(); cx.arc(32, 32, 31, 0, Math.PI * 2); cx.fill();
+    const mat = new THREE.PointsMaterial({ size: blob, map: new THREE.CanvasTexture(cv), transparent: true, depthWrite: false, sizeAttenuation: true, opacity: 0.85 });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    pts.visible = false;
+    pts.renderOrder = 2;
+    return pts;
+  }
+  function sprayRand(e, k) {   // deterministic per particle, so scrubbing shows the same water
+    let x = (e * 374761393 + k * 668265263) | 0;
+    x = (x ^ (x >>> 13)) * 1274126177 | 0;
+    return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+  }
+  // Age (in frames) at which an emitted particle reaches the stage, from a few ray casts along its arc.
+  function sprayHitAge(p0, v, g, life) {
+    let prev = p0;
+    for (let a = 2; a <= life; a += 2) {
+      const n = [p0[0] + v[0] * a, p0[1] + v[1] * a - 0.5 * g * a * a, p0[2] + v[2] * a];
+      const h = stageSegment(prev, n);
+      if (h) return a - 2 + 2 * h.f;
+      prev = n;
+    }
+    return life;
+  }
+  function updateSpray(g, s) {
+    const w = g.water, d = g.data;
+    const pos = w.geometry.attributes.position.array, size = w.geometry.attributes.size.array, alpha = w.geometry.attributes.alpha.array;
+    const F = t / QF_PER_FRAME, f0 = Math.floor(F);
+    g.sprayHits = g.sprayHits || new Map();
+    const colKey = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
+    if (g.sprayHits.mapId !== colKey) { g.sprayHits.clear(); g.sprayHits.mapId = colKey; }
+    let n = 0;
+    const put = (x, y, z, sz, al) => { if (n >= SPRAY_MAX) return; pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z; size[n] = sz; alpha[n] = al; n++; };
+    for (let e = f0; e > f0 - 41 && e >= 0; e--) {
+      const fe = ghostFluddAt(d, e * QF_PER_FRAME);
+      if (!fe || !fe.present || !fe.spraying || !fe.power) continue;
+      const K = SPRAY_KIND[fe.nozzle] || SPRAY_KIND[0];
+      const age = F - e;
+      if (burstFrames(g).some((b) => e >= b && e <= b + 2)) continue;   // a spam spray is drawn as its burst
+      const bs = burstFrames(g);
+      if (bs.some((b) => e >= b && e <= b + 2)) continue;   // a spam spray is drawn as its burst
+      if (age > K.life + 8) continue;
+      const se = ghostSampleAt(d, e * QF_PER_FRAME);
+      const cp = Math.cos(fe.pitch);
+      const dir = [Math.sin(fe.yaw) * cp, Math.sin(fe.pitch), Math.cos(fe.yaw) * cp];
+      const side = [Math.cos(fe.yaw), 0, -Math.sin(fe.yaw)];
+      K.jets.forEach((off, ji) => {
+        const p0 = [se.x + fe.offset[0] + side[0] * off, se.y + fe.offset[1], se.z + fe.offset[2] + side[2] * off];
+        const key = e * 4 + ji;
+        let hit = g.sprayHits.get(key);
+        if (hit === undefined) { hit = sprayHitAge(p0, dir.map((c) => c * fe.power), K.g, K.life); g.sprayHits.set(key, hit); }
+        for (let k = 0; k < K.n; k++) {
+          const r1 = sprayRand(key, k * 4), r2 = sprayRand(key, k * 4 + 1), r3 = sprayRand(key, k * 4 + 2), r4 = sprayRand(key, k * 4 + 3);
+          const pw = fe.power + (r1 - 0.5) * 2 * K.pow;
+          const th = r2 * Math.PI * 2, jr = K.dir * Math.sqrt(r3);
+          // jitter the direction inside a small cone
+          const ux = dir[0] + side[0] * Math.cos(th) * jr, uy = dir[1] + Math.sin(th) * jr, uz = dir[2] + side[2] * Math.cos(th) * jr;
+          const a = age - k / K.n;
+          if (a < 0) continue;
+          const sz = K.size * (1 + (r4 - 0.5) * 2 * K.sizeJ);
+          const myHit = hit * (pw / fe.power);
+          if (a < myHit) {
+            put(p0[0] + ux * pw * a, p0[1] + uy * pw * a - 0.5 * K.g * a * a, p0[2] + uz * pw * a, sz * (0.6 + 0.4 * Math.min(1, a / 3)), 0.55);
+          } else if (a < myHit + 8 && hit < K.life) {   // splash: droplets bouncing out of the impact
+            const b = a - myHit, hx = p0[0] + ux * pw * myHit, hy = p0[1] + uy * pw * myHit - 0.5 * K.g * myHit * myHit, hz = p0[2] + uz * pw * myHit;
+            const sp = 6 + r1 * 6, ang = th + k;
+            put(hx + Math.cos(ang) * sp * b, hy + 12 * b - 1.2 * b * b + 10, hz + Math.sin(ang) * sp * b, sz * (0.7 + b * 0.12), 0.5 * (1 - b / 8));
+          }
+        }
+      });
+    }
+    w.geometry.setDrawRange(0, n);
+    w.geometry.attributes.position.needsUpdate = true;
+    w.geometry.attributes.size.needsUpdate = true;
+    w.geometry.attributes.alpha.needsUpdate = true;
+    w.visible = n > 0;    updateBurst(g, F);
+  }
+
+  // Spam spray (Jump pressed while digital R is fully held): FLUDD fires one big burst instead of a jet,
+  // the grounded-backflip spray. Many small droplets fly out in a wide cone from the nozzle and
+  // fall (NozzleDeformBomb.prm style burst: 127 drops, direction jitter 0.6, power 35).
+  const BURST = { n: 127, dir: 0.8, pow: 10, life: 22, g: 0.3 };
+  function burstFrames(g) {
+    if (g.bursts) return g.bursts;
+    const inp = g.data.inputs, out = [];
+    if (inp && inp.hasFludd) {
+      let prev = 0;
+      for (let i = 0; i < inp.count; i++) {
+        // A pressed (rising edge) while digital R is held, however long R has been down.
+        const b = inp.buttons[i];
+        if ((b & 0x100) && !(prev & 0x100) && (b & 0x20)) {
+          const f = ghostFluddAt(g.data, inp.qf[i]);
+          if (f && f.present && (f.nozzle === 0 || f.nozzle === 2)) out.push(Math.round(inp.qf[i] / QF_PER_FRAME));
+        }
+        prev = b;
+      }
+    }
+    g.bursts = out;
+    return out;
+  }
+  function updateBurst(g, F) {
+    const w = g.burst, d = g.data;
+    const pos = w.geometry.attributes.position.array;
+    let n = 0;
+    burstFrames(g).forEach((e) => {
+      const age = F - e;
+      if (age < 0 || age > BURST.life) return;
+      const fe = ghostFluddAt(d, e * QF_PER_FRAME);
+      if (!fe) return;
+      const se = ghostSampleAt(d, e * QF_PER_FRAME);
+      const pw0 = fe.power || 35, cp = Math.cos(fe.pitch);
+      const dir = [Math.sin(fe.yaw) * cp, Math.sin(fe.pitch), Math.cos(fe.yaw) * cp];
+      const p0 = [se.x + fe.offset[0], se.y + fe.offset[1], se.z + fe.offset[2]];
+      for (let k = 0; k < BURST.n && n < 1600; k++) {
+        const r = [sprayRand(e, k * 5) - 0.5, sprayRand(e, k * 5 + 1) - 0.5, sprayRand(e, k * 5 + 2) - 0.5];
+        const ux = dir[0] + r[0] * 2 * BURST.dir, uy = dir[1] + r[1] * 2 * BURST.dir + 0.25, uz = dir[2] + r[2] * 2 * BURST.dir;
+        const ul = Math.hypot(ux, uy, uz) || 1;
+        const pw = pw0 * (0.45 + 0.55 * sprayRand(e, k * 5 + 3)) + (sprayRand(e, k * 5 + 4) - 0.5) * BURST.pow;
+        const a = age;
+        const x = p0[0] + ux / ul * pw * a, y = p0[1] + uy / ul * pw * a - 0.5 * BURST.g * 4 * a * a, z = p0[2] + uz / ul * pw * a;
+        pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z; n++;
+      }
+    });
+    w.geometry.setDrawRange(0, n);
+    w.geometry.attributes.position.needsUpdate = true;
+    w.material.opacity = 0.9;
+    w.visible = n > 0;
+  }
+
+  // Applies FLUDD state to a ghost's model and water stream. Returns the state for the readout.
+  function applyFludd(g, s) {
+    const f = ghostFluddAt(g.data, t);
+    const rig = g.marker.userData.rig;
+    if (rig) {
+      let secondary = 4;
+      if (g.secondary && g.data.inputs.count) {
+        const inp = g.data.inputs;
+        let lo = 0, hi = inp.count - 1;
+        while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
+        secondary = g.secondary[lo];
+      }
+      const hasFludd = !f || f.present;
+      if (rig.parts.fludd_body) {
+        rig.parts.fludd_body.visible = hasFludd;
+        // Retail backpack tilt (TWaterGun::setBaseTRMtx, as Moonshine reproduces it).
+        if (rig.chest) { g.marker.updateMatrixWorld(true); rig.parts.fludd_body.rotation.z = (Math.abs(rig.chest.matrixWorld.elements[1]) - 1) * 0.589048623; }
+      }
+      // Only the nozzle in use: Spray (and its underwater variant) or the active secondary nozzle.
+      // Ghosts without FLUDD data fall back to Spray plus the inferred secondary nozzle.
+      const active = f && f.present ? f.nozzle : null;
+      if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === null || active === 0 || active === 2);
+      Object.entries(NOZZLE_PARTS).forEach(([n, part]) => {
+        if (rig.parts[part]) rig.parts[part].visible = hasFludd && (active === null ? Number(n) === secondary : Number(n) === active);
+      });
+    }
+    if (!g.visible || s.gap) { g.water.visible = false; g.burst.visible = false; return f; }
+    updateSpray(g, s);
+    return f;
+  }
+
+  function makePath(data, color) {
+    const group = new THREE.Group();
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 });
+    const segs = new Map();
+    for (let i = 0; i < data.qf.length; i++) {
+      const s = data.segIndex[i];
+      if (!segs.has(s)) segs.set(s, []);
+      segs.get(s).push(data.pos[i * 3], data.pos[i * 3 + 1] + 20, data.pos[i * 3 + 2]);
+    }
+    segs.forEach((pts) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      group.add(new THREE.Line(g, mat));
+    });
+    return group;
+  }
+
+  function addGhost(buffer, fileName, isSample = false) {
+    let data;
+    try { data = parseSmsGhost(buffer); }
+    catch (err) { showNotice(`${fileName}: ${err.message}`); return null; }
+    const color = GHOST_COLORS[ghosts.length % GHOST_COLORS.length];
+    const g = { data, fileName, color, visible: true, isSample, marker: makeMarker(color), path: makePath(data, color),
+      secondary: buildSecondaryTimeline(data), water: makeWaterStream(), burst: makeWaterStream(30, 1600) };
+    scene.add(g.marker, g.path, g.water, g.burst);
+    g.path.visible = $('optPath').checked;
+    ghosts.push(g);
+    refreshDuration();
+    renderGhostList();
+    // Pick the stage that matches this ghost's route, if one exists.
+    const match = mapForRoute(data.segments[0].route);
+    autoStageRoute = '';
+    computePickups(g);
+    computeCarry(g);
+    const r0 = data.segments[0].route;
+    if (match && ghosts.filter((x) => !x.isSample).length <= 1) loadMap(match.id, r0.area + ':' + r0.episode); else updateMapNotice();
+    return g;
+  }
+
+  function removeGhost(g) {
+    scene.remove(g.marker, g.path, g.water, g.burst);
+    ghosts.splice(ghosts.indexOf(g), 1);
+    refreshDuration();
+    renderGhostList();
+    updateMapNotice();
+    if (!ghosts.some((x) => x.visible)) frameView();
+  }
+
+  function refreshDuration() {
+    duration = ghosts.reduce((m, g) => Math.max(m, g.data.qf[g.data.qf.length - 1]), 0);
+    t = Math.min(t, duration);
+    update();
+  }
+
+  function fmtDate(unix) {
+    if (!unix) return '';
+    try { return new Date(unix * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); } catch { return ''; }
+  }
+
+  function renderGhostList() {
+    const list = $('ghostList');
+    list.textContent = '';
+    if (!ghosts.length) {
+      const p = document.createElement('p');
+      p.className = 'empty';
+      p.textContent = 'No ghosts loaded. Add a .smsghost file exported from Moonshine. Exports are in the share folder on your SD card.';
+      list.append(p);
+      return;
+    }
+    ghosts.forEach((g) => {
+      const h = g.data.header;
+      const row = document.createElement('div');
+      row.className = 'ghost' + (g.visible ? '' : ' off');
+      const sw = document.createElement('span');
+      sw.className = 'swatch';
+      sw.style.background = g.color;
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = h.name || g.fileName;
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const vis = document.createElement('button');
+      vis.textContent = g.visible ? 'Hide' : 'Show';
+      vis.setAttribute('aria-label', `${g.visible ? 'Hide' : 'Show'} ${h.name}`);
+      vis.onclick = () => { g.visible = !g.visible; g.marker.visible = g.visible; g.path.visible = g.visible && $('optPath').checked; renderGhostList(); updateMapNotice(); };
+      const rm = document.createElement('button');
+      rm.textContent = 'Remove';
+      rm.setAttribute('aria-label', `Remove ${h.name}`);
+      rm.onclick = () => removeGhost(g);
+      actions.append(vis, rm);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const parts = [
+        h.routeLabel,
+        ghostFormatTime(h.resultQf !== 0xffffffff ? h.resultQf - h.startQf : h.durationQf),
+        h.author ? `by ${h.author}` : '',
+        h.region,
+        fmtDate(h.created),
+      ].filter(Boolean);
+      parts.forEach((p) => { const s = document.createElement('span'); s.textContent = p; meta.append(s); });
+      if (g.isSample) { const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = 'Sample'; meta.append(tag); }
+      if (h.runFlags & 0x20) { const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = 'TAS'; meta.append(tag); }
+      row.append(sw, name, actions, meta);
+      g.data.warnings.forEach((w) => { const d = document.createElement('div'); d.className = 'warn'; d.textContent = w; row.append(d); });
+      list.append(row);
+    });
+  }
+
+  // ---------------------------------------------------------------- camera
+  let cameraMode = 'follow';
+  const followOffset = new THREE.Vector3(0, 420, -760);
+  const tmp = new THREE.Vector3();
+
+  function setCameraMode(mode) {
+    cameraMode = mode;
+    ['Follow', 'Free', 'Top'].forEach((m) => $('cam' + m).setAttribute('aria-pressed', String(mode === m.toLowerCase())));
+    if (mode === 'top') {
+      const c = leadPosition() || (mapBounds ? mapBounds.getCenter(new THREE.Vector3()) : new THREE.Vector3());
+      const size = mapBounds ? mapBounds.getSize(new THREE.Vector3()) : new THREE.Vector3(8000, 0, 8000);
+      camera.position.set(c.x, c.y + Math.max(size.x, size.z) * 0.9 + 2000, c.z + 1);
+      controls.target.copy(c);
+    }
+    if (mode === 'follow') {
+      const p = leadPosition();
+      if (p) { controls.target.copy(p); camera.position.copy(p).add(followOffset); }
+    }
+  }
+
+  function frameView() {
+    const box = mapBounds || new THREE.Box3(new THREE.Vector3(-3000, 0, -3000), new THREE.Vector3(3000, 500, 3000));
+    const c = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3()).length();
+    controls.target.copy(c);
+    camera.position.set(c.x + size * 0.35, c.y + size * 0.45, c.z + size * 0.55);
+  }
+
+  function leadPosition() {
+    const g = ghosts.find((x) => x.visible);
+    return g ? g.marker.position.clone().add(tmp.set(0, 100, 0)) : null;
+  }
+
+  // ---------------------------------------------------------------- playback
+
+  window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
+  window.ghostViewerDebug = () => ({ objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  function update() {
+    let hud = null;
+    ghosts.forEach((g) => { if (g.visible || ghosts.length === 1) ensureSims(g); });
+    ghosts.forEach((g) => {
+      const s = ghostSampleAt(g.data, t);
+      g.marker.position.set(s.x, s.y, s.z);
+      g.marker.rotation.y = (s.yaw / 32768) * Math.PI;
+      g.marker.visible = g.visible && !s.gap;
+      const rig = g.marker.userData.rig;
+      if (rig) { const a = ghostAnimAt(g.data, t); MarioRig.pose(rig, a.id, a.yoshi, a.phase); }
+      const fludd = applyFludd(g, s);
+      if (!hud && g.visible) {
+        // Horizontal speed in units per frame over the surrounding sample pair.
+        const d = g.data, i = Math.min(s.i, d.qf.length - 2);
+        const dq = d.qf[i + 1] - d.qf[i] || 1;
+        const hs = Math.hypot(d.pos[i * 3 + 3] - d.pos[i * 3], d.pos[i * 3 + 5] - d.pos[i * 3 + 2]) / dq * QF_PER_FRAME;
+        hud = { s, hs, fludd, anim: d.anim[s.i], yoshi: d.yoshi[s.i], seg: d.segments[d.segIndex[s.i]], name: d.header.name, gap: s.gap };
+      }
+    });
+    const hudEl = $('hud');
+    if (hud) {
+      const yawDeg = (((hud.s.yaw % 65536) + 65536) % 65536) / 65536 * 360;
+      hudEl.innerHTML = '';
+      const rows = [['X', hud.s.x.toFixed(2)], ['Y', hud.s.y.toFixed(2)], ['Z', hud.s.z.toFixed(2)],
+        ['Yaw', `${Math.round(hud.s.yaw)} (${yawDeg.toFixed(1)}°)`], ['HSpd', hud.hs.toFixed(2)],
+        ['Anim', hud.yoshi ? `riding Yoshi (0x${hud.anim.toString(16).toUpperCase()})` : `${(typeof MARIO_ANIM_NAMES !== 'undefined' && MARIO_ANIM_NAMES[hud.anim]) || 'unnamed'} (0x${hud.anim.toString(16).toUpperCase()})`], ['Area', hud.gap ? 'loading' : hud.seg.routeLabel]];
+      if (hud.fludd) rows.splice(6, 0, ['FLUDD', !hud.fludd.present ? 'none' : `${hud.fludd.nozzleName}${hud.fludd.spraying ? ` · spraying, power ${hud.fludd.power}` : ''}`]);
+      rows.forEach(([k, v]) => { const d = document.createElement('div'); const b = document.createElement('b'); b.textContent = k; d.append(b, ' ' + v); hudEl.append(d); });
+      hudEl.hidden = false;
+    } else hudEl.hidden = true;
+
+    updateInputDisplay();
+    followGhostStage();
+    const counts = updateObjects();
+    if (counts && hud) {
+      const parts = [];
+      if (counts.coin) parts.push(`${counts.coin} coin${counts.coin === 1 ? '' : 's'}`);
+      if (counts.coin_red) parts.push(`${counts.coin_red} red`);
+      if (counts.coin_blue) parts.push(`${counts.coin_blue} blue`);
+      if (counts['1up']) parts.push(`${counts['1up']} 1-up`);
+      if (counts.shine) parts.push(`${counts.shine} shine`);
+      const d = document.createElement('div'); const b = document.createElement('b'); b.textContent = 'Got';
+      d.append(b, ' ' + (parts.join(', ') || 'nothing yet'));
+      $('hud').append(d);
+    }
+    $('clockNow').textContent = ghostFormatTime(Math.round(t));
+    $('clockSub').textContent = `frame ${Math.floor(t / QF_PER_FRAME)} · ${ghostFormatTime(duration)} total`;
+    $('scrub').max = String(Math.max(1, Math.round(duration)));
+    $('scrub').value = String(Math.round(t));
+  }
+
+  // Controller input display (layout after a common SMS stream overlay), from the leading
+  // ghost's recorded inputs. GameCube pad bits: d-pad 0x1-0x8, Z 0x10, R 0x20, L 0x40, A 0x100,
+  // B 0x200, X 0x400, Y 0x800, Start 0x1000.
+  const IN_BITS = { in_A: 0x100, in_B: 0x200, in_X: 0x400, in_Y: 0x800, in_Z: 0x10, in_S: 0x1000, in_Dl: 0x1, in_Dr: 0x2, in_Dd: 0x4, in_Du: 0x8 };
+  function updateInputDisplay() {
+    const el = $('inputDisplay');
+    const g = ghosts.find((x) => x.visible);
+    const inp = g && g.data.inputs;
+    const onStage = $('inputsWhere').value === 'stage';
+    const has = !!(inp && inp.count);
+    const home = onStage ? $('inputsStage') : $('inputsBox');
+    if (el.parentNode !== home) home.prepend(el);
+    $('inputsBox').hidden = !$('optInputs').checked || (onStage);
+    $('inputsStage').hidden = !$('optInputs').checked || !onStage || !has;
+    if (has) el.removeAttribute('hidden'); else el.setAttribute('hidden', '');
+    $('inputsNone').hidden = has;
+    $('inputsNone').textContent = g ? 'This ghost has no recorded inputs.' : 'Add a ghost to see its inputs.';
+    if (!has) return;
+    let lo = 0, hi = inp.count - 1;
+    if (t < inp.qf[0]) lo = -1;
+    else while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
+    const b = lo < 0 ? 0 : inp.buttons[lo];
+    const sx = lo < 0 ? 0 : inp.stick[lo * 2], sy = lo < 0 ? 0 : inp.stick[lo * 2 + 1];
+    const cx = lo < 0 || !inp.cstick ? 0 : inp.cstick[lo * 2], cy = lo < 0 || !inp.cstick ? 0 : inp.cstick[lo * 2 + 1];
+    const tl = lo < 0 || !inp.trig ? 0 : inp.trig[lo * 2], tr = lo < 0 || !inp.trig ? 0 : inp.trig[lo * 2 + 1];
+    Object.entries(IN_BITS).forEach(([id, bit]) => $(id).classList.toggle('on', !!(b & bit)));
+    const clamp = (v) => Math.max(-1, Math.min(1, v / 100));
+    $('in_main').setAttribute('cx', 67 + clamp(sx) * 28); $('in_main').setAttribute('cy', 92 - clamp(sy) * 28);
+    $('in_c').setAttribute('cx', 182 + clamp(cx) * 24); $('in_c').setAttribute('cy', 92 - clamp(cy) * 24);
+    const trig = (id, v, digital) => $(id).setAttribute('width', digital ? 108 : Math.min(108, 108 * v / 200));
+    trig('in_Lf', tl, b & 0x40); trig('in_Rf', tr, b & 0x20);
+  }
+  (() => {
+    let saved = null;
+    try { saved = localStorage.getItem('ghostViewer.inputColor'); } catch (e) { /* storage unavailable */ }
+    const set = (c) => { $('inputDisplay').style.setProperty('--in', c); };
+    if (saved) { $('inputColor').value = saved; set(saved); }
+    $('inputColor').addEventListener('input', (e) => { set(e.target.value); try { localStorage.setItem('ghostViewer.inputColor', e.target.value); } catch (err) { /* ignore */ } });
+    $('optInputs').addEventListener('change', () => updateInputDisplay());
+    try { const w = localStorage.getItem('ghostViewer.inputsWhere'); if (w) $('inputsWhere').value = w; } catch (e) { /* storage unavailable */ }
+    $('inputsWhere').addEventListener('change', (e) => { try { localStorage.setItem('ghostViewer.inputsWhere', e.target.value); } catch (err) { /* ignore */ } updateInputDisplay(); });
+    updateInputDisplay();
+  })();
+
+  function setPlaying(on) {
+    playing = on && duration > 0;
+    if (playing && t >= duration) t = 0;
+    $('play').textContent = playing ? 'Pause' : 'Play';
+    $('play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  }
+
+  function step(frames) {
+    setPlaying(false);
+    t = Math.max(0, Math.min(duration, Math.round(t / QF_PER_FRAME + frames) * QF_PER_FRAME));
+    update();
+  }
+
+  // Playback speed: a logarithmic slider (1/16x to 8x, snapping to 1x near the middle) and a box
+  // next to it where any speed from 0.01x to 32x can be typed.
+  let speedValue = 1;
+  const SPEED_MIN = 0.01, SPEED_MAX = 32;
+  function playbackSpeed() { return speedValue; }
+  function fmtSpeed(v) { return (v >= 1 ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000) + '\u00d7'; }
+  function setSpeed(v, fromSlider) {
+    speedValue = Math.min(SPEED_MAX, Math.max(SPEED_MIN, v));
+    if (!fromSlider) $('speed').value = String(Math.min(3, Math.max(-4, Math.log2(speedValue))));
+    if (document.activeElement !== $('speedOut')) $('speedOut').value = fmtSpeed(speedValue);
+  }
+  function showSpeed() {
+    const el = $('speed');
+    if (Math.abs(Number(el.value)) < 0.08) el.value = '0';
+    setSpeed(Math.pow(2, Number(el.value)), true);
+  }
+  $('speed').addEventListener('input', showSpeed);
+  $('speed').addEventListener('dblclick', () => { $('speed').value = '0'; showSpeed(); });
+  const speedBox = $('speedOut');
+  speedBox.addEventListener('focus', () => { speedBox.value = String(Math.round(speedValue * 1000) / 1000); speedBox.select(); });
+  function commitSpeed() {
+    const v = parseFloat(speedBox.value.replace(',', '.').replace(/[x×\s]/gi, ''));
+    if (v > 0) setSpeed(v, false);
+    speedBox.value = fmtSpeed(speedValue);
+  }
+  speedBox.addEventListener('keydown', (e) => {
+    e.stopPropagation();   // typing here shouldn't trigger the player's keyboard shortcuts
+    if (e.key === 'Enter') { commitSpeed(); speedBox.blur(); }
+    if (e.key === 'Escape') { speedBox.value = fmtSpeed(speedValue); speedBox.blur(); }
+  });
+  speedBox.addEventListener('blur', commitSpeed);
+  showSpeed();
+
+  let playClock = null;
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    if (playing) {
+      // Playback runs on a continuous clock; unless smoothing is on, what's shown steps one whole
+      // game frame (4 QF) at a time, like the game, which matters most in slow motion.
+      if (playClock === null || Math.abs(playClock - t) > QF_PER_FRAME) playClock = t;
+      playClock += dt * QF_PER_SECOND * playbackSpeed();
+      if (playClock >= duration) { playClock = duration; setPlaying(false); }
+      const shown = $('optSmooth').checked || playClock >= duration ? playClock : Math.floor(playClock / QF_PER_FRAME) * QF_PER_FRAME;
+      if (shown !== t || $('optSmooth').checked) { t = shown; update(); }
+    } else playClock = null;
+    if (cameraMode === 'follow') {
+      const p = leadPosition();
+      if (p) {
+        // Keep the user's orbit angle and distance, but carry the camera along with the ghost.
+        const delta = p.clone().sub(controls.target);
+        controls.target.add(delta);
+        camera.position.add(delta);
+      }
+    }
+    controls.update();
+    if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
+    renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+  }
+
+  // ---------------------------------------------------------------- UI wiring
+  $('play').onclick = () => setPlaying(!playing);
+  // A plain click on the stage (not a drag to orbit) plays or pauses, like a video player.
+  (() => {
+    let down = null;
+    renderer.domElement.addEventListener('pointerdown', (e) => { if (e.button === 0 && e.isPrimary) down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+    renderer.domElement.addEventListener('pointerup', (e) => {
+      if (!down || e.button !== 0) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y), held = performance.now() - down.t;
+      down = null;
+      if (moved < 5 && held < 400 && ghosts.length) { setPlaying(!playing); update(); }
+    });
+    renderer.domElement.addEventListener('pointercancel', () => { down = null; });
+  })();
+  $('back').onclick = () => step(-1);
+  $('fwd').onclick = () => step(1);
+  $('scrub').oninput = (e) => { t = Number(e.target.value); update(); };
+  $('mapSelect').onchange = (e) => loadMap(e.target.value);
+  $('camFollow').onclick = () => setCameraMode('follow');
+  $('camFree').onclick = () => setCameraMode('free');
+  $('camTop').onclick = () => setCameraMode('top');
+  $('optPath').onchange = (e) => ghosts.forEach((g) => { g.path.visible = e.target.checked && g.visible; });
+  $('optWire').onchange = (e) => setWireframe(e.target.checked);
+  $('optAutoStage').onchange = () => { autoStageRoute = ''; update(); updateMapNotice(); };
+  $('optObjects').onchange = (e) => { if (objectsGroup) objectsGroup.visible = e.target.checked; };
+  $('episodeSelect').onchange = (e) => {
+    if ($('optAutoStage').checked && ghosts.length) $('optAutoStage').checked = false;
+    const entry = maps.find((m) => m.id === $('mapSelect').value);
+    if (entry) loadObjects(entry, e.target.value);
+  };
+  $('mapSelect').addEventListener('change', () => { if ($('optAutoStage').checked && ghosts.length) { $('optAutoStage').checked = false; } });
+  $('addGhost').onclick = () => $('ghostFile').click();
+  $('ghostFile').onchange = (e) => { readFiles(e.target.files); e.target.value = ''; };
+
+  function readFiles(files) {
+    const sample = ghosts.find((g) => g.isSample);
+    let first = true;
+    [...files].forEach((f) => {
+      f.arrayBuffer().then((buf) => {
+        const g = addGhost(buf, f.name);
+        if (g && sample && first) { removeGhost(sample); first = false; }
+        if (g) { t = 0; update(); setCameraMode(cameraMode); }
+      });
+    });
+  }
+
+  let dragDepth = 0;
+  stageEl.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('drop').hidden = false; });
+  stageEl.addEventListener('dragover', (e) => e.preventDefault());
+  stageEl.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true; } });
+  stageEl.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('drop').hidden = true; readFiles(e.dataTransfer.files); });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.target.closest('input[type=text], select')) return;
+    if (e.key === ' ') { e.preventDefault(); setPlaying(!playing); }
+    else if (e.key === ',') step(-1);
+    else if (e.key === '.') step(1);
+    else if (e.key === 'f' || e.key === 'F') setCameraMode('follow');
+  });
+  controls.addEventListener('start', () => { if (cameraMode === 'top') setCameraMode('free'); });
+
+  // ---------------------------------------------------------------- boot
+  async function boot() {
+    resize();
+    renderGhostList();
+    try { maps = await (await fetch('maps/index.json')).json(); }
+    catch { maps = []; showNotice('The stage list could not be loaded.'); }
+    const sel = $('mapSelect');
+    maps.forEach((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      const eps = m.routes.length > 1 && m.routes.length < 8 ? ` (${m.routes.length} episodes)` : '';
+      o.textContent = m.name + (m.name.includes(',') ? '' : eps);
+      sel.append(o);
+    });
+    const start = maps.find((m) => m.id === 'dolpic10') || maps[0];
+    if (start) await loadMap(start.id);
+    frameView();
+    loadMarioModel();
+    update();
+    requestAnimationFrame(loop);
+  }
+  boot();
+})();
+</script>
