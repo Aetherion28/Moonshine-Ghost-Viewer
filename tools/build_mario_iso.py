@@ -84,7 +84,62 @@ def toon_stages(w, model, mat):
             "k3": k(st[3]["kc"]), "k4": k(st[4]["kc"]), "spec": int(st[4]["chan"] == 5 and c4[1] == 10)}
 
 
-def material_for(w, model, mat, prefix):
+def tev_factor(model, mat, base_tex):
+    """Constant colour the material's TEV stages give when the lit colour (COLOR0) is white, the
+    displayed base texture is white and other textures sit at their average colour, COLOR1
+    (the specular channel) is black. The viewer multiplies the base texture and lighting by it,
+    which brings in TEV register colours such as the flying Stus' pink (C0)."""
+    st = (mat.tev or {}).get("stages") or []
+    if not st:
+        return None
+    regs = [tuple(c / 255 for c in r[:4]) for r in (mat.tev.get("regs") or [])] + [(0, 0, 0, 0)] * 4
+    kregs = [tuple(c / 255 for c in r[:4]) for r in (mat.tev.get("kregs") or [])] + [(1, 1, 1, 1)] * 4
+    reg = {0: list(regs[3]), 1: list(regs[0]), 2: list(regs[1]), 3: list(regs[2])}   # PREV, REG0..2
+    uses_reg = False
+    mean = {}
+
+    def tex(i):
+        if i < 0 or i == base_tex or i >= len(model.textures) or model.textures[i][1] is None:
+            return (1, 1, 1, 1)
+        if i not in mean:
+            a = model.textures[i][1].reshape(-1, 4).mean(0) / 255
+            mean[i] = tuple(a)
+        return mean[i]
+
+    for s in st:
+        t = tex(s["texmap"])
+        ras = (1, 1, 1, 1) if s["chan"] in (4, 0) else (0, 0, 0, 0)
+        kc = s["kc"]
+        if kc < 8:
+            k = (KCSEL[kc],) * 3
+        elif 12 <= kc <= 15:
+            k = kregs[kc - 12][:3]
+        else:
+            k = (1, 1, 1)
+        P, R0, R1, R2 = reg[0], reg[1], reg[2], reg[3]
+
+        def arg(a, ch):
+            nonlocal uses_reg
+            if 2 <= a <= 7:
+                uses_reg = True
+            return {0: P[ch], 1: P[3], 2: R0[ch], 3: R0[3], 4: R1[ch], 5: R1[3], 6: R2[ch], 7: R2[3],
+                    8: t[ch], 9: t[3], 10: ras[ch], 11: ras[3], 12: 1, 13: 0.5, 14: k[ch], 15: 0}.get(a, 0)
+        a, b, c, d, op, bias, scale, clamp, out = s["c"][:9]
+        res = []
+        for ch in range(3):
+            va, vb, vc, vd = (arg(x, ch) for x in (a, b, c, d))
+            v = va * (1 - vc) + vb * vc
+            v = vd + v if op == 0 else vd - v
+            v += {0: 0, 1: 0.5, 2: -0.5}.get(bias, 0)
+            v *= {0: 1, 1: 2, 2: 4, 3: 0.5}.get(scale, 1)
+            res.append(min(1, max(0, v)) if clamp else v)
+        reg[out if out in reg else 0][:3] = res
+    if not uses_reg:
+        return None
+    return tuple(min(1, max(0, v)) for v in reg[0][:3])
+
+
+def material_for(w, model, mat, prefix, tev=False):
     if mat is None:
         return w.custom_material(unlit(f"{prefix}"), ), None
     entry = pick_base(model, mat)
@@ -101,6 +156,10 @@ def material_for(w, model, mat, prefix):
     elif mat.blend:
         alpha = {"alphaMode": "BLEND"}
     factor = tuple(c / 255 for c in mat.mat_color) if not mat.use_vertex_color else (1, 1, 1, 1)
+    if tev and mat.lit and not toon_stages(w, model, mat):
+        tf = tev_factor(model, mat, entry[0] if entry is not None else -1)
+        if tf is not None and max(abs(v - 1) for v in tf) > 0.08:
+            factor = tuple(round(f * v, 4) for f, v in zip(factor[:3], tf)) + (factor[3],)
     spec = unlit(f"{prefix} {mat.name}", tex[0] if tex else None, alpha, factor)
     if mat.lit:   # the viewer lights these like GX: ambient + stage lights, times material/vertex colour
         spec["extras"] = {"lit": 1, "mask": mat.lit_mask, "ambVtx": int(mat.amb_vtx), "diff": mat.diff_fn}

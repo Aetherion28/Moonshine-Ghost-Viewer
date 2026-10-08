@@ -429,14 +429,18 @@ def add_models(w: GlbWriter, models, name: str) -> None:
             holder["children"].append(len(w.gltf["nodes"]) - 1)
 
 
-def add_model(w: GlbWriter, model: bmd.Model, name: str) -> None:
+# Types whose colours come from TEV registers the viewer doesn't otherwise model (see tev_factor).
+TEV_TINT_TYPES = {"HaneHamuKuri", "HaneHamuKuri2", "DoroHaneKuri", "HamuKuri"}
+
+
+def add_model(w: GlbWriter, model: bmd.Model, name: str, tev: bool = False) -> None:
     holder = {"name": name, "children": []}
     w.gltf["nodes"].append(holder)
     hi = len(w.gltf["nodes"]) - 1
     w.gltf["scenes"][0]["nodes"].append(hi)
     for mesh in model.meshes:
         mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
-        mi, entry = material_for(w, model, mat, name)
+        mi, entry = material_for(w, model, mat, name, tev)
         uv = uv_for(mesh, entry) if entry is not None else None
         color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
         w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"))
@@ -527,7 +531,7 @@ def main(argv):
                             model = bmd.parse(arc[mpath], pose=pose, bmt=bmt, bmt_tex_only=tex_only) if pose else raw
                             posed[digest] = model
                             idx = len(lib)
-                            add_model(w, model, f"m{idx}")
+                            add_model(w, model, f"m{idx}", typ in TEV_TINT_TYPES)
                             # Springs: bake frames along jumpbase_shrink (TJumpBase states in MapObjItem2.cpp).
                             shrink = arc.get(mpath.rsplit("/", 1)[0] + "/jumpbase_shrink.bck") if typ == "JumpBase" else None
                             if shrink:
