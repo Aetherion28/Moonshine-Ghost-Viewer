@@ -1208,15 +1208,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return start === null ? time : time - start;
   }
 
-  // Moving blocks, per MapObjRailBlock.cpp. Frame 0 is the stage's first frame.
+  // Moving blocks, per MapObjRailBlock.cpp. Their clock starts with the stage (for secrets, the
+  // start of the intro cutscene, which is also where the ghost segment and the timer start). As with
+  // the thrown bombs (THROW_PACE), the game's per-step rates match footage when applied once per QF:
+  // the Ricco 4 secret's first rod is at ~45 degrees 1.57 s in, i.e. 0.25 degrees x 188 QF.
   // TRollBlock: base placement, then a spin about the local Z axis of `roll` degrees per frame.
   // TRailBlock: walks its rail node to node (back and forth at the ends), `speed`/100 units per
-  // frame (2 until the first node), and rolls by each node's pitch/yaw/roll on the way there.
+  // step (2 until the first node), and rolls by each node's pitch/yaw/roll on the way there.
   const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v3 = new THREE.Vector3(), _v3b = new THREE.Vector3(), _s3 = new THREE.Vector3();
   const DEG = Math.PI / 180;
-  function placeMoving(node, f) {
+  function placeMoving(node, f) {   // f: QF since the stage started
     const mv = node.userData.move, b = node.userData.base;
-    if (!$('optSmooth').checked) f = Math.floor(f);
+    if (!$('optSmooth').checked) f = Math.floor(f / QF_PER_FRAME) * QF_PER_FRAME;
     f = Math.max(0, f);
     node.matrixAutoUpdate = false;
     _s3.set(b.s[0], b.s[1], b.s[2]);
@@ -1248,7 +1251,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       st.steps = Math.trunc(st.pos.distanceTo(nodeV(st.N[st.cur])) / st.spd);
       pushRail(st);
     }
-    while (st.frames.length <= upTo && st.frames.length < 216000) stepRail(st);
+    while (st.frames.length <= upTo && st.frames.length < 864000) stepRail(st);   // up to 2 hours
     return st.frames;
   }
   const nodeV = (n) => new THREE.Vector3(n[0], n[1], n[2]);
@@ -1359,7 +1362,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
-      if (node.userData.move) { placeMoving(node, stageClock / QF_PER_FRAME); return; }
+      if (node.userData.move) { placeMoving(node, stageClock); return; }
       const pick = node.userData.pick;
       if (!pick) return;
       if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
