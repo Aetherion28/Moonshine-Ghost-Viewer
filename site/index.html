@@ -1598,7 +1598,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (!mv.sims.has(owner)) mv.sims.set(owner, new Map());
       visits = mv.sims.get(owner);
       st = visits.get(stageStart);
-      liftBox(node, mv);
+      liftBox(node, mv, !!(mv.rail[nearestNode(mv.rail, _v3.set(node.userData.base.p[0], node.userData.base.p[1], node.userData.base.p[2]))][7] & 0x100));
     } else st = mv.state;
     if (!st) {
       const N = mv.rail, b = node.userData.base;
@@ -1610,7 +1610,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         acc: new THREE.Quaternion(), frames: [], g, stageStart, stop: false, ride: false, cy: 0, waits: mv.waits };
       // TRailMapObj::initGraphTracer: the nearest node is the first target, reached at once, so its
       // 0x80 / 0x100 flag stops the block where it was placed.
-      if (N[cur][7] & 0x180) railStop(st);
+      // 0x80 holds it as placed (initGraphTracer); 0x100 is read on arriving there at once, which also
+      // resets its roll (TRailBlock::control).
+      if (N[cur][7] & 0x100) railStop(st);
+      else if (N[cur][7] & 0x80) st.stop = true;
       st.cur = nextNode(st);
       st.steps = Math.trunc(st.pos.distanceTo(nodeV(st.N[st.cur])) / st.spd);
       pushRail(st);
@@ -1654,11 +1657,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return st.frames;
   }
   const NO_GHOST = {};
-  function liftBox(node, mv) {   // footprint and top surface, relative to the placement position
+  function liftBox(node, mv, unrotated) {   // footprint and top surface, relative to the placement position
     if (mv.box) return;
     const b = node.userData.base;
     node.matrixAutoUpdate = false;
-    node.matrix.copy(node.userData.baseMatrix); node.updateMatrixWorld(true);
+    // A rail block waits with its roll reset to none (railStop), so measure it that way.
+    if (unrotated) node.matrix.compose(new THREE.Vector3(b.p[0], b.p[1], b.p[2]), new THREE.Quaternion(), new THREE.Vector3(b.s[0], b.s[1], b.s[2]));
+    else node.matrix.copy(node.userData.baseMatrix);
+    node.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(node);
     mv.box = { x0: box.min.x - b.p[0], x1: box.max.x - b.p[0], z0: box.min.z - b.p[2], z1: box.max.z - b.p[2], top: box.max.y - b.p[1] };
   }
@@ -1676,7 +1682,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (s.gap || `${seg.route.area}:${seg.route.episode}` !== objectsKey.split('|').pop()) return false;
     const B = mv.box, p = st.pos, m = 20;
     const on = s.x >= p.x + B.x0 - m && s.x <= p.x + B.x1 + m && s.z >= p.z + B.z0 - m && s.z <= p.z + B.z1 + m
-      && Math.abs(s.y - (p.y + st.cy + B.top)) < 30;
+      && Math.abs(s.y - (p.y + st.cy + B.top)) < 50;
     if (!on) return 0;
     // TRailMapObj::checkMarioRiding also wants a standing status (MARIO_STATUS_FLAG 0x200: wait,
     // squat, the landing ends), so a stopped lift only sets off once Mario has come to rest on it.
