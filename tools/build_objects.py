@@ -78,6 +78,9 @@ PREFERRED = {"cannon": "default.bmd", "bombhei": "nejibomb_model1.bmd"}
 # TRailBlock rolls along a rail from map/scene.ral.
 ROLL_TYPES = {"Umaibou", "GetaGreen", "GetaOrange", "RollBlock", "RollBlockR", "RollBlockY", "RollBlockB"}
 RAIL_TYPES = {"EXRollCube", "RailBlock", "RailBlockR", "RailBlockY", "RailBlockB"}
+# TNormalLift and TWoodBlock: ride a rail without rolling; nodes can pause them, make them wait for
+# Mario, or send them back to the start.
+LIFT_TYPES = {"NormalLift", "EXKickBoard", "Kamaboko", "Uirou", "Castella", "Hikidashi", "WoodBlock", "YoshiBlock"}
 
 
 def _lstr(b: bytes, p: int):
@@ -115,11 +118,11 @@ def move_extra(typ: str, payload: bytes, rails: dict):
         if typ in ROLL_TYPES:
             p = actor_tail(payload)
             return {"roll": struct.unpack_from(">i", payload, p)[0] * 0.01}
-        if typ in RAIL_TYPES:
+        if typ in RAIL_TYPES or typ in LIFT_TYPES:
             name, _ = _lstr(payload, actor_tail(payload))
             name = name.decode("ascii", "replace")
             if name in rails and not name.startswith("S_"):
-                return {"rail": rails[name]}
+                return {"lift" if typ in LIFT_TYPES else "rail": rails[name]}
     except (struct.error, ValueError):
         pass
     return None
@@ -484,13 +487,15 @@ def main(argv):
                     track = cork_track(arc)
                     if track:
                         extra = {"cork": track}
-                if typ == "WoodBlock" and len(o["payload"]) >= 12:
+                if typ in ("WoodBlock", "YoshiBlock") and len(o["payload"]) >= 12:
                     # TWoodBlock colour: the payload's last three s32 (r, g, b), e.g. the blue pillars.
                     rgb = list(struct.unpack_from(">3i", o["payload"], len(o["payload"]) - 12))
                     if all(0 <= c <= 255 for c in rgb) and rgb != [255, 255, 255]:
                         extra = {"tint": rgb}
-                if typ in ROLL_TYPES or typ in RAIL_TYPES:
-                    extra = move_extra(typ, o["payload"], rails) or extra
+                if typ in ROLL_TYPES or typ in RAIL_TYPES or typ in LIFT_TYPES:
+                    mv = move_extra(typ, o["payload"], rails)
+                    if mv:
+                        extra = {**(extra or {}), **mv}
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
                 pick = PICKUP_TYPES.get(typ, "")
                 if hidden and pick:

@@ -555,7 +555,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         node.userData.baseMatrix = node.matrix.clone();
         node.userData.carry = it[16] || '';
         const ex = it[17] || {};
-        if (ex.roll !== undefined || ex.rail) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : { rail: ex.rail };
+        if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]) };
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
           ex.npc.parts.forEach(([pi, m, specs]) => {
             if (!protos[pi]) return;
@@ -1219,12 +1219,24 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // step (2 until the first node), and rolls by each node's pitch/yaw/roll on the way there.
   const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v3 = new THREE.Vector3(), _v3b = new THREE.Vector3(), _s3 = new THREE.Vector3();
   const DEG = Math.PI / 180;
-  function placeMoving(node, f) {   // f: QF since the stage started
+  function placeMoving(node, f, g, stageStart) {   // f: QF since the stage started
     const mv = node.userData.move, b = node.userData.base;
     if (!$('optSmooth').checked) f = Math.floor(f / QF_PER_FRAME) * QF_PER_FRAME;
     f = Math.max(0, f);
     node.matrixAutoUpdate = false;
     _s3.set(b.s[0], b.s[1], b.s[2]);
+    if (mv.lift) {
+      const c = liftCache(node, mv, g, stageStart, Math.ceil(f) + 1), i = Math.floor(f), a = f - i;
+      const s0 = c[i], s1 = c[i + 1];
+      _v3.fromArray(s0.p);
+      if (s0.vis && s1.vis) _v3.lerp(_v3b.fromArray(s1.p), a);
+      _q.setFromEuler(_e.set(b.r[0], b.r[1], b.r[2], 'ZYX'));
+      node.matrix.compose(_v3, _q, _s3);
+      node.matrixWorldNeedsUpdate = true;
+      node.visible = s0.vis;
+      if (mv.wood) woodFade(node, s0.fade);
+      return;
+    }
     if (mv.roll !== undefined) {
       _q.setFromEuler(_e.set(b.r[0], b.r[1], b.r[2], 'ZYX'));
       _q2.setFromAxisAngle(_v3.set(0, 0, 1), ((mv.roll * f) % 360) * DEG);
@@ -1257,6 +1269,109 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return st.frames;
   }
   const nodeV = (n) => new THREE.Vector3(n[0], n[1], n[2]);
+
+  // TNormalLift / TWoodBlock (MapObjRailBlock.cpp). Node fields: [x, y, z, pitch, yaw, roll, speed,
+  // flags, links]. Lifts start at 1 unit per step and take each next node's yaw/100 as their speed.
+  // Flags on the node reached: 0x100 stop until Mario lands on it (0x80 on the first target node
+  // does the same from the start), 0x800 pause `pitch` steps, 0x1000 end of the line: blink out over
+  // 180 steps (wood blocks fade to black instead), reappear at the start after `roll` steps.
+  // Whether Mario is riding comes from the ghost: standing within the lift's footprint, on its top.
+  function liftCache(node, mv, g, stageStart, upTo) {
+    if (!mv.sims) mv.sims = new WeakMap();   // per ghost, then per stage visit
+    const owner = g ? g.data : NO_GHOST;
+    if (!mv.sims.has(owner)) mv.sims.set(owner, new Map());
+    const visits = mv.sims.get(owner);
+    let st = visits.get(stageStart);
+    if (!st) {
+      if (!mv.box) {   // footprint and top surface, relative to the placement position
+        const b = node.userData.base;
+        node.matrixAutoUpdate = false;
+        node.matrix.copy(node.userData.baseMatrix); node.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(node);
+        mv.box = { x0: box.min.x - b.p[0], x1: box.max.x - b.p[0], z0: box.min.z - b.p[2], z1: box.max.z - b.p[2], top: box.max.y - b.p[1] };
+      }
+      const b = node.userData.base, N = mv.lift;
+      const start = new THREE.Vector3(b.p[0], b.p[1], b.p[2]);
+      st = { N, start, pos: start.clone(), cur: 0, prev: -1, spd: 1, steps: 0, stop: false, ride: false, pause: 0,
+        hide: 0, hidden: false, recycle: 0, rc: 180, vis: true, tick: 0, frames: [], g, stageStart };
+      st.cur = nearestNode(N, st.pos);
+      st.cur = nextNode(st);
+      if (N[st.cur][7] & 0x80) st.stop = true;
+      st.steps = Math.trunc(st.pos.distanceTo(nodeV(N[st.cur])) / st.spd);
+      st.frames.push({ p: st.pos.toArray(), vis: true, fade: 1 });
+      visits.set(stageStart, st);
+    }
+    while (st.frames.length <= upTo && st.frames.length < 864000) stepLift(st, mv);
+    return st.frames;
+  }
+  const NO_GHOST = {};
+  function nearestNode(N, pos) {
+    let cur = 0, best = Infinity;
+    N.forEach((n, k) => { const d = pos.distanceToSquared(_v3.set(n[0], n[1], n[2])); if (d < best) { best = d; cur = k; } });
+    return cur;
+  }
+  function marioOnLift(st, mv) {
+    const g = st.g;
+    if (!g) return false;
+    const d = g.data, tq = st.stageStart + st.frames.length;
+    if (tq < 0 || tq > d.qf[d.qf.length - 1]) return false;
+    const s = ghostSampleAt(d, tq), seg = d.segments[d.segIndex[s.i]];
+    if (s.gap || `${seg.route.area}:${seg.route.episode}` !== objectsKey.split('|').pop()) return false;
+    const B = mv.box, p = st.pos, m = 20;
+    return s.x >= p.x + B.x0 - m && s.x <= p.x + B.x1 + m && s.z >= p.z + B.z0 - m && s.z <= p.z + B.z1 + m
+      && Math.abs(s.y - (p.y + B.top)) < 30;
+  }
+  function liftFlags(st) {   // TNormalLift::readRailFlag on the node just reached
+    const n = st.N[st.cur], fl = n[7];
+    if (fl & 0x100) st.stop = true;
+    if (fl & 0x1000) { st.rc = 180; st.recycle = 2; st.hide = n[5] === 0xffff ? 0 : n[5]; }
+    if (fl & 0x800) st.pause = n[3];
+  }
+  function stepLift(st, mv) {
+    st.tick++;
+    let fade = 1;
+    const on = marioOnLift(st, mv);
+    if (!st.ride) { if (on) { st.ride = true; st.stop = false; } } else if (!on) st.ride = false;
+    if (st.hidden && st.hide) { if (--st.hide === 0) st.hidden = false; }
+    else if (st.pause) st.pause--;
+    else if (!st.stop) {
+      let recycling = false;
+      if (st.recycle === 2) {
+        if (st.rc > 0) {
+          st.rc--;
+          recycling = true;
+          if (mv.wood) fade = st.rc / 180;
+          else st.vis = st.rc < 90 ? ((st.tick >> 2) % 2) > 0 : ((st.tick >> 2) % 4) > 0;
+        } else {   // back to the start
+          st.pos.copy(st.start); st.recycle = 0; st.rc = 180; st.vis = true;
+          st.cur = nearestNode(st.N, st.pos); st.prev = -1;
+          liftFlags(st);
+          st.hidden = true;
+        }
+      }
+      if (!recycling && !st.stop) {
+        const tgt = nodeV(st.N[st.cur]), d = tgt.clone().sub(st.pos);
+        if (d.lengthSq() < st.spd * st.spd * 2 || st.steps === 0) {
+          liftFlags(st);
+          st.pos.copy(tgt);
+          st.cur = nextNode(st);
+          const yaw = st.N[st.cur][4];
+          if (yaw !== 0xffff) st.spd = yaw * 0.01;
+          st.steps = Math.trunc(st.pos.distanceTo(nodeV(st.N[st.cur])) / st.spd);
+        } else { st.pos.addScaledVector(d.normalize(), st.spd); if (st.steps > 0) st.steps--; }
+      }
+    }
+    st.frames.push({ p: st.pos.toArray(), vis: st.vis && !(st.hidden && st.hide), fade });
+  }
+  function woodFade(node, fade) {
+    node.traverse((o) => {
+      if (!o.isMesh) return;
+      [].concat(o.material).forEach((m) => {
+        if (!m.userData.baseColor) m.userData.baseColor = m.color.clone();
+        m.color.copy(m.userData.baseColor).multiplyScalar(fade);
+      });
+    });
+  }
   function nextNode(st) {   // TGraphWeb::getShortestNextIndex
     const n = st.N[st.cur], con = n[8];
     let r;
@@ -1364,7 +1479,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
-      if (node.userData.move) { placeMoving(node, stageClock); return; }
+      if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
       const pick = node.userData.pick;
       if (!pick) return;
       if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
