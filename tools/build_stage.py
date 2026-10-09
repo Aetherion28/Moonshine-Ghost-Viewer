@@ -92,6 +92,26 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             elif mat.translucent or mat.blend:
                 alpha = {"alphaMode": "BLEND"}
         sky_mul = None
+        glow_extra = False
+        if kind == "map" and mat is not None:
+            st0 = ((mat.tev or {}).get("stages") or [{}])[0]
+            if st0.get("c", ())[:4] == (15, 15, 15, 2) and mat.translucent and mat.blend_mode[:2] == (1, 2) \
+                    and mat.blend_mode[2] in (1, 4):
+                # C0-only glow layers drawn src*src + dst (GX_BL_SRCCLR, GX_BL_ONE / SRCALPHA): an additive
+                # tint of C0 squared, e.g. the light over Petey Piranha's arena.
+                c0 = mat.tev["regs"][0]
+                a0 = c0[3] / 255 if mat.blend_mode[2] == 4 else 1
+                factor = tuple((max(0, min(255, c)) / 255) ** 2 * a0 for c in c0[:3]) + (1,)
+                tex = None
+                alpha = {"alphaMode": "BLEND"}
+                glow_extra = True
+            elif st0.get("c", ())[:4] == (15, 15, 15, 2) and not mat.translucent:   # TEV outputs register C0 only
+                c0 = mat.tev["regs"][0]
+                a0 = c0[3] / 255 if st0.get("a", ())[:4] == (7, 7, 7, 1) else 1
+                factor = tuple(max(0, min(255, c)) / 255 for c in c0[:3]) + (a0,)
+                color = None
+                tex = None
+                alpha = {"alphaMode": "BLEND"} if a0 < 0.99 else None
         if kind == "sky":
             alpha = None
             st = (mat.tev or {}).get("stages") or [] if mat is not None else []
@@ -107,8 +127,8 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             # Vertex alpha is the blend weight of the second layer, not base opacity.
             base_color = color.copy()
             base_color[:, 3] = 255
-        extras = None
-        if mat is not None and mat.translucent and mat.blend_mode[0] == 1 and mat.blend_mode[2] == 1:
+        extras = {"additive": True} if glow_extra else None
+        if kind == "map" and mat is not None and mat.translucent and mat.blend_mode[:3] == (1, 4, 1):
             # Additive glow cards (e.g. the hotel's Boo-shaped light, GX_BL_ONE destination). When the
             # only TEV stage outputs a KONST colour, the texture gives just the shape (its alpha).
             extras = {"additive": True}
@@ -124,6 +144,10 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
                         tex = w.texture_rgba(f"{prefix}:{t[0]}:alpha", rgba, t[2], t[3])
             alpha = {"alphaMode": "BLEND"}
         um = unlit(f"{prefix} {mat.name if mat else ''}", tex[0] if tex else None, alpha, factor)
+        if kind == "map" and mat is not None and mat.cull in (1, 2):
+            # GX culling (GX_CULL_FRONT / GX_CULL_BACK): the viewer draws one side, as the game does,
+            # so a wall seen from behind is see-through instead of showing its inside.
+            extras = {**(extras or {}), "cull": mat.cull}
         if extras:
             um["extras"] = extras
         mi = w.custom_material(um)

@@ -594,6 +594,10 @@ def main(argv):
             for o in scene_bin.parse(arc["map/scene.bin"]):   # TMario::load: flag bit 1 = starts without FLUDD
                 if o["type"] == "Mario" and len(o["payload"]) >= 4 and struct.unpack_from(">I", o["payload"], len(o["payload"]) - 4)[0] & 1:
                     data["noFludd"] = 1
+                if o["type"] == "Mario" and "spawn" not in data:   # where Mario starts, facing (yaw degrees)
+                    pl = scene_bin.placement(o["payload"])
+                    if pl:
+                        data["spawn"] = [round(pl[0][0], 1), round(pl[0][1], 1), round(pl[0][2], 1), round(pl[1][1], 2)]
             dyn = {}
             for atype, (path, kind, pname) in DYNAMIC_CARRY.items():
                 if path not in arc:

@@ -535,7 +535,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         root.traverse((o) => {
           if (!o.isMesh) return;
           [].concat(o.material).forEach((m) => {
-            m.side = THREE.DoubleSide;
+            // GX culls clockwise-front faces' backs; our triangles keep the game's winding, so the
+            // game's front side is three.js's back side.
+            const cull = m.userData && m.userData.cull;
+            m.side = cull === 2 ? THREE.BackSide : cull === 1 ? THREE.FrontSide : THREE.DoubleSide;
             // Second texture layers (grass over rock, etc.) sit exactly on their base surface.
             if (m.name && m.name.startsWith('layer2')) { m.depthWrite = false; m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
             mapMaterials.push(m);
@@ -557,7 +560,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!entry) return;
     currentMap = id;
     if (!routeKey || !entry.routes.some(([a, e]) => `${a}:${e}` === routeKey)) routeKey = `${entry.routes[0][0]}:${entry.routes[0][1]}`;
-    $('mapSelect').value = String(worldOfArea(Number(routeKey.split(':')[0])));
+    $('mapSelect').value = String(worldOfKey(routeKey));
     fillEpisodes(routeKey);
     loadObjects(entry, routeKey);
     dgStageChanged();
@@ -629,7 +632,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const MARIO_HIT_RADIUS = 42, MARIO_HIT_HEIGHT = 110;   // TMario damage cylinder (MarioInit.cpp)
   const objLibCache = new Map(), objListCache = new Map();
   const PICKUP_TINT = { coin: 0xffc21a, coin_blue: 0x3d7dff, coin_red: 0xff2b2b, shine: 0xffd640 };
-  let objNoFludd = false;
+  let objNoFludd = false, objSpawn = null;
   let objectsGroup = null, objectsKey = '', objList = [], objNodes = [], wireMeshes = [], objDyn = {}, objProtos = {};
 
   function routeLabel(key) {
@@ -648,6 +651,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     46: 2, 47: 2, 48: 3, 49: 3, 50: 5, 51: 6, 52: 60, 55: 2, 56: 6, 57: 9, 58: 5, 59: 3, 60: 60 };
   const AREA_TITLES = { 7: 'Hotel Delfino', 13: 'Pinna Park', 14: 'Casino Delfino', 16: 'Noki Bay undersea', 52: 'Corona Mountain',
     55: 'Petey Piranha (boss)', 56: 'King Boo (boss)', 57: 'Eely-Mouth (boss)', 58: 'Mecha-Bowser (boss)', 59: 'Gooper Blooper (boss)', 60: 'Bowser (boss)' };
+  // Community names for the Plaza's side stages and other secrets / sub-areas (by scene file).
+  const SCENE_TITLES = {
+    dolpic_ex0: { label: 'Airstrip red coins', world: 0, group: 'Episodes', order: 1.5 },
+    dolpic_ex1: { label: 'Beach pipe', world: 1, group: 'Secrets' },
+    dolpic_ex2: { label: 'Plinko', world: 1, group: 'Secrets' },
+    dolpic_ex3: { label: 'Grass pipe', world: 1, group: 'Secrets' },
+    dolpic_ex4: { label: 'Lilypad secret', world: 1, group: 'Secrets' },
+    bia_ex1: { label: 'Jail secret', world: 1, group: 'Secrets' },
+    coro_ex0: { label: 'BH6 secret', world: 2, group: 'Secrets' },
+    rico_ex0: { label: 'Blooper race (RH2)', world: 3, group: 'Areas' },
+    dolpic9: { label: 'DP10 (flooded Plaza)' },
+  };
   const worldOfArea = (a) => (a in WORLD_NAMES && a !== 60 ? a : (AREA_WORLD[a] ?? a));
   let currentMap = '', worldRoutes = null;
   function buildWorlds() {   // world -> [{ key, map, label, group }]
@@ -661,14 +676,21 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const many = maps.reduce((n, mm) => n + (mm.routes || []).filter(([x]) => x === a).length, 0) > 1;
         label = AREA_TITLES[a] + (many ? ` ${e + 1}` : ''); group = 'Areas'; order = 200 + a * 10 + e;
       } else { label = `Secret (${scene})`; group = 'Secrets'; order = 1000 + a; }
-      if (!worldRoutes.has(w)) worldRoutes.set(w, []);
-      worldRoutes.get(w).push({ key, map: m.id, label, group, order });
+      const named = SCENE_TITLES[scene];
+      let world = w;
+      if (named) { label = named.label; world = named.world ?? w; group = named.group || group; order = named.order ?? order; }
+      if (!worldRoutes.has(world)) worldRoutes.set(world, []);
+      worldRoutes.get(world).push({ key, map: m.id, label, group, order });
     }));
     worldRoutes.forEach((list) => list.sort((x, y) => x.order - y.order));
   }
+  function worldOfKey(key) {
+    for (const [w, list] of worldRoutes) if (list.some((r) => r.key === key)) return w;
+    return worldOfArea(Number(key.split(':')[0]));
+  }
   function fillEpisodes(routeKey) {
     const sel = $('episodeSelect');
-    const w = worldOfArea(Number(routeKey.split(':')[0]));
+    const w = worldOfKey(routeKey);
     const list = worldRoutes.get(w) || [];
     if (sel.dataset.world !== String(w)) {
       sel.textContent = '';
@@ -727,7 +749,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (key === objectsKey) return;
     objectsKey = key;
     if (objectsGroup) scene.remove(objectsGroup);
-    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {};
+    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {}; objSpawn = null;
     const info = entry.objects;
     if (!info || !info.scenes[routeKey]) { update(); return; }
     let lib = objLibCache.get(info.lib);
@@ -745,6 +767,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (key !== objectsKey) return;
       setStageLights(data.lights);
       objNoFludd = !!data.noFludd;
+      objSpawn = data.spawn || null;
+      if (cameraMode !== 'follow' || !ghosts.length) frameView();
       const items = Array.isArray(data) ? data : data.o;
       const protos = {};
       libScene.children.forEach((c) => { if (/^m\d+(_s\d+)?$/.test(c.name)) protos[c.name.slice(1)] = c; });
@@ -2435,6 +2459,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
 
   function frameView() {
+    if (objSpawn) {   // as the game starts: behind Mario at his start, facing the way he faces
+      const [x, y, z, yaw] = objSpawn, r = yaw * Math.PI / 180;
+      controls.target.set(x, y + 120, z);
+      camera.position.set(x - Math.sin(r) * 1100, y + 420, z - Math.cos(r) * 1100);
+      controls.update();
+      return;
+    }
     const box = mapBounds || new THREE.Box3(new THREE.Vector3(-3000, 0, -3000), new THREE.Vector3(3000, 500, 3000));
     const c = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3()).length();
