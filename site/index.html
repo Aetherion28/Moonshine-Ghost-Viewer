@@ -652,17 +652,47 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const AREA_TITLES = { 7: 'Hotel Delfino', 13: 'Pinna Park', 14: 'Casino Delfino', 16: 'Noki Bay undersea', 52: 'Corona Mountain',
     55: 'Petey Piranha (boss)', 56: 'King Boo (boss)', 57: 'Eely-Mouth (boss)', 58: 'Mecha-Bowser (boss)', 59: 'Gooper Blooper (boss)', 60: 'Bowser (boss)' };
   // Community names for the Plaza's side stages and other secrets / sub-areas (by scene file).
-  const SCENE_TITLES = {
-    dolpic_ex0: { label: 'Airstrip red coins', world: 0, group: 'Episodes', order: 1.5 },
-    dolpic_ex1: { label: 'Beach pipe', world: 1, group: 'Secrets' },
-    dolpic_ex2: { label: 'Plinko', world: 1, group: 'Secrets' },
-    dolpic_ex3: { label: 'Grass pipe', world: 1, group: 'Secrets' },
-    dolpic_ex4: { label: 'Lilypad secret', world: 1, group: 'Secrets' },
-    bia_ex1: { label: 'Jail secret', world: 1, group: 'Secrets' },
-    coro_ex0: { label: 'BH6 secret', world: 2, group: 'Secrets' },
-    rico_ex0: { label: 'Blooper race (RH2)', world: 3, group: 'Areas' },
-    dolpic9: { label: 'DP10 (flooded Plaza)' },
+  // Menu names and Delfino Ghosts level names per route, following Moonshine's run labels
+  // (ghost.cpp formatTrackName): "<course> N <suffix>" for areas inside a course, where N is the
+  // episode they're played from. Secrets' episodes come from the game's exShineTable (the secret's
+  // Shine ID), the hotel / casino / park ones from Moonshine's route tables. Community names in ().
+  const SB = 'Sirena Beach', PP = 'Pinna Park', NB = 'Noki Bay', BH = 'Bianco Hills', RH = 'Ricco Harbor';
+  const sec = (w, n, extra) => ({ label: `${w} ${n} Secret` + (extra ? ` (${extra})` : ''), levels: [`${w} ${n} Secret`, `${w} ${n}`], group: 'Secrets' });
+  const ROUTE_NAMES = {
+    '0:0': { label: 'Airstrip 1', levels: ['Airstrip 1'] },
+    '0:1': { label: 'Airstrip 2', levels: ['Airstrip 2'] },
+    '20:0': { label: 'Airstrip Reds (airstrip red coins)', levels: ['Airstrip Reds'], world: 0, group: 'Episodes', order: 1.5 },
+    '21:0': { label: 'Delfino Slide (beach pipe)', levels: ['Delfino Slide'], world: 1, group: 'Secrets' },
+    '22:0': { label: 'Pachinko (plinko)', levels: ['Pachinko'], world: 1, group: 'Secrets' },
+    '23:0': { label: 'Grass Secret (grass pipe)', levels: ['Grass Secret'], world: 1, group: 'Secrets' },
+    '24:0': { label: 'Lily Pad', levels: ['Lily Pad'], world: 1, group: 'Secrets' },
+    '29:0': { label: 'Delfino Cop Secret (jail secret)', levels: ['Delfino Cop Secret'], world: 1, group: 'Secrets' },
+    '52:0': { label: 'Corona Mountain', levels: ['Corona Mountain'] },
+    '60:0': { label: 'Bowser', levels: ['Bowser', 'Corona Mountain'] },
+    '30:0': { label: `${RH} 2 Blooper Race`, levels: [`${RH} 2 Blooper Race`], world: 3, group: 'Areas' },
+    '59:0': { label: `${RH} Blooper (Gooper Blooper)`, levels: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `${RH} ${n} Blooper`) },
+    '55:0': { label: `${BH} Windmill (Petey Piranha)`, levels: [`${BH} 2 Windmill`, `${BH} 1 Windmill`, `${BH} 2`] },
+    '33:0': { label: 'Gelato Beach 4 Sand Bird', levels: ['Gelato Beach 4 Sand Bird', 'Gelato Beach 4'], group: 'Areas', order: 300 },
+    '58:1': { label: `${PP} 1 Mecha-Bowser`, levels: [`${PP} 1 Mecha-Bowser`, `${PP} 1`] },
+    '58:0': { label: `${PP} 8 Balloons`, levels: [`${PP} 8 Balloons`, `${PP} 8`] },
+    '56:0': { label: `${SB} 5 King Boo`, levels: [`${SB} 5 King Boo`, `${SB} 5`] },
+    '44:0': { label: `${NB} 3 Bottle`, levels: [`${NB} 3 Bottle`, `${NB} 3`], group: 'Areas' },
+    '57:0': { label: `${NB} 4 Eel Only (Eely-Mouth)`, levels: [`${NB} 4 Eel Only`, `${NB} 4`] },
+    '16:0': { label: `${NB} 8 Red Fish (undersea)`, levels: [`${NB} 8 Red Fish`, `${NB} 8`] },
+    '46:0': sec(BH, 6), '47:0': sec(BH, 3), '48:0': sec(RH, 4), '31:0': sec(NB, 6), '32:0': sec('Gelato Beach', 1),
+    '41:0': sec(PP, 6), '50:0': sec(PP, 2), '40:0': sec(SB, 4), '51:0': sec(SB, 2), '42:0': sec('Pianta Village', 5),
   };
+  [[0, [2]], [1, [3]], [2, [4, 5]], [3, [7]], [4, [8]]].forEach(([e, ns]) => {   // hotel episode -> Sirena episodes
+    ROUTE_NAMES[`7:${e}`] = { label: `${SB} ${ns.join('/')} Hotel`, levels: ns.flatMap((n) => [`${SB} ${n} Hotel`, `${SB} ${n}`]) };
+  });
+  [[0, 4], [1, 5]].forEach(([e, n]) => { ROUTE_NAMES[`14:${e}`] = { label: `${SB} ${n} Casino`, levels: [`${SB} ${n} Casino`, `${SB} ${n}`] }; });
+  [[0, 1], [1, 3], [2, 5], [3, 6], [4, 7], [5, 8]].forEach(([e, n]) => {   // amusement park episode -> Pinna Park episode
+    ROUTE_NAMES[`13:${e}`] = { label: `${PP} ${n} (park)`, levels: [`${PP} ${n}`] };
+  });
+  [6, 7].forEach((e) => {   // park scenes Moonshine labels "<course> N Route" (N: the episode played)
+    ROUTE_NAMES[`13:${e}`] = { label: `${PP} park, scene ${e + 1}`, levels: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `${PP} ${n} Route`) };
+  });
+  const SCENE_TITLES = { dolpic9: { label: 'DP10 (flooded Plaza)' } };
   const worldOfArea = (a) => (a in WORLD_NAMES && a !== 60 ? a : (AREA_WORLD[a] ?? a));
   let currentMap = '', worldRoutes = null;
   function buildWorlds() {   // world -> [{ key, map, label, group }]
@@ -676,11 +706,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const many = maps.reduce((n, mm) => n + (mm.routes || []).filter(([x]) => x === a).length, 0) > 1;
         label = AREA_TITLES[a] + (many ? ` ${e + 1}` : ''); group = 'Areas'; order = 200 + a * 10 + e;
       } else { label = `Secret (${scene})`; group = 'Secrets'; order = 1000 + a; }
-      const named = SCENE_TITLES[scene];
+      const named = ROUTE_NAMES[key] || SCENE_TITLES[scene];
       let world = w;
       if (named) { label = named.label; world = named.world ?? w; group = named.group || group; order = named.order ?? order; }
       if (!worldRoutes.has(world)) worldRoutes.set(world, []);
-      worldRoutes.get(world).push({ key, map: m.id, label, group, order });
+      worldRoutes.get(world).push({ key, map: m.id, label, group, order, levels: named && named.levels });
     }));
     worldRoutes.forEach((list) => list.sort((x, y) => x.order - y.order));
   }
@@ -2774,10 +2804,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     NB: 'Noki Bay', PV: 'Pianta Village', DP: 'Delfino Plaza', CM: 'Corona Mountain' };
   let dgLevelsP = null, dgShareSeq = 0, dgShareLevels = [];
   const dgLevels = () => (dgLevelsP ||= dgRpc('levels_in_use', { p_user: null }).catch((e) => { dgLevelsP = null; throw e; }));
+  // Level names to look for on Delfino Ghosts: a course episode also lists its sub-areas
+  // ("Sirena Beach 2 Hotel"); other areas use their exact Moonshine names.
   function stageLevelName() {
     const key = $('episodeSelect').value; if (!key) return null;
+    const r = worldRoutes && [...worldRoutes.values()].flat().find((x) => x.key === key);
+    if (r && r.levels) return { name: r.levels[0], exact: r.levels.map((l) => l.toLowerCase()), prefix: [] };
     const m = /^([A-Z]{2})(\d+)$/.exec(routeLabel(key)); if (!m || !DG_WORLDS[m[1]]) return null;
-    return { name: `${DG_WORLDS[m[1]]} ${Number(m[2])}`, world: DG_WORLDS[m[1]], single: m[1] === 'CM' || m[1] === 'DP' };
+    const name = `${DG_WORLDS[m[1]]} ${Number(m[2])}`, single = m[1] === 'CM' || m[1] === 'DP';
+    return { name, exact: single ? [DG_WORLDS[m[1]].toLowerCase()] : [], prefix: [name.toLowerCase()] };
   }
   function sharedMsg(text) { $('sharedMsg').textContent = text; $('sharedMsg').hidden = !text; }
   async function dgStageChanged() {
@@ -2787,9 +2822,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!lv) { sharedMsg('No shared ghosts are listed for this stage.'); return; }
     sharedMsg('Loading…');
     try {
-      const want = [lv.name.toLowerCase()].concat(lv.single ? [lv.world.toLowerCase()] : []);
-      const levels = (await dgLevels()).map((l) => l.level).filter((l) => { const x = l.toLowerCase();
-        return want.some((w) => x === w || x.startsWith(w + ' ')); });
+      const levels = (await dgLevels()).map((l) => l.level).filter((l) => { const x = (l || '').toLowerCase().trim();
+        return lv.exact.includes(x) || lv.prefix.some((w) => x === w || x.startsWith(w + ' ')); });
       if (seq !== dgShareSeq) return;
       dgShareLevels = levels;
       if (!levels.length) { sharedMsg(`No ghosts shared for ${lv.name} yet.`); return; }
@@ -2801,7 +2835,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const li = document.createElement('li');
         const tm = document.createElement('span'); tm.className = 'time'; tm.textContent = fmtMs(g.time_ms) || '—';
         const who = document.createElement('span'); who.className = 'who';
-        who.textContent = [g.author_display_name || g.author_username, g.level !== levels[0] || levels.length > 1 ? g.level.slice(lv.name.length).trim() : '', g.is_tas ? 'TAS' : ''].filter(Boolean).join(' · ');
+        who.textContent = [g.author_display_name || g.author_username, levels.length > 1 && g.level !== lv.name ? (g.level.toLowerCase().startsWith(lv.name.toLowerCase()) ? g.level.slice(lv.name.length).trim() : g.level) : '', g.is_tas ? 'TAS' : ''].filter(Boolean).join(' · ');
         who.title = `${g.title} — ${g.level}`;
         const full = dgRow(g).querySelector('button'); full.className = '';
         li.append(tm, who, full); list.append(li);
