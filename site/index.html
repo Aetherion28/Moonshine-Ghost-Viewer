@@ -181,7 +181,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   <header>
     <h1><span class="sun" aria-hidden="true"></span>Sunshine Ghost Viewer</h1>
     <div class="field">
-      <label for="mapSelect">Stage</label>
+      <label for="mapSelect">World</label>
       <select id="mapSelect"></select>
       <select id="episodeSelect" aria-label="Episode" hidden></select>
     </div>
@@ -555,9 +555,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   async function loadMap(id, routeKey) {
     const entry = maps.find((m) => m.id === id);
     if (!entry) return;
-    $('mapSelect').value = id;
-    fillEpisodes(entry, routeKey);
-    loadObjects(entry, $('episodeSelect').value);
+    currentMap = id;
+    if (!routeKey || !entry.routes.some(([a, e]) => `${a}:${e}` === routeKey)) routeKey = `${entry.routes[0][0]}:${entry.routes[0][1]}`;
+    $('mapSelect').value = String(worldOfArea(Number(routeKey.split(':')[0])));
+    fillEpisodes(routeKey);
+    loadObjects(entry, routeKey);
     dgStageChanged();
     if (mapGroup && mapGroup.userData.id === id) return;
     const request = ++mapRequest;
@@ -635,17 +637,54 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return ghostRouteLabel({ area: a, episode: e, parentArea: 0xff, variant: -1 });
   }
 
-  function fillEpisodes(entry, routeKey) {
+  // The World menu has one entry per world; its episodes, areas (hotel, casino, bosses...) and
+  // secrets are all in the episode menu, each pointing at the stage model that holds it.
+  const WORLD_NAMES = { 0: 'Delfino Airstrip', 1: 'Delfino Plaza', 2: 'Bianco Hills', 3: 'Ricco Harbor', 4: 'Gelato Beach',
+    5: 'Pinna Park', 6: 'Sirena Beach', 8: 'Pianta Village', 9: 'Noki Bay', 60: 'Corona Mountain' };
+  const WORLD_ORDER = [0, 1, 2, 3, 4, 5, 6, 8, 9, 60];
+  // Areas outside a world's main stage -> world (secrets from Moonshine's route table, ghost_format.h).
+  const AREA_WORLD = { 7: 6, 13: 5, 14: 6, 16: 9, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 2, 29: 2,
+    30: 3, 31: 9, 32: 4, 33: 4, 34: 5, 35: 5, 36: 5, 37: 5, 38: 5, 39: 5, 40: 6, 41: 5, 42: 8, 43: 8, 44: 9, 45: 9,
+    46: 2, 47: 2, 48: 3, 49: 3, 50: 5, 51: 6, 52: 60, 55: 2, 56: 6, 57: 9, 58: 5, 59: 3, 60: 60 };
+  const AREA_TITLES = { 7: 'Hotel Delfino', 13: 'Pinna Park', 14: 'Casino Delfino', 16: 'Noki Bay undersea', 52: 'Corona Mountain',
+    55: 'Petey Piranha (boss)', 56: 'King Boo (boss)', 57: 'Eely-Mouth (boss)', 58: 'Mecha-Bowser (boss)', 59: 'Gooper Blooper (boss)', 60: 'Bowser (boss)' };
+  const worldOfArea = (a) => (a in WORLD_NAMES && a !== 60 ? a : (AREA_WORLD[a] ?? a));
+  let currentMap = '', worldRoutes = null;
+  function buildWorlds() {   // world -> [{ key, map, label, group }]
+    worldRoutes = new Map();
+    maps.forEach((m) => (m.routes || []).forEach(([a, e], i) => {
+      const w = worldOfArea(a), key = `${a}:${e}`, scene = (m.scenes || [])[i] || m.id;
+      let label, group, order;
+      if (WORLD_NAMES[a] && a !== 60) { label = a === 0 ? `Airstrip ${e + 1}` : routeLabel(key); group = 'Episodes'; order = e; }
+      else if (a >= 20 && a <= 27) { label = `Plaza area (${scene})`; group = 'Areas'; order = 100 + a; }
+      else if (AREA_TITLES[a]) {
+        const many = maps.reduce((n, mm) => n + (mm.routes || []).filter(([x]) => x === a).length, 0) > 1;
+        label = AREA_TITLES[a] + (many ? ` ${e + 1}` : ''); group = 'Areas'; order = 200 + a * 10 + e;
+      } else { label = `Secret (${scene})`; group = 'Secrets'; order = 1000 + a; }
+      if (!worldRoutes.has(w)) worldRoutes.set(w, []);
+      worldRoutes.get(w).push({ key, map: m.id, label, group, order });
+    }));
+    worldRoutes.forEach((list) => list.sort((x, y) => x.order - y.order));
+  }
+  function fillEpisodes(routeKey) {
     const sel = $('episodeSelect');
-    const keys = entry.objects ? Object.keys(entry.objects.scenes) : [];
-    const want = routeKey && keys.includes(routeKey) ? routeKey : (keys.includes(sel.value) && sel.dataset.map === entry.id ? sel.value : keys[0]);
-    if (sel.dataset.map !== entry.id) {
+    const w = worldOfArea(Number(routeKey.split(':')[0]));
+    const list = worldRoutes.get(w) || [];
+    if (sel.dataset.world !== String(w)) {
       sel.textContent = '';
-      keys.forEach((k) => { const o = document.createElement('option'); o.value = k; o.textContent = routeLabel(k); sel.append(o); });
-      sel.dataset.map = entry.id;
+      const groups = {};
+      list.forEach((r) => {
+        if (!groups[r.group]) {
+          groups[r.group] = document.createElement('optgroup');
+          groups[r.group].label = r.group;
+          sel.append(groups[r.group]);
+        }
+        const o = document.createElement('option'); o.value = r.key; o.textContent = r.label; groups[r.group].append(o);
+      });
+      sel.dataset.world = String(w);
     }
-    sel.hidden = keys.length < 2;
-    if (want) sel.value = want;
+    sel.hidden = list.length < 2;
+    sel.value = routeKey;
   }
 
   // NPC colours (TBaseNPC::setIndividualDifference_ / SMS_InitChangeNpcColor). The game tints
@@ -1952,14 +1991,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function setWireframe(on) { mapMaterials.forEach((m) => { m.wireframe = on; }); }
 
   function updateMapNotice() {
-    const entry = maps.find((m) => m.id === $('mapSelect').value);
+    const entry = maps.find((m) => m.id === currentMap);
     const g = ghosts.find((x) => x.visible);
     if (!g || !entry) { showNotice(''); return; }
     const s = ghostSampleAt(g.data, t);
     const seg = g.data.segments[g.data.segIndex[s.i]] || g.data.segments[0];
     const home = mapForRoute(seg.route);
     if (home && home.id !== entry.id && !$('optAutoStage').checked) {
-      showNotice(`${seg.routeLabel} plays on ${home.name}. Pick it from the Stage menu.`);
+      showNotice(`${seg.routeLabel} plays on ${home.name}. Pick it from the World and episode menus.`);
     } else if (!home) {
       showNotice(`This viewer has no stage for ${seg.routeLabel} yet.`);
     } else showNotice('');
@@ -2601,7 +2640,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   $('back').onclick = () => step(-1);
   $('fwd').onclick = () => step(1);
   $('scrub').oninput = (e) => { t = Number(e.target.value); update(); };
-  $('mapSelect').onchange = (e) => loadMap(e.target.value);
+  $('mapSelect').onchange = (e) => {   // a world: open its first episode
+    const r = (worldRoutes.get(Number(e.target.value)) || [])[0];
+    if (r) loadMap(r.map, r.key);
+  };
   $('camFollow').onclick = () => setCameraMode('follow');
   $('camFree').onclick = () => setCameraMode('free');
   $('camTop').onclick = () => setCameraMode('top');
@@ -2612,8 +2654,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   $('optShines').onchange = () => update();
   $('episodeSelect').onchange = (e) => {
     if ($('optAutoStage').checked && ghosts.length) $('optAutoStage').checked = false;
-    const entry = maps.find((m) => m.id === $('mapSelect').value);
-    if (entry) loadObjects(entry, e.target.value);
+    const r = [...worldRoutes.values()].flat().find((x) => x.key === e.target.value);
+    if (!r) return;
+    if (r.map !== currentMap) { loadMap(r.map, r.key); return; }
+    const entry = maps.find((m) => m.id === currentMap);
+    if (entry) loadObjects(entry, r.key);
     dgStageChanged();
   };
   $('mapSelect').addEventListener('change', () => { if ($('optAutoStage').checked && ghosts.length) { $('optAutoStage').checked = false; } });
@@ -2707,7 +2752,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   async function dgStageChanged() {
     const seq = ++dgShareSeq, lv = stageLevelName(), list = $('sharedList');
     list.textContent = ''; dgShareLevels = [];
-    $('sharedLevel').textContent = lv ? lv.name : ($('mapSelect').selectedOptions[0]?.textContent || 'This stage');
+    $('sharedLevel').textContent = lv ? lv.name : ($('episodeSelect').selectedOptions[0]?.textContent || $('mapSelect').selectedOptions[0]?.textContent || 'This stage');
     if (!lv) { sharedMsg('No shared ghosts are listed for this stage.'); return; }
     sharedMsg('Loading…');
     try {
@@ -2862,11 +2907,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     try { maps = await (await fetch('maps/index.json')).json(); }
     catch { maps = []; showNotice('The stage list could not be loaded.'); }
     const sel = $('mapSelect');
-    maps.forEach((m) => {
+    buildWorlds();
+    [...WORLD_ORDER, ...[...worldRoutes.keys()].filter((w) => !WORLD_ORDER.includes(w))].forEach((w) => {
+      if (!worldRoutes.has(w)) return;
       const o = document.createElement('option');
-      o.value = m.id;
-      const eps = m.routes.length > 1 && m.routes.length < 8 ? ` (${m.routes.length} episodes)` : '';
-      o.textContent = m.name + (m.name.includes(',') ? '' : eps);
+      o.value = String(w);
+      o.textContent = WORLD_NAMES[w] || `Area ${w}`;
       sel.append(o);
     });
     const start = maps.find((m) => m.id === 'dolpic10') || maps[0];
