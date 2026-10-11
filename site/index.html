@@ -484,11 +484,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       ras: (x) => ({ 0: 'vec4( vGxC0.rgb, 0.0 )', 1: 'vec4( vGxC1.rgb, 0.0 )', 2: 'vec4( 0.0, 0.0, 0.0, vGxC0.a )',
         3: 'vec4( 0.0, 0.0, 0.0, vGxC1.a )', 4: 'vGxC0', 5: 'vGxC1' })[x[22]] || 'vec4( 0.0 )',
     });
-    const aref = Number(T.aref || 0).toFixed(5);
+    // GX alpha compare on the 8-bit alpha: (a comp0 ref0) op (a comp1 ref1).
+    const ac = T.acmp || [6, Math.round((T.aref || 0) * 255), 0, 7, 0];
+    const cf = (c, r) => ['false', `gA < ${r}.0`, `gA == ${r}.0`, `gA <= ${r}.0`, `gA > ${r}.0`, `gA != ${r}.0`, `gA >= ${r}.0`, 'true'][c];
+    const pass = ['(%1 && %2)', '(%1 || %2)', '(%1 != %2)', '(%1 == %2)'][ac[2]].replace('%1', cf(ac[0], ac[1])).replace('%2', cf(ac[3], ac[4]));
+    const aref = `0.0; { float gA = gxQ( diffuseColor.a ); if ( !${pass} ) discard; }`;
     sh.vertexShader = vs + sh.vertexShader.replace('#include <lights_lambert_vertex>', vbody);
     sh.fragmentShader = fs + sh.fragmentShader
       .replace('#include <map_fragment>', '')
-      .replace('#include <color_fragment>', body + `      if ( diffuseColor.a < ${aref} ) discard;\n`)
+      .replace('#include <color_fragment>', body + `      float gxAref = ${aref}\n`)
       .replace('vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
         'vec3 outgoingLight = diffuseColor.rgb;');
     m.gxTevKey = body + vbody;
@@ -1081,6 +1085,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           if (ex.tint) [].concat(o.material).forEach((m) => { if (ex.tintMat && !(m.name || '').endsWith(ex.tintMat)) return; m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
         });
         if (node.userData.npcColors) applyNpcColors(node);
+        if (ex.c0) node.traverse((o) => {   // picture signs: their placed colour and progress in TEV colour 0
+          if (!o.isMesh) return;
+          [].concat(o.material).forEach((m) => {
+            if (m.onBeforeCompile !== gxTevCompile) return;
+            m.gxRegs = (m.gxRegs || m.userData.gxTev.regs).map((r) => r.slice());
+            m.gxRegs[0] = ex.c0.map((v) => v / 255);
+            m.needsUpdate = true;
+          });
+        });
         group.add(node);
         objNodes.push(node);
       });

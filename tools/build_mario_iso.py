@@ -188,7 +188,8 @@ def gx_tev_spec(w, model, mat):
     return {"st": stages, "regs": [q(r) for r in mat.tev["regs"]], "k": [q(r) for r in mat.tev["kregs"]],
             "tex": samplers, "gen": gens, "chan": [list(c) if c else None for c in gx["chans"]],
             "matc": [q(c) for c in gx["matc"]], "amb": [q(c) for c in gx["amb"]],
-            "blend": list(mat.blend_mode[:3]), "xlu": int(mat.translucent), "aref": mat.alpha_ref or 0}
+            "blend": list(mat.blend_mode[:3]), "xlu": int(mat.translucent), "aref": mat.alpha_ref or 0,
+            "acmp": list(gx.get("acmp") or (7, 0, 0, 7, 0))}
 
 
 def gx_tev_uvs(mesh, mat):

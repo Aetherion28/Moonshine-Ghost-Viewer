@@ -513,6 +513,6 @@ def _parse_materials(mat: bytes) -> list[Material]:
                     "matc": [col_at(matcol_o, u16(mat, e + 8 + j * 2), (255, 255, 255, 255)) for j in range(2)],
                     "amb": [col_at(amb_o, u16(mat, e + 0x14 + j * 2), (0, 0, 0, 0)) for j in range(2)],
                     "texgens": texgens, "texmtx": texmtx, "texmtx_raw": texmtx_raw, "texnos": texnos,
-                    "orders": stages}
+                    "orders": stages, "acmp": tuple(mat[ac:ac + 5])}
         out.append(m_out)
     return out

@@ -184,6 +184,12 @@ SPECIAL_NPCS = {"NPCMonteMF", "NPCMonteMG", "NPCMonteMH", "NPCMonteWC", "NPCMare
                 "NPCMareMD", "NPCMareWA", "NPCMareWB"}
 
 
+PICTURE_TYPES = {"WaterHitPictureHideObj", "HideObjPictureTwin", "PictureTeresa"}
+# Starting spray progress by model (TWaterHitPictureHideObj::loadAfter): signs that spraying
+# erases start full, the ones spraying reveals start at their minimum.
+PICTURE_START = {"ChipShine": 32, "star_sign": 30, "PictureTeresa": 0}
+
+
 def bti_rgba(tex: bytes):
     """Decode a .bti texture to RGBA8."""
     fmt, w_, h_ = tex[0], struct.unpack_from(">H", tex, 2)[0], struct.unpack_from(">H", tex, 4)[0]
@@ -708,6 +714,12 @@ def main(argv):
                             extra["coin100"] = 1
                     except (struct.error, ValueError):
                         pass
+                if typ in PICTURE_TYPES and len(o["payload"]) >= 12:
+                    # TWaterHitPictureHideObj::load / loadAfter: TEV colour 0 = the placed colour, its
+                    # alpha the spray progress (the TEV turns it into the alpha-tested coverage).
+                    r, g, b = struct.unpack_from(">3I", o["payload"], len(o["payload"]) - 12)
+                    prog = PICTURE_START.get(key or "", 255)
+                    extra = {**(extra or {}), "c0": [r & 255, g & 255, b & 255, prog]}
                 if typ in ROLL_TYPES or typ in RAIL_TYPES or typ in LIFT_TYPES:
                     mv = move_extra(typ, o["payload"], rails)
                     if mv:
