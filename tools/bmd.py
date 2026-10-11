@@ -83,6 +83,7 @@ class Model:
     draw_weights: list = field(default_factory=list)  # per draw matrix: [(joint, weight), ...]
     materials: list = field(default_factory=list)
     textures: list = field(default_factory=list)   # (name, rgba ndarray, wrapS, wrapT)
+    texture_mips: dict = field(default_factory=dict)   # texture index -> [level0, level1, ...] when they differ
     meshes: list = field(default_factory=list)     # dicts: material, pos, uv{attr:..}, color, tris
 
 
@@ -245,16 +246,32 @@ def parse(data: bytes, decode_textures: bool = True, bmt: bytes | None = None,
             ws, wt, pal_fmt, pal_cnt, pal_off = tex[ho + 6], tex[ho + 7], tex[ho + 9], u16(tex, ho + 10), u32(tex, ho + 12)
             doff = u32(tex, ho + 0x1C)
             img = None
+            pal = tex[ho + pal_off: ho + pal_off + pal_cnt * 2] if pal_off else None
             if decode_textures:
                 key = (ho + doff, fmt, w, hgt)
                 if key not in cache:
-                    pal = tex[ho + pal_off: ho + pal_off + pal_cnt * 2] if pal_off else None
                     try:
                         cache[key] = gx_texture.decode(tex[ho + doff:], fmt, w, hgt, pal, pal_fmt)
                     except Exception:
                         cache[key] = None
                 img = cache[key]
             m.textures.append((names[i] if i < len(names) else f"tex{i}", img, WRAP.get(ws, 10497), WRAP.get(wt, 10497)))
+            mips = tex[ho + 0x18]
+            if decode_textures and img is not None and mips > 1:
+                # Keep the mip chain when the levels aren't just smaller copies of level 0: Sirena's
+                # distant waves are blank at level 0 and only appear in the minified levels.
+                levels, o2, lw, lh = [img], ho + doff + gx_texture.data_size(fmt, w, hgt), w, hgt
+                for _ in range(mips - 1):
+                    lw, lh = max(1, lw // 2), max(1, lh // 2)
+                    try:
+                        levels.append(gx_texture.decode(tex[o2:], fmt, lw, lh, pal, pal_fmt))
+                    except Exception:
+                        break
+                    o2 += gx_texture.data_size(fmt, lw, lh)
+                m0 = float(img.reshape(-1, 4).astype(np.float32).mean())
+                m1 = float(levels[1].reshape(-1, 4).astype(np.float32).mean()) if len(levels) > 1 else m0
+                if len(levels) > 1 and abs(m1 - m0) > max(8.0, 0.5 * m0):
+                    m.texture_mips[len(m.textures) - 1] = levels
 
     # --- SHP1
     scount = u16(shp, 8)

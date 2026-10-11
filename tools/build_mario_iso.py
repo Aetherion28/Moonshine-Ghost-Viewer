@@ -139,7 +139,7 @@ def tev_factor(model, mat, base_tex):
     return tuple(min(1, max(0, v)) for v in reg[0][:3])
 
 
-def gx_tev_spec(w, model, mat):
+def gx_tev_spec(w, model, mat, anims=None):
     """Full TEV description for the viewer's GX emulation (lit, non-Mario materials): stages with
     their texcoord / texmap / channel, colour and KONST registers, texgens (UV attribute + matrix,
     normal sphere map, or SRTG lookup by a lit colour), colour channels and the textures."""
@@ -148,7 +148,7 @@ def gx_tev_spec(w, model, mat):
     if not gx or not st:
         return None
     texnos = gx["texnos"]
-    samplers, slot = [], {}
+    samplers, slot, mips = [], {}, {}
     stages = []
     for x, (tc, tm) in zip(st, gx["orders"]):
         t = -1
@@ -165,6 +165,16 @@ def gx_tev_spec(w, model, mat):
                     return None
                 slot[tm] = len(samplers)
                 samplers.append(ref[0])
+                levels = None   # TODO: own mip levels (see bmd texture_mips); needs the sea colour the game sets
+                # at runtime first, or the distant waves flood the sea with their placeholder yellow
+                if levels:   # the texture's own mip levels (they differ from scaled-down level 0)
+                    refs = []
+                    for li, lv in enumerate(levels[1:], 1):
+                        r2 = w.texture_rgba(f"tex:{tx[0]}:{digest}:mip{li}", lv, tx[2], tx[3])
+                        if r2 is None:
+                            break
+                        refs.append(r2[0])
+                    mips[str(slot[tm])] = refs
             t = slot[tm]
         stages.append(list(x["c"][:8]) + list(x["a"][:8]) + [x["c"][8], x["a"][8], x["kc"], x["ka"], t,
                       tc if tc < 8 else -1, x["chan"]])
@@ -181,7 +191,13 @@ def gx_tev_spec(w, model, mat):
             raw = gx["texmtx_raw"][mi] if mi >= 0 else None
             gens.append({"k": "nrm", "s": [raw[1], raw[2]] if raw else [1, 1], "t": [raw[3], raw[4]] if raw else [0, 0]})
         elif 4 <= src <= 11:
-            gens.append({"k": "uv", "a": f"_GXTC{j}"})
+            gen = {"k": "uv", "a": f"_GXTC{j}"}
+            an = (anims or {}).get((mat.name, mi)) if mi >= 0 else None
+            if an:   # .btk texture SRT animation: the viewer builds this texgen's matrix every frame
+                raw = gx["texmtx_raw"][mi]
+                gen["anim"] = {"maya": int(bool(raw and raw[0] >> 7)), "c": an["center"][:2], "tr": an["tracks"],
+                               "dur": an["duration"]}
+            gens.append(gen)
         else:
             gens.append(None)
     q = lambda c: [round(v / 255, 4) for v in c]
@@ -189,10 +205,10 @@ def gx_tev_spec(w, model, mat):
             "tex": samplers, "gen": gens, "chan": [list(c) if c else None for c in gx["chans"]],
             "matc": [q(c) for c in gx["matc"]], "amb": [q(c) for c in gx["amb"]],
             "blend": list(mat.blend_mode[:3]), "xlu": int(mat.translucent), "aref": mat.alpha_ref or 0,
-            "acmp": list(gx.get("acmp") or (7, 0, 0, 7, 0))}
+            "acmp": list(gx.get("acmp") or (7, 0, 0, 7, 0)), **({"mips": mips} if mips else {})}
 
 
-def gx_tev_uvs(mesh, mat):
+def gx_tev_uvs(mesh, mat, anims=None):
     """Per-texgen UV attributes (texture matrix applied) for a material exported with gx_tev_spec."""
     out = {}
     gx = mat.gx if mat is not None else None
@@ -209,6 +225,8 @@ def gx_tev_uvs(mesh, mat):
         if uv is None:
             continue
         mtx = gx["texmtx"][mi] if mi >= 0 else None
+        if mi >= 0 and (anims or {}).get((mat.name, mi)):
+            mtx = None   # animated: the viewer applies the matrix
         if mtx is not None:
             uv = uv @ mtx[:, :2].T + mtx[:, 2]
         out[f"_GXTC{j}"] = uv.astype(np.float32)

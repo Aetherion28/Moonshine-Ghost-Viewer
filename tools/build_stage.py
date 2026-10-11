@@ -52,7 +52,11 @@ def uv_for(mesh, entry):
     return uv.astype(np.float32)
 
 
-def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") -> int:
+def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map", anim: dict | None = None) -> int:
+    # (material name, texture matrix index) -> btk animation with the animation's duration
+    anims = {}
+    for an in (anim or {}).get("anims", []):
+        anims[(an["mat"], an["tm"])] = {**an, "duration": anim["duration"]}
     tris = 0
     seen = set()
     for mesh in model.meshes:
@@ -177,11 +181,13 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             # The material's own GX setup (channels, every TEV stage and texture, texgens, alpha
             # compare, blend): e.g. Bianco's cliffs mix a rock gradient and a grass texture in 3 stages.
             from build_mario_iso import gx_tev_spec
-            full_tev = gx_tev_spec(w, model, mat)
+            full_tev = gx_tev_spec(w, model, mat, anims)
             if full_tev:
                 gx_tev = None
                 full_tev["map"] = 1
-                color = mesh.get("color") if mat.use_vertex_color else None
+                # Vertex colours whenever any channel (colour or alpha) takes its material or ambient colour from them.
+                vtx_used = any(c and (c[1] == 1 or c[5] == 1) for c in (mat.gx or {}).get("chans") or [])
+                color = mesh.get("color") if vtx_used else None
                 base_color = color
                 alpha = {"alphaMode": "BLEND"} if mat.translucent else None
         um = unlit(f"{prefix} {mat.name if mat else ''}", tex[0] if tex else None, alpha, factor)
@@ -208,7 +214,7 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             lit_any = any(c and c[0] for c in (mat.gx or {}).get("chans") or [])
             nrm_needed = lit_any or any(g and g[1] == 1 for g in (mat.gx or {}).get("texgens") or [])
             w.add_arrays(name, mesh["pos"], mesh["tris"], mi, None, base_color, mesh.get("nrm") if nrm_needed else None,
-                         gx_tev_uvs(mesh, mat))
+                         gx_tev_uvs(mesh, mat, anims))
             tris += len(mesh["tris"])
             continue
         w.add_arrays(name, mesh["pos"], mesh["tris"], mi, uv if tex else None, base_color)
@@ -237,13 +243,19 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
 def build(scene_path: Path, out: Path, max_tex: int = 512, sky: bool = True) -> bytes:
     arc = rarc_files(yaz0_decompress(scene_path.read_bytes()))
     w = GlbWriter(max_tex)
-    tris = add_model(w, bmd.parse(arc["map/map/map.bmd"]), "map")
+    import btk
+    def anim_for(path):
+        try:
+            return btk.parse(arc[path]) if path in arc else None
+        except Exception:
+            return None
+    tris = add_model(w, bmd.parse(arc["map/map/map.bmd"]), "map", "map", anim_for("map/map/map.btk"))
     for name in WATER_MODELS:
         if name in arc:
             # The sea surface: wave, shoreline and wet-sand layers with their own TEV and blends. The
             # water itself (seaindirect.bmd) redraws the frame behind it through an indirect warp, so
             # what shows is the sea floor under it; the viewer leaves that see-through.
-            tris += add_model(w, bmd.parse(arc[name]), "sea", "map")
+            tris += add_model(w, bmd.parse(arc[name]), "sea", "map", anim_for(name[:-4] + ".btk"))
     if "map/map/seaindirect.bmd" in arc:
         tris += add_model(w, bmd.parse(arc["map/map/seaindirect.bmd"], decode_textures=False), "sea", "water")
     if sky:

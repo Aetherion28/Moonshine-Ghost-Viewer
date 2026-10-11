@@ -552,7 +552,7 @@ def add_models(w: GlbWriter, models, name: str) -> None:
             mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
             mi, entry = material_for(w, model, mat, f"{name}p{pi}", gx=True)
             uv = uv_for(mesh, entry) if entry is not None else None
-            color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
+            color = mesh.get("color") if mat is not None and (mat.use_vertex_color or any(c and (c[1] == 1 or c[5] == 1) for c in (mat.gx or {}).get("chans") or [])) else None
             w.add_arrays(f"{name}_p{pi}s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"), gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else None)
             node = w.gltf["nodes"].pop()
             w.gltf["scenes"][0]["nodes"].pop()
@@ -573,7 +573,7 @@ def add_model(w: GlbWriter, model: bmd.Model, name: str, tev: bool = False) -> N
         mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
         mi, entry = material_for(w, model, mat, name, tev, gx=True)
         uv = uv_for(mesh, entry) if entry is not None else None
-        color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
+        color = mesh.get("color") if mat is not None and (mat.use_vertex_color or any(c and (c[1] == 1 or c[5] == 1) for c in (mat.gx or {}).get("chans") or [])) else None
         w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"), gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else None)
         node = w.gltf["nodes"].pop()
         w.gltf["scenes"][0]["nodes"].pop()

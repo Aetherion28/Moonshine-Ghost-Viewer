@@ -413,6 +413,40 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // GX does (material / ambient from register or vertex colour, light 0 diffuse, light 2 specular),
   // texgens (UV x texture matrix, normal sphere map, SRTG lookup by a lit colour), then the
   // material's TEV stages. Per-object register overrides (NPC colours) go in m.gxRegs.
+  // .btk texture animation (J3DAnmTextureSRTKey): Hermite keyframes, looping, 30 frames a second;
+  // the matrix is J3D's texture SRT (Maya or classic form) about the texture centre.
+  const GX_ANIM_MATS = [];
+  function btkSample(tr, f) {
+    if (tr.length === 1 && !Array.isArray(tr[0])) return tr[0];
+    if (f <= tr[0][0]) return tr[0][1];
+    for (let i = 0; i < tr.length - 1; i++) {
+      const a = tr[i], b = tr[i + 1];
+      if (f >= a[0] && f <= b[0]) {
+        const dt = b[0] - a[0] || 1, t = (f - a[0]) / dt, t2 = t * t, t3 = t2 * t;
+        return a[1] * (2 * t3 - 3 * t2 + 1) + b[1] * (-2 * t3 + 3 * t2) + a[3] * dt * (t3 - 2 * t2 + t) + b[2] * dt * (t3 - t2);
+      }
+    }
+    return tr[tr.length - 1][1];
+  }
+  function btkMatrix(an, frame, out) {
+    const f = an.dur > 0 ? frame % an.dur : 0, T = an.tr;
+    const ss = btkSample(T.sS, f), st = btkSample(T.sT, f), r = btkSample(T.rQ || [0], f);
+    const ts = btkSample(T.tS, f), tt = btkSample(T.tT, f), [cs, ct] = an.c;
+    const c = Math.cos(r), sn = Math.sin(r);
+    if (an.maya) out.set(ss * c, ss * sn, ss * ((-0.5 * c) - (0.5 * sn - 0.5) - ts),
+      st * -sn, st * c, st * ((-0.5 * c) + (0.5 * sn - 0.5) + tt) + 1.0, 0, 0, 1);
+    else {
+      const a00 = ss * c, a01 = ss * -sn, a10 = st * sn, a11 = st * c;
+      out.set(a00, a01, ts + cs - (a00 * cs + a01 * ct), a10, a11, tt + ct - (a10 * cs + a11 * ct), 0, 0, 1);
+    }
+  }
+  function updateTexAnims(now) {
+    const frame = now / 1000 * 30;
+    for (const m of GX_ANIM_MATS) {
+      const gens = m.userData.gxTev.gen;
+      for (const j in m.gxTmU) btkMatrix(gens[j].anim, frame, m.gxTmU[j].value);
+    }
+  }
   function gxChanGlsl(ctrl, i, alpha) {
     const f = (v) => Number(v).toFixed(5);
     const sw = alpha ? '.a' : '.rgb', ty = alpha ? 'float' : 'vec3';
@@ -447,6 +481,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     texs.forEach((tx, i) => { fs += `uniform sampler2D gxTex${i};\n`; });
     gens.forEach((g, j) => {
       if (g && g.k === 'uv') { vs += `attribute vec2 ${g.a.toLowerCase()};\nvarying vec2 vGxTc${j};\n`; fs += `varying vec2 vGxTc${j};\n`; }
+      if (g && g.k === 'uv' && g.anim) {   // .btk texture SRT animation, matrix updated every frame
+        vs += `uniform mat3 gxTm${j};\n`;
+        m.gxTmU = m.gxTmU || {};
+        m.gxTmU[j] = m.gxTmU[j] || { value: new THREE.Matrix3() };
+        sh.uniforms['gxTm' + j] = m.gxTmU[j];
+        if (!GX_ANIM_MATS.includes(m)) GX_ANIM_MATS.push(m);
+      }
     });
     let vbody = `
       vec3 gxN = normalize( transformedNormal );
@@ -469,7 +510,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         vLightBack = vec3( 1.0 ); vIndirectBack = vec3( 0.0 );
       #endif
 `;
-    gens.forEach((g, j) => { if (g && g.k === 'uv') vbody += `      vGxTc${j} = ${g.a.toLowerCase()};\n`; });
+    gens.forEach((g, j) => {
+      if (g && g.k === 'uv') vbody += g.anim ? `      vGxTc${j} = ( gxTm${j} * vec3( ${g.a.toLowerCase()}, 1.0 ) ).xy;\n` : `      vGxTc${j} = ${g.a.toLowerCase()};\n`;
+    });
     const coord = (j) => {
       const g = gens[j];
       if (!g) return 'vec2( 0.0 )';
@@ -515,16 +558,33 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     } else { m.transparent = false; m.blending = THREE.NormalBlending; }
     m.onBeforeCompile = gxTevCompile; m.customProgramCacheKey = gxTevKey;
   }
+  const GX_MIP_TEX = new Map();
   // Textures named in extras.gxTev.tex, fetched from the glTF (raw texels, as GX samples them).
   async function gxTevTextures(gltf) {
     const mats = [];
     gltf.scene.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.userData.gxTev && !mats.includes(m)) mats.push(m); }); });
     await Promise.all(mats.map(async (m) => {
       try {
-        m.gxTevTex = await Promise.all(m.userData.gxTev.tex.map((i) => gltf.parser.getDependency('texture', i).then((tx) => {
+        const mips = m.userData.gxTev.mips || {};
+        m.gxTevTex = await Promise.all(m.userData.gxTev.tex.map(async (i, slot) => {
+          let tx = await gltf.parser.getDependency('texture', i);
           if (tx.encoding !== THREE.LinearEncoding) { tx = tx.clone(); tx.encoding = THREE.LinearEncoding; tx.needsUpdate = true; }
+          const lv = mips[slot];
+          if (lv && lv.length) {   // the game's own mip levels (e.g. waves that only show at a distance)
+            const imgs = await Promise.all(lv.map((li) => gltf.parser.getDependency('texture', li).then((t) => t.image)));
+            const key = 'mip' + i;
+            if (!GX_MIP_TEX.has(key)) {
+              const t2 = tx.clone();
+              t2.mipmaps = [tx.image, ...imgs];
+              t2.generateMipmaps = false;
+              t2.minFilter = THREE.LinearMipmapLinearFilter;
+              t2.needsUpdate = true;
+              GX_MIP_TEX.set(key, t2);
+            }
+            tx = GX_MIP_TEX.get(key);
+          }
           return tx;
-        })));
+        }));
       } catch (e) { m.gxTevTex = null; }
     }));
   }
@@ -3064,6 +3124,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   let last = performance.now();
   function loop(now) {
     const dt = Math.min(0.1, (now - last) / 1000);
+    updateTexAnims(now);
     last = now;
     if (playing) {
       // Playback runs on a continuous clock; unless smoothing is on, what's shown steps one whole
