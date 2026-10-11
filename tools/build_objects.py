@@ -338,6 +338,32 @@ def mat_table(arc: dict, keys, table: dict):
     return None, False
 
 
+# THangingBridge::loadAfter / initMonte (MapObjMonte.cpp): the bridge places its own boards, so the
+# scene only holds the bridge. Pianta Village: 19 boards at fixed spots (x, y, z, tilt); Pinna Park:
+# 14 boards in a line. The ropes between them are drawn by code and left out.
+MONTE_BOARDS = [(0, -130, 11965, 30), (0, -275, 12225, 29), (0, -415, 12490, 28), (0, -540, 12760, 26),
+                (0, -660, 13035, 24), (0, -770, 13315, 22), (0, -875, 13595, 20), (0, -960, 13895, 12),
+                (0, -1020, 14190, 8), (0, -1060, 14490, 4), (0, -1090, 14790, 2), (0, -1090, 15090, 0),
+                (0, -1080, 15395, -4), (0, -1040, 15695, -6), (0, -995, 15990, -8), (0, -945, 16285, -8),
+                (0, -900, 16580, -8), (0, -855, 16880, -8), (0, -800, 17175, -10)]
+
+
+def bridge_boards(scene: str, objs) -> list:
+    if not any(o["type"] == "HangingBridge" for o in objs):
+        return []
+    if scene.startswith("monte"):
+        key, boards = "HangingBridgeBoard", [((x, y, z), (rx, 0, 0)) for x, y, z, rx in MONTE_BOARDS]
+    elif scene.startswith("pinnaParco"):
+        a, b, n = (1550, 2980, -9410), (3570, 2455, -9410), 14
+        key = "PinnaHangingBridgeBoard"
+        boards = [(tuple(a[k] + (b[k] - a[k]) * i / (n - 1) for k in range(3)), (15, 90, 0)) for i in range(n)]
+    else:
+        return []
+    kb = key.encode()
+    return [{"type": "MapObjBase", "name": "", "hash": 0, "path": [], "ptypes": (),
+             "payload": struct.pack(">9f", *p, *r, 1, 1, 1) + struct.pack(">HH", 0, len(kb)) + kb} for p, r in boards]
+
+
 def find_model(arc: dict, typ: str, keys, table: dict):
     """keys: candidate model keys from the payload, in order (e.g. ['NozzleBox', 'valid'])."""
     if isinstance(keys, str) or keys is None:
@@ -497,7 +523,9 @@ def main(argv):
                 continue
             instances = []
             rails = parse_rails(arc["map/scene.ral"]) if "map/scene.ral" in arc else {}
-            for o in scene_bin.parse(arc["map/scene.bin"]):
+            scene_objs = scene_bin.parse(arc["map/scene.bin"])
+            scene_objs += bridge_boards(scene, scene_objs)
+            for o in scene_objs:
                 typ = o["type"]
                 if SKIP_TYPES.match(typ):
                     continue
