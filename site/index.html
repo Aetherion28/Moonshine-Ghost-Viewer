@@ -549,7 +549,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function gxClamp(sh) { gxCompile.call(this, sh); }
   function gxMaterial(m) {   // unlit glTF material flagged lit by the converter -> lit like the game
-    if (!m || !m.userData || !m.userData.lit || m.isMeshLambertMaterial) return m;
+    const fullTev = m && m.userData && m.userData.gxTev && m.userData.gxTev.tex;
+    if (!m || !m.userData || (!m.userData.lit && !fullTev) || m.isMeshLambertMaterial) return m;
+    if (!m.userData.lit && !m.gxTevTex) return m;   // stage material whose textures failed: keep it as exported
     const n = new THREE.MeshLambertMaterial({ map: m.map, color: m.color.clone(), vertexColors: m.vertexColors,
       transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, side: m.side, depthWrite: m.depthWrite });
     n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp; n.customProgramCacheKey = gxCacheKey;
@@ -593,7 +595,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return this;
   };
   function gxLight(root) {
-    root.traverse((o) => { if (o.isMesh && o.geometry.attributes.normal) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material); });
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      const tev = [].concat(o.material).some((m) => m.userData && m.userData.gxTev && m.userData.gxTev.tex);
+      if (o.geometry.attributes.normal || tev) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material);
+    });
   }
 
   // Stages with a sky draw the dome straight over the cleared (black) frame: "PerformList GX" in
@@ -792,7 +798,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         // Glow cards the game adds on top (blend destination GX_BL_ONE).
         group.userData.materials.forEach((m) => {
           if (m.userData && m.userData.additive) { m.blending = THREE.AdditiveBlending; m.transparent = true; m.depthWrite = false; }
-          if (m.userData && m.userData.gxTev) applyGxTev(m, m.userData.gxTev);
+          if (m.userData && m.userData.gxTev && !m.userData.gxTev.tex) applyGxTev(m, m.userData.gxTev);
         });
         // Frame on the playable area: skip sky domes and far-away sea planes when sizing the view.
         const box = new THREE.Box3();
@@ -3268,6 +3274,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (cameraMode === 'follow') setCameraMode('free');
     }
   });
+  // OrbitControls cancels the pointerdown, so a click on the scene would leave focus in the last menu
+  // used (WASD then changes that menu); clicking the scene hands the keyboard back to the camera.
+  renderer.domElement.addEventListener('pointerdown', () => {
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur) a.blur();
+  }, { capture: true });
   window.addEventListener('keyup', (e) => { fastMove = e.shiftKey; heldKeys.delete(e.code); });
   window.addEventListener('blur', () => heldKeys.clear());
   // On-screen joystick (touch): the stick's tilt is the move direction and speed, the two buttons

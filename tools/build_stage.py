@@ -169,6 +169,18 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
                           "blend": list(mat.blend_mode[:3]), "aref": mat.alpha_ref or 0}
                 factor = tuple(c / 255 for c in mat.mat_color) if (not mat.use_vertex_color or color is None) else (1, 1, 1, 1)
                 alpha = {"alphaMode": "BLEND"}
+        full_tev = None
+        if kind == "map" and mat is not None and not glow_extra and mat.blend_mode[:3] != (1, 4, 1) and st_all:
+            # The material's own GX setup (channels, every TEV stage and texture, texgens, alpha
+            # compare, blend): e.g. Bianco's cliffs mix a rock gradient and a grass texture in 3 stages.
+            from build_mario_iso import gx_tev_spec
+            full_tev = gx_tev_spec(w, model, mat)
+            if full_tev:
+                gx_tev = None
+                full_tev["map"] = 1
+                color = mesh.get("color") if mat.use_vertex_color else None
+                base_color = color
+                alpha = {"alphaMode": "BLEND"} if mat.translucent else None
         um = unlit(f"{prefix} {mat.name if mat else ''}", tex[0] if tex else None, alpha, factor)
         if kind == "map" and mat is not None and mat.cull in (1, 2):
             # GX culling (GX_CULL_FRONT / GX_CULL_BACK): the viewer draws one side, as the game does,
@@ -176,6 +188,8 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             extras = {**(extras or {}), "cull": mat.cull}
         if gx_tev:
             extras = {**(extras or {}), "gxTev": gx_tev}
+        if full_tev:
+            extras = {**(extras or {}), "gxTev": full_tev}
         if kind == "sky" and mat is not None:
             # TSky: the dome is drawn over a blue sphere with each material's own GX blend (e.g. the
             # sky gradient as src + dst * (1 - src)), so the viewer needs the factors.
@@ -185,6 +199,15 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
         if extras:
             um["extras"] = extras
         mi = w.custom_material(um)
+        if full_tev:
+            from build_mario_iso import gx_tev_uvs
+            # Normals only where a colour channel is lit; the TEV samples its own per-texgen UVs.
+            lit_any = any(c and c[0] for c in (mat.gx or {}).get("chans") or [])
+            nrm_needed = lit_any or any(g and g[1] == 1 for g in (mat.gx or {}).get("texgens") or [])
+            w.add_arrays(name, mesh["pos"], mesh["tris"], mi, None, base_color, mesh.get("nrm") if nrm_needed else None,
+                         gx_tev_uvs(mesh, mat))
+            tris += len(mesh["tris"])
+            continue
         w.add_arrays(name, mesh["pos"], mesh["tris"], mi, uv if tex else None, base_color)
         tris += len(mesh["tris"])
         if sky_mul is not None:
