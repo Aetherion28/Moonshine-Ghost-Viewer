@@ -65,6 +65,11 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .joy .ud { display: flex; flex-direction: column; gap: 8px; }
 .joy .ud button { width: 40px; height: 40px; border-radius: 50%; padding: 0; font-size: 18px; line-height: 1; background: rgba(0,0,0,.28); color: #fff; border: 2px solid rgba(255,255,255,.45); touch-action: none; }
 .joy .ud button.on { background: rgba(255,255,255,.35); }
+.fsBtn { position: absolute; right: 12px; top: 12px; width: 36px; height: 36px; padding: 0; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--panel) 82%, transparent); }
+.fsBtn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.fsBtn .out, .app.full .fsBtn .in { display: none; }
+.app.full .fsBtn .out { display: inline; }
 .inputsStage { position: absolute; right: 12px; bottom: 12px; width: min(340px, 50%); pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
 .inputsStage[hidden] { display: none; }
 .inputsBox { background: #0b0f12; border-radius: 8px; padding: 10px 10px 8px; }
@@ -78,7 +83,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .inputs .f { fill: var(--in); opacity: 0; }
 .inputs .f.on { opacity: 1; }
 .inputs .solid { fill: var(--in); }
-.notice { position: absolute; right: 12px; top: 12px; max-width: min(320px, 70%); font-size: 13px;
+.notice { position: absolute; right: 12px; top: 56px; max-width: min(320px, 70%); font-size: 13px;
   background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 10px; }
 .drop { position: absolute; inset: 10px; border: 2px dashed var(--accent); border-radius: 10px; display: grid; place-items: center;
   font-weight: 800; font-size: 18px; background: color-mix(in srgb, var(--panel) 75%, transparent); pointer-events: none; }
@@ -175,6 +180,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 .shared li .time { font-family: var(--mono); }
 .shared li .who { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shared .msg { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+/* Full screen: only the scene and the playback strip. */
+.app.full { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "stage" "transport"; height: 100%; height: 100dvh; }
+.app.full > header, .app.full > aside { display: none; }
 </style>
 
 <div class="app">
@@ -205,6 +213,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <div class="ud"><button id="joyUp" aria-label="Raise the camera" title="Raise the camera">&#9650;</button><button id="joyDown" aria-label="Lower the camera" title="Lower the camera">&#9660;</button></div>
     </div>
     <div class="drop" id="drop" hidden>Drop .smsghost files to add them</div>
+    <button class="fsBtn" id="fullScreen" title="Full screen" aria-label="Full screen" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="in" d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><path class="out" d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg></button>
   </div>
 
   <div class="transport">
@@ -291,7 +300,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         <p class="inputsNone" id="inputsNone">This ghost has no recorded inputs.</p>
       </div>
     </div>
-    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. On a touch screen, tick <b>Movement joystick</b> for an on-screen stick that flies the camera; dragging with one finger then turns the camera where it stands.</p>
+    <p class="help">Click the stage to play or pause. Drag to orbit, scroll or pinch to zoom. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys move the camera, <kbd>Q</kbd> <kbd>E</kbd> lower and raise it, hold <kbd>Shift</kbd> to go faster. <kbd>Space</kbd> play, <kbd>,</kbd> <kbd>.</kbd> step one frame, <kbd>F</kbd> follow camera. The button in the scene's top right corner goes full screen. On a touch screen, tick <b>Movement joystick</b> for an on-screen stick that flies the camera; dragging with one finger then turns the camera where it stands.</p>
     <p class="help">To load a ghost, drag .smsghost files from your computer and drop them anywhere on the page, use <b>Add ghost</b>, or pick one from <b>Shared ghosts</b>.</p>
   </aside>
 </div>
@@ -3348,6 +3357,27 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const a = document.activeElement;
     if (a && a !== document.body && a.blur) a.blur();
   }, { capture: true });
+  // Full screen: the scene and the playback strip fill the screen (the browser's full screen
+  // where it allows it, e.g. not on iPhone, where the page layout alone does it).
+  {
+    const app = document.querySelector('.app'), btn = $('fullScreen');
+    const set = (on) => {
+      app.classList.toggle('full', on);
+      btn.setAttribute('aria-pressed', String(on));
+      btn.title = btn.ariaLabel = on ? 'Exit full screen' : 'Full screen';
+    };
+    btn.addEventListener('click', async () => {
+      const on = !app.classList.contains('full');
+      set(on);
+      try {
+        if (on && document.documentElement.requestFullscreen && !document.fullscreenElement) await document.documentElement.requestFullscreen();
+        else if (!on && document.fullscreenElement) await document.exitFullscreen();
+      } catch { /* not allowed here: the layout alone */ }
+      btn.blur();
+    });
+    document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && app.classList.contains('full')) set(false); });
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && app.classList.contains('full') && !document.fullscreenElement) set(false); });
+  }
   window.addEventListener('keyup', (e) => { fastMove = e.shiftKey; heldKeys.delete(e.code); });
   window.addEventListener('blur', () => heldKeys.clear());
   // On-screen joystick (touch): the stick's tilt is the move direction and speed, the two buttons
