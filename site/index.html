@@ -1661,21 +1661,25 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const ka_ = cmpKey(c[4], `vec3(${A})`), kb_ = cmpKey(c[4], `vec3(${B})`);
           cexp = `${D} + ${C} * (${ka_} ${c[4] % 2 === 0 ? '>' : '=='} ${kb_} ? 1.0 : 0.0)`;
         }
-      } else {
-        cexp = `(${ci(c[3], kcs)} ${c[4] === 1 ? '-' : '+'} mix(${ci(c[0], kcs)}, ${ci(c[1], kcs)}, ${ci(c[2], kcs)}) + ${bias[c[5]]}) * ${scale[c[6]]}`;
+      } else {   // a, b, c are the low 8 bits of their input (d keeps its sign and range)
+        cexp = `(${ci(c[3], kcs)} ${c[4] === 1 ? '-' : '+'} mix(gxW(${ci(c[0], kcs)}), gxW(${ci(c[1], kcs)}), gxW(${ci(c[2], kcs)})) + ${bias[c[5]]}) * ${scale[c[6]]}`;
       }
       if (a[4] >= 8) {
         const A = ai(a[0], kas), B = ai(a[1], kas), C = ai(a[2], kas), D = ai(a[3], kas);
         aexp = `${D} + ${C} * (gxQ(${A}) ${a[4] % 2 === 0 ? '>' : '=='} gxQ(${B}) ? 1.0 : 0.0)`;
       } else {
-        aexp = `(${ai(a[3], kas)} ${a[4] === 1 ? '-' : '+'} mix(${ai(a[0], kas)}, ${ai(a[1], kas)}, ${ai(a[2], kas)}) + ${bias[a[5]]}) * ${scale[a[6]]}`;
+        aexp = `(${ai(a[3], kas)} ${a[4] === 1 ? '-' : '+'} mix(gxW(${ai(a[0], kas)}), gxW(${ai(a[1], kas)}), gxW(${ai(a[2], kas)})) + ${bias[a[5]]}) * ${scale[a[6]]}`;
       }
       g += `  vec3 oc = ${cexp}; float oa = ${aexp};\n`;
       g += `  ${regName[x[16]]}.rgb = ${c[7] ? 'clamp(oc, 0.0, 1.0)' : 'clamp(oc, -4.0, 4.0)'}; ${regName[x[17]]}.a = ${a[7] ? 'clamp(oa, 0.0, 1.0)' : 'clamp(oa, -4.0, 4.0)'};\n}\n`;
     });
     return g + 'diffuseColor = clamp(tPREV, 0.0, 1.0);\n';
   }
-  const GX_Q_GLSL = 'float gxQ( float v ) { return floor( clamp( v, 0.0, 1.0 ) * 255.0 + 0.5 ); }\n';
+  // gxW: a TEV a/b/c input takes the low 8 bits of the register (so an unclamped 2.0 reads as 254/255,
+  // which gives coins their banded shine); gxQ: an 8-bit value for the compare ops.
+  const GX_Q_GLSL = 'float gxQ( float v ) { return floor( clamp( v, 0.0, 1.0 ) * 255.0 + 0.5 ); }\n'
+    + 'float gxW( float v ) { return mod( floor( v * 255.0 + 0.5 ), 256.0 ) / 255.0; }\n'
+    + 'vec3 gxW( vec3 v ) { return mod( floor( v * 255.0 + 0.5 ), 256.0 ) / 255.0; }\n';
   function applyGxTev(m, tev) {
     const [type, src, dst] = tev.blend;
     m.transparent = true; m.depthWrite = false;
