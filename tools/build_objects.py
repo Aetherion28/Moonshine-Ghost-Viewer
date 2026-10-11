@@ -712,6 +712,14 @@ def main(argv):
                     col = ([0, 100, 255, 0] if ev < 50 else [255, 0, 0, 0] if ev == 200
                            else [255, 200, 0, 0] if ev == 777 else [0, 200, 0, 0])
                     extra = {**(extra or {}), "gxSet": [{"m": "_mat_body1", "r": 1, "c": col}]}
+                if typ == "NozzleBox":
+                    # TNozzleBox::load: every material's TEV colour 1 follows the nozzle inside
+                    # (hover blue, rocket red, turbo grey-blue; default white), alpha 0x64.
+                    nb = o["payload"]
+                    col = ([0, 0, 255, 100] if b"normal_nozzle_item" in nb else
+                           [255, 0, 0, 100] if b"rocket_nozzle_item" in nb else
+                           [90, 90, 120, 100] if b"back_nozzle_item" in nb else [255, 255, 255, 100])
+                    extra = {**(extra or {}), "gxSet": [{"r": 1, "c": col}]}
                 if typ in ("Telesa", "LoopTelesa", "BoxTelesa", "SeeTelesa", "MarioModokiTelesa"):
                     # TTelesaManager::createEnemies / TTelesa::reset: _mat_body's TEV colour 0 is
                     # cTelesaColor[0] (350, 350, 350), the box Boos' [1] (600, 270, 220, pink); KCOLOR0
@@ -725,8 +733,6 @@ def main(argv):
                         ev = struct.unpack_from(">i", o["payload"], q)[0]
                         extra = {**(extra or {}), "shine": mode.decode("ascii", "replace"), "ev": ev}
                         if "１００枚" in o.get("name", ""):   # appears once 100 gold coins are collected
-                            extra["coin100"] = 1
-                        if "１００枚" in o.get("name", ""):   # appears at the 100th gold coin (TCoin::taken)
                             extra["coin100"] = 1
                     except (struct.error, ValueError):
                         pass

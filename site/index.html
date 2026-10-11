@@ -3384,15 +3384,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const opt = $('optJoy');
     if (window.matchMedia && matchMedia('(pointer: coarse)').matches) opt.checked = true;
     // With the stick on, a one-finger drag turns the camera where it stands (looking around)
-    // instead of orbiting it around a point; two fingers still pinch to zoom.
+    // instead of orbiting it around a point; two fingers still pinch to zoom. Only the fingers
+    // on the stage count (targetTouches): a finger on the stick or the up/down buttons is not
+    // half of a pinch, so the other finger still turns the camera while the stick moves it.
     let look = null;
     const el = renderer.domElement;
-    el.addEventListener('touchstart', (e) => {
-      look = opt.checked && e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
-    }, { passive: true });
+    const held = () => id !== null || joy.y !== 0;
+    // Runs before OrbitControls' own touch handlers (capture on the parent): with a finger on
+    // the stick, the controls would see two touches and zoom.
+    el.parentElement.addEventListener('touchstart', (e) => {
+      if (e.target !== el) return;
+      if (held()) controls.enabled = false;
+      look = opt.checked && e.targetTouches.length === 1 ? { x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY } : null;
+    }, { passive: true, capture: true });
     el.addEventListener('touchmove', (e) => {
-      if (!look || e.touches.length !== 1) { look = null; return; }
-      const t = e.touches[0], dx = t.clientX - look.x, dy = t.clientY - look.y;
+      if (!look || e.targetTouches.length !== 1) { look = null; return; }
+      const t = e.targetTouches[0], dx = t.clientX - look.x, dy = t.clientY - look.y;
       look.x = t.clientX; look.y = t.clientY;
       if (!dx && !dy) return;
       if (cameraMode !== 'free') setCameraMode('free');
@@ -3404,7 +3411,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       controls.target.copy(camera.position).add(new THREE.Vector3().setFromSpherical(sph));
       camera.lookAt(controls.target);
     }, { passive: true });
-    el.addEventListener('touchend', () => { look = null; }, { passive: true });
+    const lift = (e) => { if (!e.targetTouches.length) { look = null; controls.enabled = true; } };
+    el.addEventListener('touchend', lift, { passive: true });
+    el.addEventListener('touchcancel', lift, { passive: true });
     const show = () => {
       $('joy').hidden = !opt.checked;
       if (!opt.checked) { joy.x = joy.z = joy.y = 0; }
