@@ -22,6 +22,9 @@ from convert_map import rarc_files, yaz0_decompress  # noqa: E402
 from dae_to_glb import GlbWriter  # noqa: E402
 
 WATER_MODELS = ("map/map/sea.bmd",)
+# seaindirect.bmd, the water body: in the game it shows the frame behind it through an indirect
+# warp (see-through); the viewer draws it as a faint tint so the surface still reads.
+WATER_ALPHA = 0.05
 SKY_MODELS = ("map/map/sky.bmd",)
 
 
@@ -62,7 +65,7 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
         name = f"{prefix}_{mat.name if mat else 'shape'}{mesh['shape']}"
         color = mesh.get("color")
         if kind == "water":
-            wm = w.custom_material(unlit("water", factor=(0.13, 0.47, 0.62, 0.72), alpha={"alphaMode": "BLEND"}))
+            wm = w.custom_material(unlit("water", factor=(0.13, 0.47, 0.62, WATER_ALPHA), alpha={"alphaMode": "BLEND"}))
             w.add_arrays(name, mesh["pos"], mesh["tris"], wm)
             tris += len(mesh["tris"])
             continue
@@ -241,6 +244,8 @@ def build(scene_path: Path, out: Path, max_tex: int = 512, sky: bool = True) -> 
             # water itself (seaindirect.bmd) redraws the frame behind it through an indirect warp, so
             # what shows is the sea floor under it; the viewer leaves that see-through.
             tris += add_model(w, bmd.parse(arc[name]), "sea", "map")
+    if "map/map/seaindirect.bmd" in arc:
+        tris += add_model(w, bmd.parse(arc["map/map/seaindirect.bmd"], decode_textures=False), "sea", "water")
     if sky:
         for name in SKY_MODELS:
             if name in arc:

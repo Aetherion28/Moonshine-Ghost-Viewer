@@ -207,9 +207,11 @@ def npc_colour(cc, idx):
     def pick(b):
         return [max(0, min(510, v)) for v in b[idx]] if b and idx < len(b) else None
     c0, c1 = pick(b0), pick(b1)
+    def raw_pick(b):   # GXColorS10: signed, may be negative or above 255
+        return [max(-1024, min(1023, v)) for v in b[idx]] if b and idx < len(b) else None
     # [4:]: what SMS_InitChangeNpcColor really sets, for the viewer's TEV emulation: kind 0 the
     # material colour, 1 TEV register 0, 2 registers 1 (first table) and 2 (second table).
-    raw = [cc["kind"], c0, c1]
+    raw = [cc["kind"], raw_pick(b0), raw_pick(b1)]
     if cc["kind"] == 2 and c0 and c1:
         return [cc["mat"], "grad", c0, c1] + raw
     c = c0 or c1
@@ -701,6 +703,15 @@ def main(argv):
                     rgb = list(struct.unpack_from(">3i", o["payload"], len(o["payload"]) - 12))
                     if all(0 <= c <= 255 for c in rgb) and rgb != [255, 255, 255]:
                         extra = {"tint": rgb}
+                if typ == "AnimalBird" and len(o["payload"]) >= 4:
+                    # TAnimalBird::load: the bird's colour (TEV colour 1 of _mat_body1, cColorTable)
+                    # follows what it carries: event < 50 a blue coin, 200 a red coin, 777 a Shine,
+                    # anything else (100: a coin) green.
+                    ev = struct.unpack_from(">i", o["payload"], len(o["payload"]) - 4)[0]
+                    ev = 100 if ev < 0 else ev
+                    col = ([0, 100, 255, 0] if ev < 50 else [255, 0, 0, 0] if ev == 200
+                           else [255, 200, 0, 0] if ev == 777 else [0, 200, 0, 0])
+                    extra = {**(extra or {}), "gxSet": [{"m": "_mat_body1", "r": 1, "c": col}]}
                 if typ in ("Telesa", "LoopTelesa", "BoxTelesa", "SeeTelesa", "MarioModokiTelesa"):
                     # TTelesaManager::createEnemies / TTelesa::reset: _mat_body's TEV colour 0 is
                     # cTelesaColor[0] (350, 350, 350), the box Boos' [1] (600, 270, 220, pink); KCOLOR0

@@ -983,7 +983,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k0 = g.userData.npcK0;
       if (k0) g.traverse((o) => {   // pollution threshold in KCOLOR0 on every material but the eyes
         if (!o.isMesh) return;
-        for (let q = o; q && q !== g; q = q.parent) if (q.userData.npcPart) return;   // parts keep theirs
+        // TNpcParts passes the same KCOLOR0 to the parts that can be polluted (the Nokis' shells).
         [].concat(o.material).forEach((m) => {
           if (m.onBeforeCompile !== gxTevCompile || /_eye_mat$/.test(m.name || '')) return;
           m.gxKRegs = (m.gxKRegs || m.userData.gxTev.k).map((r) => r.slice());
@@ -1671,6 +1671,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const kc = (sel) => sel <= 7 ? `vec3(${f(1 - sel / 8)})` : sel >= 12 && sel <= 15 ? `kR${sel - 12}.rgb`
       : sel >= 16 ? `vec3(kR${(sel - 16) % 4}.${'rgba'[Math.floor((sel - 16) / 4)]})` : 'vec3(1.0)';
     const ka = (sel) => sel <= 7 ? f(1 - sel / 8) : sel >= 16 ? `kR${(sel - 16) % 4}.${'rgba'[Math.floor((sel - 16) / 4)]}` : '1.0';
+    // Which registers may hold values outside 0..1 (only those need the 8-bit wrap as a, b, c inputs).
+    const loose = { tPREV: true, tR0: true, tR1: true, tR2: true };
+    const regOfC = [ 'tPREV', 'tPREV', 'tR0', 'tR0', 'tR1', 'tR1', 'tR2', 'tR2' ], regOfA = [ 'tPREV', 'tR0', 'tR1', 'tR2' ];
+    const W = (expr, reg) => (reg && loose[reg] ? `gxW(${expr})` : expr);
     const ci = (i, k) => ['tPREV.rgb', 'vec3(tPREV.a)', 'tR0.rgb', 'vec3(tR0.a)', 'tR1.rgb', 'vec3(tR1.a)', 'tR2.rgb', 'vec3(tR2.a)',
       'gT.rgb', 'vec3(gT.a)', 'gRas.rgb', 'vec3(gRas.a)', 'vec3(1.0)', 'vec3(0.5)', kc(k), 'vec3(0.0)'][i];
     const ai = (i, k) => ['tPREV.a', 'tR0.a', 'tR1.a', 'tR2.a', 'gT.a', 'gRas.a', ka(k), '0.0'][i];
@@ -1697,16 +1701,19 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           cexp = `${D} + ${C} * (${ka_} ${c[4] % 2 === 0 ? '>' : '=='} ${kb_} ? 1.0 : 0.0)`;
         }
       } else {   // a, b, c are the low 8 bits of their input (d keeps its sign and range)
-        cexp = `(${ci(c[3], kcs)} ${c[4] === 1 ? '-' : '+'} mix(gxW(${ci(c[0], kcs)}), gxW(${ci(c[1], kcs)}), gxW(${ci(c[2], kcs)})) + ${bias[c[5]]}) * ${scale[c[6]]}`;
+        cexp = `(${ci(c[3], kcs)} ${c[4] === 1 ? '-' : '+'} mix(${W(ci(c[0], kcs), regOfC[c[0]])}, ${W(ci(c[1], kcs), regOfC[c[1]])}, ${W(ci(c[2], kcs), regOfC[c[2]])}) + ${bias[c[5]]}) * ${scale[c[6]]}`;
       }
       if (a[4] >= 8) {
         const A = ai(a[0], kas), B = ai(a[1], kas), C = ai(a[2], kas), D = ai(a[3], kas);
         aexp = `${D} + ${C} * (gxQ(${A}) ${a[4] % 2 === 0 ? '>' : '=='} gxQ(${B}) ? 1.0 : 0.0)`;
       } else {
-        aexp = `(${ai(a[3], kas)} ${a[4] === 1 ? '-' : '+'} mix(gxW(${ai(a[0], kas)}), gxW(${ai(a[1], kas)}), gxW(${ai(a[2], kas)})) + ${bias[a[5]]}) * ${scale[a[6]]}`;
+        aexp = `(${ai(a[3], kas)} ${a[4] === 1 ? '-' : '+'} mix(${W(ai(a[0], kas), regOfA[a[0]])}, ${W(ai(a[1], kas), regOfA[a[1]])}, ${W(ai(a[2], kas), regOfA[a[2]])}) + ${bias[a[5]]}) * ${scale[a[6]]}`;
       }
       g += `  vec3 oc = ${cexp}; float oa = ${aexp};\n`;
       g += `  ${regName[x[16]]}.rgb = ${c[7] ? 'clamp(oc, 0.0, 1.0)' : 'clamp(oc, -4.0, 4.0)'}; ${regName[x[17]]}.a = ${a[7] ? 'clamp(oa, 0.0, 1.0)' : 'clamp(oa, -4.0, 4.0)'};\n}\n`;
+      // A register is 'loose' if either its colour or alpha part may now be outside 0..1.
+      loose[regName[x[16]]] = !c[7] || (x[16] === x[17] ? !a[7] : loose[regName[x[16]]]);
+      if (x[17] !== x[16]) loose[regName[x[17]]] = !a[7] || loose[regName[x[17]]];
     });
     return g + 'diffuseColor = clamp(tPREV, 0.0, 1.0);\n';
   }
