@@ -92,6 +92,7 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             elif mat.translucent or mat.blend:
                 alpha = {"alphaMode": "BLEND"}
         sky_mul = None
+        sky_tev = None
         glow_extra = False
         if kind == "map" and mat is not None:
             st0 = ((mat.tev or {}).get("stages") or [{}])[0]
@@ -120,8 +121,14 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             if st and st[0]["c"][:4] == (15, 8, 2, 15):
                 factor = tuple(c / 255 for c in mat.tev["regs"][0][:3]) + (1,)
                 color = None
-            if len(st) > 1 and st[1]["c"][:4] == (15, 0, 8, 15) and mat.layer is not None:
+            if len(st) > 1 and st[1]["c"][:4] in ((15, 0, 8, 15), (15, 8, 0, 15)) and mat.layer is not None:
                 sky_mul = mat.layer
+            if len(st) == 2 and st[0]["c"][:4] == (2, 15, 8, 10) and st[1]["c"][:5] == (15, 8, 4, 0, 1):
+                # Sunset gradient (e.g. Sirena's sky): clamp(RAS + C0 * (1 - T)) - T * C1, done in the viewer.
+                regs = mat.tev["regs"]
+                sky_tev = {"c0": [round(max(0, min(255, c)) / 255, 4) for c in regs[0][:3]],
+                           "c1": [round(max(0, min(255, c)) / 255, 4) for c in regs[1][:3]]}
+                factor = (1, 1, 1, 1)
         base_color = color
         if color is not None and mat is not None and mat.layer is not None:
             # Vertex alpha is the blend weight of the second layer, not base opacity.
@@ -148,6 +155,12 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             # GX culling (GX_CULL_FRONT / GX_CULL_BACK): the viewer draws one side, as the game does,
             # so a wall seen from behind is see-through instead of showing its inside.
             extras = {**(extras or {}), "cull": mat.cull}
+        if kind == "sky" and mat is not None:
+            # TSky: the dome is drawn over a blue sphere with each material's own GX blend (e.g. the
+            # sky gradient as src + dst * (1 - src)), so the viewer needs the factors.
+            extras = {**(extras or {}), "gxBlend": list(mat.blend_mode[:3])}
+            if sky_tev:
+                extras["skyTev"] = sky_tev
         if extras:
             um["extras"] = extras
         mi = w.custom_material(um)
@@ -159,7 +172,8 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
             muv = uv_for(mesh, sky_mul)
             if mtex is not None and muv is not None:
                 mm = unlit(f"skymul {prefix} {mat.name}", mtex[0], {"alphaMode": "BLEND"})
-                mm["extras"] = {"multiply": True}
+                # TEV stage 1 scale (GX_CS_SCALE_2 etc.), e.g. Sirena's clouds: 2 x tex x tex x colour.
+                mm["extras"] = {"multiply": True, "scale": (1, 2, 4, 0.5)[st[1]["c"][6]]}
                 w.add_arrays(name + "_mul", mesh["pos"], mesh["tris"], w.custom_material(mm), muv, None)
                 tris += len(mesh["tris"])
         if mat is not None and mat.layer is not None and color is not None:

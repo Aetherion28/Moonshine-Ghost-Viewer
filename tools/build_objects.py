@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
+import math
 import json
 import re
 import struct
@@ -24,9 +26,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bmd  # noqa: E402
+import gx_texture  # noqa: E402
 import prm  # noqa: E402
 import npc_payload  # noqa: E402
 import scene_bin  # noqa: E402
@@ -364,6 +368,77 @@ def bridge_boards(scene: str, objs) -> list:
              "payload": struct.pack(">9f", *p, *r, 1, 1, 1) + struct.pack(">HH", 0, len(kb)) + kb} for p, r in boards]
 
 
+def bridge_ropes(arc: dict, scene: str, objs) -> dict | None:
+    """THangingBridge::perform: the ropes the game draws itself (mon_bri_rope.bti, TEXC only), as
+    triangles: a short post up from each end of every board, then two sagging hand-ropes per side
+    from the bridge ends through the boards, one at the boards and one mRopeHeight above."""
+    if not any(o["type"] == "HangingBridge" for o in objs):
+        return None
+    if scene.startswith("monte"):
+        n, a, b, height, half = 19, (0, 0, 11356), (0, -750, 17743), 1000.0, 315.0
+        boards = [((x, y, z), 0.0) for x, y, z, _ in MONTE_BOARDS]
+    elif scene.startswith("pinnaParco"):
+        n, a, b, height, half = 14, (1550, 2980, -9410), (3570, 2455, -9410), 200.0, 150.0
+        boards = [(tuple(a[k] + (b[k] - a[k]) * i / (n - 1) for k in range(3)), 90.0) for i in range(n)]
+        a, b = (1350, 2980, -9410), (3650, 2455, -9410)   # loadAfter moves the ends out after placing the boards
+    else:
+        return None
+    lower = {k.lower(): k for k in arc}
+    tex = arc.get(lower.get("mapobj/mon_bri_rope.bti", ""))
+    tris, uvs = [], []
+
+    def strip(verts):
+        for i in range(len(verts) - 2):
+            for p, t in verts[i:i + 3]:
+                tris.extend(round(c, 2) for c in p)
+                uvs.extend((round(t[0], 4), round(t[1], 4)))
+    # Board anchors: board position -/+ its local X axis (rotY only) x unk3C, 70 up.
+    anchors = []
+    for (x, y, z), ry in boards:
+        ax, az = math.cos(math.radians(ry)), -math.sin(math.radians(ry))
+        anchors.append(((x - ax * half, y + 70, z - az * half), (x + ax * half, y + 70, z + az * half)))
+    for pair in anchors:   # THangingBridgeBoard::drawOneRope
+        for (x, y, z) in pair:
+            top, wx, wz = y + height, 10.0, 7.0
+            pts = [((x, top, z + wz), 0), ((x, y, z + wz), 0), ((x - wx, top, z - wz), 1), ((x - wx, y, z - wz), 1),
+                   ((x + wx, top, z - wz), 2), ((x + wx, y, z - wz), 2), ((x, top, z + wz), 3), ((x, y, z + wz), 3)]
+            strip([(p, (s, 0.01 * (p[1] - y))) for p, s in pts])
+    dx, dz = b[0] - a[0], b[2] - a[2]
+    ln = math.hypot(dx, dz)
+    px, pz = -dz / ln, dx / ln             # unk30: the bridge direction turned 90 degrees
+    wx, wz = px * 10.0, pz * 10.0           # mRopeWidthBetweenBoards
+    sag = [50.0 * math.sin(3.14 * i / 10) for i in range(10)]
+    for lift, count in ((0.0, 10), (height, 1)):   # drawRopeBetweenBoards(0, 10) and (mRopeHeight, 1)
+        for side, sign in ((0, 1), (1, -1)):
+            ends = ((a[0] + sign * px * half, a[1] + lift, a[2] + sign * pz * half),
+                    (b[0] + sign * px * half, b[1] + lift, b[2] + sign * pz * half))
+            path = [ends[0]] + [(q[0], q[1] + lift, q[2]) for q in (pr[side] for pr in anchors)] + [ends[1], ends[1]]
+            for kind in ("minus", "plus", "upper"):
+                verts = []
+                for p0, p1 in zip(path, path[1:]):
+                    for i in range(count):
+                        f = i / count
+                        x, y, z = (p0[k] + (p1[k] - p0[k]) * f for k in range(3))
+                        h, t = y - sag[i], 0.01 * (x + z)
+                        if kind == "minus":
+                            verts += [((x - wx, h, z - wz), (0, t)), ((x, h - 10, z), (1, t))]
+                        elif kind == "plus":
+                            verts += [((x, h - 10, z), (0, t)), ((x + wx, h, z + wz), (1, t))]
+                        else:
+                            verts += [((x + wx, h, z + wz), (0, t)), ((x - wx, h, z - wz), (1, t))]
+                strip(verts)
+    out = {"pos": tris, "uv": uvs}
+    if tex:
+        fmt, w_, h_ = tex[0], struct.unpack_from(">H", tex, 2)[0], struct.unpack_from(">H", tex, 4)[0]
+        pal_fmt, pal_cnt, pal_off = tex[9], struct.unpack_from(">H", tex, 10)[0], struct.unpack_from(">I", tex, 12)[0]
+        doff = struct.unpack_from(">I", tex, 0x1C)[0]
+        rgba = gx_texture.decode(tex[doff:], fmt, w_, h_, tex[pal_off:pal_off + pal_cnt * 2] if pal_off else None, pal_fmt)
+        buf = io.BytesIO()
+        Image.fromarray(rgba).save(buf, "PNG")
+        out["tex"] = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    return out
+
+
 def find_model(arc: dict, typ: str, keys, table: dict):
     """keys: candidate model keys from the payload, in order (e.g. ['NozzleBox', 'valid'])."""
     if isinstance(keys, str) or keys is None:
@@ -619,6 +694,9 @@ def main(argv):
                                   round(rx, 2), round(ry, 2), round(rz, 2), round(sx, 3), round(sy, 3), round(sz, 3),
                                   pick, hit[0], hit[1], o["hash"], CARRY_TYPES.get(typ, "")] + ([extra] if extra else []))
             data = {"o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
+            ropes = bridge_ropes(arc, scene, scene_objs)
+            if ropes:
+                data["ropes"] = ropes
             for o in scene_bin.parse(arc["map/scene.bin"]):   # TMario::load: flag bit 1 = starts without FLUDD
                 if o["type"] == "Mario" and len(o["payload"]) >= 4 and struct.unpack_from(">I", o["payload"], len(o["payload"]) - 4)[0] & 1:
                     data["noFludd"] = 1

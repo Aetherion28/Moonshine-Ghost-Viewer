@@ -451,8 +451,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     root.traverse((o) => { if (o.isMesh && o.geometry.attributes.normal) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material); });
   }
 
+  // Stages with a sky draw the dome straight over the cleared (black) frame: "PerformList GX" in
+  // PerformLists.bin flushes DrawBuf Sky Opa/Xlu first and never sends the sky group CUE_DRAW, so
+  // TSky's blue GXDrawSphere is not drawn in the normal scene. Others use the page's scene colour.
+  const SKY_BACKDROP = new THREE.Color(0, 0, 0);
+  let skyBackdrop = false;
   function applySceneTheme() {
-    scene.background = new THREE.Color(css('--scene-bg') || '#cfdde6');
+    scene.background = skyBackdrop ? SKY_BACKDROP : new THREE.Color(css('--scene-bg') || '#cfdde6');
   }
   applySceneTheme();
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applySceneTheme);
@@ -581,13 +586,59 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           o.applyMatrix4(o.parent.matrixWorld);
           o.parent.remove(o);
           o.frustumCulled = false;
-          o.renderOrder = /_mul$/.test(o.name) ? -999 : -1000;
+          o.renderOrder = -2000 + skyMeshes.indexOf(o) * 2 + (/_mul$/.test(o.name) ? 1 : 0);   // the model's own order
           [].concat(o.material).forEach((m) => {
             m.depthWrite = false; m.depthTest = false; m.fog = false;
+            if (m.map) m.map.encoding = THREE.LinearEncoding;   // GX blends the raw texels, so the sky does too
+            const tv = m.userData && m.userData.skyTev;
+            if (tv && m.map) {   // two-stage TEV with the vertex colour and C0/C1 (Sirena's sunset)
+              m.onBeforeCompile = (sh) => {
+                sh.uniforms.gxC0 = { value: new THREE.Vector3(...tv.c0) }; sh.uniforms.gxC1 = { value: new THREE.Vector3(...tv.c1) };
+                sh.fragmentShader = 'uniform vec3 gxC0;\nuniform vec3 gxC1;\n' + sh.fragmentShader
+                  .replace('#include <map_fragment>', 'vec4 gxT = texture2D( map, vUv );   // GX works on the raw texel')
+                  .replace('#include <color_fragment>', '#ifdef USE_COLOR\n diffuseColor.rgb = clamp( clamp( vColor.rgb + gxC0 * ( 1.0 - gxT.rgb ), 0.0, 1.0 ) - gxT.rgb * gxC1, 0.0, 1.0 ); diffuseColor.a *= vColor.a;\n#endif');
+              };
+              m.customProgramCacheKey = () => 'skytev' + tv.c0.join() + tv.c1.join();
+            }
+            const gb = m.userData && m.userData.gxBlend;
+            if (gb) {   // the GX blend of each dome layer over the blue backdrop (TSky::perform)
+              const [type, src, dst] = gb;
+              m.transparent = false;
+              if (type === 0) m.blending = THREE.NoBlending;
+              else {
+                const S = [THREE.ZeroFactor, THREE.OneFactor, THREE.DstColorFactor, THREE.OneMinusDstColorFactor,
+                  THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor, THREE.DstAlphaFactor, THREE.OneMinusDstAlphaFactor];
+                const D = [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcColorFactor, THREE.OneMinusSrcColorFactor,
+                  THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor, THREE.DstAlphaFactor, THREE.OneMinusDstAlphaFactor];
+                m.blending = THREE.CustomBlending;
+                m.blendEquation = type === 3 ? THREE.ReverseSubtractEquation : THREE.AddEquation;
+                m.blendSrc = S[src] ?? THREE.OneFactor; m.blendDst = D[dst] ?? THREE.ZeroFactor;
+              }
+            }
             // Second sky texture multiplied over the first (TEV: previous x texture).
             if (m.userData && m.userData.multiply) { m.blending = THREE.CustomBlending; m.blendEquation = THREE.AddEquation; m.blendSrc = THREE.DstColorFactor; m.blendDst = THREE.ZeroFactor; m.transparent = false; }   // stays in the opaque pass so it draws right after the sky, under the stage
           });
           sky.add(o);
+        });
+        // A "_mul" second texture belongs to its layer's TEV (previous x texture), before the layer's
+        // own GX blend: fold it into that layer's shader so the blend sees the product, not the sky below.
+        skyMeshes.filter((o) => /_mul$/.test(o.name)).forEach((mo) => {
+          const base = skyMeshes.find((o) => o.name === mo.name.slice(0, -4));
+          const bm = base && !Array.isArray(base.material) && base.material;
+          const mt = !Array.isArray(mo.material) && mo.material.map;
+          if (!bm || !mt || !bm.map || bm.onBeforeCompile !== THREE.Material.prototype.onBeforeCompile) return;
+          base.geometry = base.geometry.clone();
+          base.geometry.setAttribute('uvMul', mo.geometry.getAttribute('uv'));
+          bm.onBeforeCompile = (sh) => {
+            sh.uniforms.mulMap = { value: mt };
+            sh.vertexShader = 'attribute vec2 uvMul;\nvarying vec2 vUvMul;\n' + sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n vUvMul = uvMul;');
+            sh.fragmentShader = 'uniform sampler2D mulMap;\nvarying vec2 vUvMul;\n' + sh.fragmentShader.replace('#include <map_fragment>',
+              '#include <map_fragment>\n diffuseColor = clamp( diffuseColor * texture2D( mulMap, vUvMul ) * mulScale, 0.0, 1.0 );');
+            sh.fragmentShader = 'uniform float mulScale;\n' + sh.fragmentShader;
+            sh.uniforms.mulScale = { value: (mo.material.userData && mo.material.userData.scale) || 1 };
+          };
+          bm.customProgramCacheKey = () => 'skymul';
+          sky.remove(mo);
         });
         group.userData.sky = skyMeshes.length ? sky : null;
         group.userData.materials = [];
@@ -612,6 +663,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (mapGroup) { scene.remove(mapGroup); if (mapGroup.userData.sky) scene.remove(mapGroup.userData.sky); }
       mapGroup = group;
       if (group.userData.sky) scene.add(group.userData.sky);
+      skyBackdrop = !!group.userData.sky;
+      applySceneTheme();
       mapMaterials.length = 0;
       mapMaterials.push(...group.userData.materials);
       mapBounds = group.userData.bounds;
@@ -867,6 +920,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         objNodes.push(node);
       });
       wireMeshes = (Array.isArray(data) ? [] : data.w || []).map((w) => makeWire(group, w));
+      if (!Array.isArray(data) && data.ropes) group.add(makeBridgeRopes(data.ropes));
       objectsGroup = group;
       objList = items;
       objDyn = (!Array.isArray(data) && data.dyn) || {};
@@ -1400,6 +1454,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return out;
   }
 
+  // ---------------------------------------------------------------- hanging bridge ropes
+  // THangingBridge draws its ropes itself (posts on every board and sagging hand-ropes), textured
+  // with mon_bri_rope.bti; the triangles come precomputed from the game's own drawing code.
+  function makeBridgeRopes(r) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(r.pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(r.uv, 2));
+    const mat = new THREE.MeshBasicMaterial({ color: r.tex ? 0xffffff : 0x8a6a3c, side: THREE.DoubleSide });
+    if (r.tex) {
+      mat.map = new THREE.TextureLoader().load(r.tex);
+      mat.map.wrapS = mat.map.wrapT = THREE.RepeatWrapping;
+    }
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'bridgeRopes';
+    return mesh;
+  }
   // ---------------------------------------------------------------- wires
   const wireMat = new THREE.MeshBasicMaterial({ color: 0x2b2b2b });
   const wireGeo = new THREE.CylinderGeometry(5, 5, 1, 6, 1, true);
@@ -2130,6 +2200,31 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 
   // FLUDD carries one secondary nozzle (Hover, Rocket or Turbo). A ghost only reveals which one
   // when it is selected, so show the most recent one used, or the first one the run uses.
+  // Ghosts without FLUDD data: which nozzle is out (FLUDD wears one at a time). X switches between
+  // Spray and the secondary nozzle; spraying animations (fepmp / swpmp) mean Spray is out, and R held
+  // for a while without them (hovering) means the secondary is. Starts on Spray. 1 = secondary out.
+  function buildSelectedTimeline(data) {
+    const inp = data.inputs;
+    if (!inp || !inp.count || inp.hasFludd) return null;
+    const out = new Uint8Array(inp.count);
+    let sel = 0, prev = 0, rRun = 0;
+    for (let i = 0; i < inp.count; i++) {
+      const b = inp.buttons[i];
+      if ((b & 0x400) && !(prev & 0x400)) sel ^= 1;   // X
+      prev = b;
+      const s = ghostSampleAt(data, inp.qf[i]), anim = data.anim[s.i];
+      const rHeld = (b & 0x20) || inp.trig[i * 2 + 1] > 60;
+      if (anim === 286 || anim === 287) { sel = 0; rRun = 0; }
+      else if (rHeld) { if (++rRun >= 8) sel = 1; }
+      else rRun = 0;
+      out[i] = sel;
+    }
+    // Hover evidence comes a few inputs after the switch: carry it back to the last X press.
+    for (let i = inp.count - 1; i > 0; i--) if (out[i] && !out[i - 1] && !(inp.buttons[i] & 0x400)) {
+      let k = i - 1; while (k > 0 && !out[k] && !(inp.buttons[k] & 0x400) && i - k < 8) { out[k] = 1; k--; }
+    }
+    return out;
+  }
   function buildSecondaryTimeline(data) {
     const inp = data.inputs;
     if (!inp || !inp.hasFludd) return null;
@@ -2346,12 +2441,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         // Retail backpack tilt (TWaterGun::setBaseTRMtx, as Moonshine reproduces it).
         if (rig.chest) { g.marker.updateMatrixWorld(true); rig.parts.fludd_body.rotation.z = (Math.abs(rig.chest.matrixWorld.elements[1]) - 1) * 0.589048623; }
       }
-      // Only the nozzle in use: Spray (and its underwater variant) or the active secondary nozzle.
-      // Ghosts without FLUDD data fall back to Spray plus the inferred secondary nozzle.
-      const active = f && f.present ? f.nozzle : null;
-      if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === null || active === 0 || active === 2);
+      // Only the nozzle that is out: Spray (and its underwater variant) or the active secondary.
+      // Ghosts without FLUDD data use the switch timeline (buildSelectedTimeline), else Spray.
+      let active = f && f.present ? f.nozzle : null;
+      if (active === null) {
+        let sel = 0;
+        if (g.selected) {
+          const inp = g.data.inputs;
+          let lo = 0, hi = inp.count - 1;
+          while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
+          sel = g.selected[lo];
+        }
+        active = sel ? secondary : 0;
+      }
+      if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === 0 || active === 2);
       Object.entries(NOZZLE_PARTS).forEach(([n, part]) => {
-        if (rig.parts[part]) rig.parts[part].visible = hasFludd && (active === null ? Number(n) === secondary : Number(n) === active);
+        if (rig.parts[part]) rig.parts[part].visible = hasFludd && Number(n) === active;
       });
     }
     const fluddOn = f ? f.present : inferFludd(g, t);
@@ -2383,7 +2488,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     catch (err) { showNotice(`${fileName}: ${err.message}`); return null; }
     const color = GHOST_COLORS[ghosts.length % GHOST_COLORS.length];
     const g = { data, fileName, color, visible: true, isSample, marker: makeMarker(color), path: makePath(data, color),
-      secondary: buildSecondaryTimeline(data), water: makeWaterStream(), burst: makeWaterStream(30, 1600) };
+      secondary: buildSecondaryTimeline(data), selected: buildSelectedTimeline(data), water: makeWaterStream(), burst: makeWaterStream(30, 1600) };
     scene.add(g.marker, g.path, g.water, g.burst);
     g.path.visible = $('optPath').checked;
     ghosts.push(g);
