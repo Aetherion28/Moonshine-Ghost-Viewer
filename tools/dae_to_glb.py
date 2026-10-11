@@ -217,13 +217,15 @@ class GlbWriter:
         return self.mat_cache[key]
 
     def add_arrays(self, name: str, pos: np.ndarray, tris: np.ndarray, mat: int, uv: np.ndarray | None = None,
-                   color: np.ndarray | None = None, normal: np.ndarray | None = None) -> None:
+                   color: np.ndarray | None = None, normal: np.ndarray | None = None, extra: dict | None = None) -> None:
         """Add a mesh from flat per-vertex arrays (positions, optional UV, RGBA8 colour, normals)."""
         attrs = {"POSITION": self.accessor(np.ascontiguousarray(pos, np.float32), "VEC3", 5126, 34962, minmax=True)}
         if normal is not None:
             attrs["NORMAL"] = self.accessor(np.ascontiguousarray(normal, np.float32), "VEC3", 5126, 34962)
         if uv is not None:
             attrs["TEXCOORD_0"] = self.accessor(np.ascontiguousarray(uv, np.float32), "VEC2", 5126, 34962)
+        for k, v in (extra or {}).items():   # custom attributes (e.g. _GXTC1, per-texgen UVs)
+            attrs[k] = self.accessor(np.ascontiguousarray(v, np.float32), "VEC2", 5126, 34962)
         if color is not None:
             attrs["COLOR_0"] = self.accessor(np.ascontiguousarray(color, np.uint8), "VEC4", 5121, 34962, normalized=True)
         idx = np.ascontiguousarray(tris.reshape(-1).astype(np.uint32 if len(pos) > 65535 else np.uint16))

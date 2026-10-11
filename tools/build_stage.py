@@ -69,11 +69,11 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
         if kind == "map" and mat is not None and mat.lit and mesh.get("nrm") is not None:
             # Lit stage parts (secret courses, the hotel's glass Boo, the Plaza's Shine statue...):
             # exported like objects, with normals, for the viewer's GX lighting.
-            from build_mario_iso import material_for
-            mi, entry = material_for(w, model, mat, prefix)
+            from build_mario_iso import gx_tev_uvs, material_for
+            mi, entry = material_for(w, model, mat, prefix, gx=True)
             luv = uv_for(mesh, entry) if entry is not None else None
             lcol = color if mat.use_vertex_color else None
-            w.add_arrays(name, mesh["pos"], mesh["tris"], mi, luv, lcol, mesh.get("nrm"))
+            w.add_arrays(name, mesh["pos"], mesh["tris"], mi, luv, lcol, mesh.get("nrm"), gx_tev_uvs(mesh, mat))
             tris += len(mesh["tris"])
             continue
         tex = uv = None
@@ -150,11 +150,28 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
                         rgba = t[1].copy(); rgba[..., :3] = 255
                         tex = w.texture_rgba(f"{prefix}:{t[0]}:alpha", rgba, t[2], t[3])
             alpha = {"alphaMode": "BLEND"}
+        gx_tev = None
+        if kind == "map" and mat is not None and mat.translucent and mat.blend_mode[0] == 1 \
+                and mat.blend_mode[1:3] not in ((4, 5), (4, 1)) and not glow_extra:
+            # Blends that read the frame (e.g. the shadows under trees, colour x dst + dst x (1 - a)):
+            # the viewer runs the material's own TEV stages and GX blend, so it needs both, raw.
+            st = (mat.tev or {}).get("stages") or []
+            base_no = mat.base[0] if mat.base is not None else None
+            if st and all(x["texmap"] in (-1, base_no) for x in st):
+                gx_tev = {"st": [list(x["c"][:8]) + list(x["a"][:8]) + [x["c"][8], x["a"][8], x["kc"], x["ka"], 1 if x["texmap"] >= 0 else 0]
+                                 for x in st],
+                          "regs": [[max(-1024, min(1023, c)) / 255 for c in r] for r in mat.tev["regs"]],
+                          "k": [[c / 255 for c in r] for r in mat.tev["kregs"]],
+                          "blend": list(mat.blend_mode[:3]), "aref": mat.alpha_ref or 0}
+                factor = tuple(c / 255 for c in mat.mat_color) if (not mat.use_vertex_color or color is None) else (1, 1, 1, 1)
+                alpha = {"alphaMode": "BLEND"}
         um = unlit(f"{prefix} {mat.name if mat else ''}", tex[0] if tex else None, alpha, factor)
         if kind == "map" and mat is not None and mat.cull in (1, 2):
             # GX culling (GX_CULL_FRONT / GX_CULL_BACK): the viewer draws one side, as the game does,
             # so a wall seen from behind is see-through instead of showing its inside.
             extras = {**(extras or {}), "cull": mat.cull}
+        if gx_tev:
+            extras = {**(extras or {}), "gxTev": gx_tev}
         if kind == "sky" and mat is not None:
             # TSky: the dome is drawn over a blue sphere with each material's own GX blend (e.g. the
             # sky gradient as src + dst * (1 - src)), so the viewer needs the factors.

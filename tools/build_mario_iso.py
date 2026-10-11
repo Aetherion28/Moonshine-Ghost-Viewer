@@ -139,7 +139,82 @@ def tev_factor(model, mat, base_tex):
     return tuple(min(1, max(0, v)) for v in reg[0][:3])
 
 
-def material_for(w, model, mat, prefix, tev=False):
+def gx_tev_spec(w, model, mat):
+    """Full TEV description for the viewer's GX emulation (lit, non-Mario materials): stages with
+    their texcoord / texmap / channel, colour and KONST registers, texgens (UV attribute + matrix,
+    normal sphere map, or SRTG lookup by a lit colour), colour channels and the textures."""
+    gx = mat.gx
+    st = (mat.tev or {}).get("stages") or []
+    if not gx or not st:
+        return None
+    texnos = gx["texnos"]
+    samplers, slot = [], {}
+    stages = []
+    for x, (tc, tm) in zip(st, gx["orders"]):
+        t = -1
+        if tm < 8 and texnos[tm] >= 0:
+            if tm not in slot:
+                tx = model.textures[texnos[tm]]
+                if tx[0] in SUBSTITUTE:
+                    tx = SUBSTITUTE[tx[0]]
+                if tx[1] is None:
+                    return None
+                digest = hashlib.sha1(tx[1].tobytes()).hexdigest()[:10]
+                ref = w.texture_rgba(f"tex:{tx[0]}:{digest}", tx[1], tx[2], tx[3])
+                if ref is None:
+                    return None
+                slot[tm] = len(samplers)
+                samplers.append(ref[0])
+            t = slot[tm]
+        stages.append(list(x["c"][:8]) + list(x["a"][:8]) + [x["c"][8], x["a"][8], x["kc"], x["ka"], t,
+                      tc if tc < 8 else -1, x["chan"]])
+    gens = []
+    for j, g in enumerate(gx["texgens"]):
+        if g is None:
+            gens.append(None)
+            continue
+        gtype, src, gm = g
+        mi = (gm - 30) // 3 if 30 <= gm < 60 else -1
+        if gtype == 10:                       # GX_TG_SRTG: s, t = COLOR0 / COLOR1 red, green
+            gens.append({"k": "srtg", "c": 1 if src == 20 else 0})
+        elif src == 1:                         # GX_TG_NRM through a J3D env matrix: sphere map
+            raw = gx["texmtx_raw"][mi] if mi >= 0 else None
+            gens.append({"k": "nrm", "s": [raw[1], raw[2]] if raw else [1, 1], "t": [raw[3], raw[4]] if raw else [0, 0]})
+        elif 4 <= src <= 11:
+            gens.append({"k": "uv", "a": f"_GXTC{j}"})
+        else:
+            gens.append(None)
+    q = lambda c: [round(v / 255, 4) for v in c]
+    return {"st": stages, "regs": [q(r) for r in mat.tev["regs"]], "k": [q(r) for r in mat.tev["kregs"]],
+            "tex": samplers, "gen": gens, "chan": [list(c) if c else None for c in gx["chans"]],
+            "matc": [q(c) for c in gx["matc"]], "amb": [q(c) for c in gx["amb"]],
+            "blend": list(mat.blend_mode[:3]), "xlu": int(mat.translucent), "aref": mat.alpha_ref or 0}
+
+
+def gx_tev_uvs(mesh, mat):
+    """Per-texgen UV attributes (texture matrix applied) for a material exported with gx_tev_spec."""
+    out = {}
+    gx = mat.gx if mat is not None else None
+    if not gx:
+        return out
+    for j, g in enumerate(gx["texgens"]):
+        if g is None or not (4 <= g[1] <= 11) or g[0] == 10:
+            continue
+        gm = g[2]
+        mi = (gm - 30) // 3 if 30 <= gm < 60 else -1
+        uv = mesh["uv"].get(bmd.TEX0 + (g[1] - 4))
+        if uv is None:
+            uv = next(iter(mesh["uv"].values()), None)
+        if uv is None:
+            continue
+        mtx = gx["texmtx"][mi] if mi >= 0 else None
+        if mtx is not None:
+            uv = uv @ mtx[:, :2].T + mtx[:, 2]
+        out[f"_GXTC{j}"] = uv.astype(np.float32)
+    return out
+
+
+def material_for(w, model, mat, prefix, tev=False, gx=False):
     if mat is None:
         return w.custom_material(unlit(f"{prefix}"), ), None
     entry = pick_base(model, mat)
@@ -177,6 +252,10 @@ def material_for(w, model, mat, prefix, tev=False):
                         "s": [round(v, 4) for v in layer["s"]], "t": [round(v, 4) for v in layer["t"]]})
     if env:
         spec.setdefault("extras", {})["env"] = env
+    if gx and mat.lit and not toon_stages(w, model, mat):
+        gt = gx_tev_spec(w, model, mat)
+        if gt:
+            spec.setdefault("extras", {})["gxTev"] = gt
     mi = w.custom_material(spec)
     return mi, entry
 

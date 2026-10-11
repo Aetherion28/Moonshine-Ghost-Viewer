@@ -34,7 +34,7 @@ import gx_texture  # noqa: E402
 import prm  # noqa: E402
 import npc_payload  # noqa: E402
 import scene_bin  # noqa: E402
-from build_mario_iso import bck_pose, material_for, parse_bck  # noqa: E402
+from build_mario_iso import SUBSTITUTE, bck_pose, gx_tev_uvs, material_for, parse_bck  # noqa: E402
 from build_stage import uv_for  # noqa: E402
 from convert_map import rarc_files, yaz0_decompress  # noqa: E402
 from dae_to_glb import GlbWriter  # noqa: E402
@@ -179,6 +179,19 @@ NPC_ORDER = ["NPCMonteM", "NPCMonteMA", "NPCMonteMB", "NPCMonteMC", "NPCMonteMD"
 NPC_INIT = None
 
 
+POLLUTION_NPCS = {"NPCMonteM", "NPCMonteMA", "NPCMonteMC", "NPCMonteW", "NPCMonteWA", "NPCMareM", "NPCMareW", "NPCKinopio"}
+SPECIAL_NPCS = {"NPCMonteMF", "NPCMonteMG", "NPCMonteMH", "NPCMonteWC", "NPCMareMA", "NPCMareMB", "NPCMareMC",
+                "NPCMareMD", "NPCMareWA", "NPCMareWB"}
+
+
+def bti_rgba(tex: bytes):
+    """Decode a .bti texture to RGBA8."""
+    fmt, w_, h_ = tex[0], struct.unpack_from(">H", tex, 2)[0], struct.unpack_from(">H", tex, 4)[0]
+    pal_fmt, pal_cnt, pal_off = tex[9], struct.unpack_from(">H", tex, 10)[0], struct.unpack_from(">I", tex, 12)[0]
+    doff = struct.unpack_from(">I", tex, 0x1C)[0]
+    return gx_texture.decode(tex[doff:], fmt, w_, h_, tex[pal_off:pal_off + pal_cnt * 2] if pal_off else None, pal_fmt)
+
+
 def npc_colour(cc, idx):
     """TColorChangeInfo at colour index idx -> viewer spec: ['mul', rgb] or ['grad', dark, light].
     (SMS_InitChangeNpcColor: kind 0 material colour, 1 TEV colour 0, 2 TEV colours 1 and 2.)"""
@@ -188,10 +201,13 @@ def npc_colour(cc, idx):
     def pick(b):
         return [max(0, min(510, v)) for v in b[idx]] if b and idx < len(b) else None
     c0, c1 = pick(b0), pick(b1)
+    # [4:]: what SMS_InitChangeNpcColor really sets, for the viewer's TEV emulation: kind 0 the
+    # material colour, 1 TEV register 0, 2 registers 1 (first table) and 2 (second table).
+    raw = [cc["kind"], c0, c1]
     if cc["kind"] == 2 and c0 and c1:
-        return [cc["mat"], "grad", c0, c1]
+        return [cc["mat"], "grad", c0, c1] + raw
     c = c0 or c1
-    return [cc["mat"], "mul", c] if c else None
+    return [cc["mat"], "mul", c, None] + raw if c else None
 
 
 def npc_extra(w, lib, arc, typ, payload, body_model):
@@ -206,6 +222,12 @@ def npc_extra(w, lib, arc, typ, payload, body_model):
     if not f:
         return None
     mats = [c for c in (npc_colour(info["body"][j], f["c0"][j]) for j in range(2)) if c]
+    # TBaseNPC::setIndividualDifference_: KCOLOR0 = (255, 255, 255, pollution) on every material but
+    # the eyes; its alpha is the threshold the TEV compares the pollution mask against.
+    k0 = None
+    if typ in POLLUTION_NPCS or typ in SPECIAL_NPCS:
+        amount = max(0, f["c0"][2]) / 255 if typ in POLLUTION_NPCS else 0
+        k0 = [255, 255, 255, int(amount * 150) & 0xFF]
     lower = {k.lower().rsplit("/", 1)[-1]: k for k in arc if k.lower().endswith(".bmd")}
     parts = []
     for i, part in enumerate(info["parts"]):
@@ -223,9 +245,12 @@ def npc_extra(w, lib, arc, typ, payload, body_model):
         pi = lib_add(w, lib, "part:" + hashlib.sha1(arc[path]).hexdigest(), lambda path=path: [bmd.parse(arc[path])])
         if pi >= 0:
             parts.append([pi, [round(float(v), 4) for v in mtx.T.reshape(-1)], pc])
-    if not mats and not parts:
+    if not mats and not parts and not k0:
         return None
-    return {"npc": {"mats": mats, "parts": parts}}
+    out = {"mats": mats, "parts": parts}
+    if k0:
+        out["k0"] = k0
+    return {"npc": out}
 
 
 def enemy_params(arc: dict, typ: str):
@@ -429,10 +454,7 @@ def bridge_ropes(arc: dict, scene: str, objs) -> dict | None:
                 strip(verts)
     out = {"pos": tris, "uv": uvs}
     if tex:
-        fmt, w_, h_ = tex[0], struct.unpack_from(">H", tex, 2)[0], struct.unpack_from(">H", tex, 4)[0]
-        pal_fmt, pal_cnt, pal_off = tex[9], struct.unpack_from(">H", tex, 10)[0], struct.unpack_from(">I", tex, 12)[0]
-        doff = struct.unpack_from(">I", tex, 0x1C)[0]
-        rgba = gx_texture.decode(tex[doff:], fmt, w_, h_, tex[pal_off:pal_off + pal_cnt * 2] if pal_off else None, pal_fmt)
+        rgba = bti_rgba(tex)
         buf = io.BytesIO()
         Image.fromarray(rgba).save(buf, "PNG")
         out["tex"] = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
@@ -520,10 +542,10 @@ def add_models(w: GlbWriter, models, name: str) -> None:
     for pi, model in enumerate(models):
         for mesh in model.meshes:
             mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
-            mi, entry = material_for(w, model, mat, f"{name}p{pi}")
+            mi, entry = material_for(w, model, mat, f"{name}p{pi}", gx=True)
             uv = uv_for(mesh, entry) if entry is not None else None
             color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
-            w.add_arrays(f"{name}_p{pi}s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"))
+            w.add_arrays(f"{name}_p{pi}s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"), gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else None)
             node = w.gltf["nodes"].pop()
             w.gltf["scenes"][0]["nodes"].pop()
             w.gltf["nodes"].append(node)
@@ -541,10 +563,10 @@ def add_model(w: GlbWriter, model: bmd.Model, name: str, tev: bool = False) -> N
     w.gltf["scenes"][0]["nodes"].append(hi)
     for mesh in model.meshes:
         mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
-        mi, entry = material_for(w, model, mat, name, tev)
+        mi, entry = material_for(w, model, mat, name, tev, gx=True)
         uv = uv_for(mesh, entry) if entry is not None else None
         color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
-        w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"))
+        w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"), gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else None)
         node = w.gltf["nodes"].pop()
         w.gltf["scenes"][0]["nodes"].pop()
         w.gltf["nodes"].append(node)
@@ -596,6 +618,18 @@ def main(argv):
         for scene, arc in arcs.items():
             if arc is None or "map/scene.bin" not in arc:
                 continue
+            # TNPCManager::changeTextureToPollution_: the NPCs' H_ma_rak_dummy is the stage's pollution.
+            # TMonteM/WBaseManager::changeTextureToStraw_ and the jellyfish's real texture likewise.
+            for dummy, real in (("H_ma_rak_dummy", "map/pollution/h_ma_rak.bti"),
+                                ("I_mom_mino_dummyI4", "montemcommon/i_mom_mino_rgba.bti"),
+                                ("I_mow_mino_dummyI4", "montewcommon/i_mow_mino_rgba.bti"),
+                                ("J_jellyFish_dummy", "marejellyfish/j_kurage.bti")):
+                raw = next((arc[k] for k in arc if k.lower() == real), None)
+                if raw and dummy not in SUBSTITUTE:
+                    try:
+                        SUBSTITUTE[dummy] = (real.rsplit("/", 1)[1][:-4], bti_rgba(raw), 10497, 10497)
+                    except Exception:
+                        pass
             instances = []
             rails = parse_rails(arc["map/scene.ral"]) if "map/scene.ral" in arc else {}
             scene_objs = scene_bin.parse(arc["map/scene.bin"])

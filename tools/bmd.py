@@ -71,6 +71,7 @@ class Material:
     diff_fn: int = 0               # 0 none, 1 sign, 2 clamp
     env: list = field(default_factory=list)   # normal-mapped (environment) textures added in TEV
     blend_mode: tuple = (0, 1, 0, 3)            # GX blend type, src factor, dst factor, logic op
+    gx: dict | None = None         # raw GX state for the viewer's TEV emulation (channels, texgens...)
 
 
 @dataclass
@@ -498,5 +499,20 @@ def _parse_materials(mat: bytes) -> list[Material]:
             m_out.lit, m_out.lit_mask, m_out.diff_fn, m_out.amb_vtx = bool(c0[0]), c0[2], c0[3], c0[5] == 1
         m_out.env = env_layers
         m_out.blend_mode = tuple(mat[bm:bm + 4])
+        # Everything the viewer's TEV emulation needs: colour channels (COLOR0, ALPHA0, COLOR1,
+        # ALPHA1: enable, material source, light mask, diffuse fn, attenuation fn, ambient source),
+        # material / ambient colours, texgens with their matrices, and each stage's texcoord / texmap.
+        amb_o = u32(mat, 0x2C)
+        chans = []
+        for j in range(4):
+            ci = u16(mat, e + 0x0C + j * 2)
+            chans.append(tuple(mat[chan_o + ci * 8: chan_o + ci * 8 + 6]) if ci != 0xFFFF else None)
+        def col_at(base, idx, default):
+            return tuple(mat[base + idx * 4: base + idx * 4 + 4]) if idx != 0xFFFF and base else default
+        m_out.gx = {"chans": chans,
+                    "matc": [col_at(matcol_o, u16(mat, e + 8 + j * 2), (255, 255, 255, 255)) for j in range(2)],
+                    "amb": [col_at(amb_o, u16(mat, e + 0x14 + j * 2), (0, 0, 0, 0)) for j in range(2)],
+                    "texgens": texgens, "texmtx": texmtx, "texmtx_raw": texmtx_raw, "texnos": texnos,
+                    "orders": stages}
         out.append(m_out)
     return out

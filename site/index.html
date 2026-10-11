@@ -409,6 +409,132 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           + gxEnvK1 * texture2D( gxEnv1, ( gxUv - 0.5 ) * gxEnvS1.xy + 0.5 + gxEnvS1.zw ).rgb, 0.0, 1.0 );
       #endif`);
   }
+  // Full GX emulation for lit object materials (extras.gxTev): colour channels lit per vertex as
+  // GX does (material / ambient from register or vertex colour, light 0 diffuse, light 2 specular),
+  // texgens (UV x texture matrix, normal sphere map, SRTG lookup by a lit colour), then the
+  // material's TEV stages. Per-object register overrides (NPC colours) go in m.gxRegs.
+  function gxChanGlsl(ctrl, i, alpha) {
+    const f = (v) => Number(v).toFixed(5);
+    const sw = alpha ? '.a' : '.rgb', ty = alpha ? 'float' : 'vec3';
+    if (!ctrl) return `${ty}(${alpha ? '1.0' : '1.0'})`;
+    const [enable, matSrc, mask, diffFn, attnFn, ambSrc] = ctrl;
+    const mat = matSrc ? `gxVtx${sw}` : `gxMatC[${i}]${sw}`;
+    if (!enable) return mat;
+    const amb = ambSrc ? `gxVtx${sw}` : i === 0 ? (alpha ? `gxAmbC[0].a` : 'gxAmbCol') : `gxAmbC[${i}]${sw}`;
+    const diff = diffFn === 0 ? '1.0' : diffFn === 1 ? 'gxD' : 'max( gxD, 0.0 )';
+    const one = attnFn === 0 ? 'gxSpecA' : diff;   // GX_AF_SPEC: the specular light's attenuation
+    let light = alpha ? '0.0' : 'vec3( 0.0 )';
+    if (mask & 1 || mask & 4) light = alpha ? `${one}` : `gxLightCol * ${one}`;
+    return `clamp( ${amb} + ${light}, 0.0, 1.0 ) * ${mat}`;
+  }
+  function gxTevCompile(sh) {
+    const m = this, T = m.userData.gxTev;
+    if (!m.gx) m.gx = { pos: GX_DEFAULT.pos.clone(), col: GX_DEFAULT.col.clone(), amb: GX_DEFAULT.amb.clone() };
+    const v4 = (c) => new THREE.Vector4(...c);
+    sh.uniforms.gxLightPos = { value: m.gx.pos };
+    sh.uniforms.gxLightCol = { value: m.gx.col };
+    sh.uniforms.gxAmbCol = { value: m.gx.amb };
+    sh.uniforms.gxMatC = { value: (m.gxMatC || T.matc).map(v4) };
+    sh.uniforms.gxAmbC = { value: T.amb.map(v4) };
+    sh.uniforms.gxR = { value: (m.gxRegs || T.regs).map(v4) };
+    sh.uniforms.gxK = { value: (m.gxKRegs || T.k).map(v4) };
+    const texs = m.gxTevTex || [];
+    texs.forEach((tx, i) => { sh.uniforms['gxTex' + i] = { value: tx }; });
+    const gens = T.gen || [];
+    let vs = 'uniform vec3 gxLightPos;\nuniform vec3 gxLightCol;\nuniform vec3 gxAmbCol;\nuniform vec4 gxMatC[2];\nuniform vec4 gxAmbC[2];\n'
+      + 'varying vec4 vGxC0;\nvarying vec4 vGxC1;\nvarying vec3 vGxN;\n';
+    let fs = GX_Q_GLSL + 'uniform vec4 gxR[4];\nuniform vec4 gxK[4];\nvarying vec4 vGxC0;\nvarying vec4 vGxC1;\nvarying vec3 vGxN;\n';
+    texs.forEach((tx, i) => { fs += `uniform sampler2D gxTex${i};\n`; });
+    gens.forEach((g, j) => {
+      if (g && g.k === 'uv') { vs += `attribute vec2 ${g.a.toLowerCase()};\nvarying vec2 vGxTc${j};\n`; fs += `varying vec2 vGxTc${j};\n`; }
+    });
+    let vbody = `
+      vec3 gxN = normalize( transformedNormal );
+      vec3 gxL = normalize( ( viewMatrix * vec4( gxLightPos, 1.0 ) ).xyz - mvPosition.xyz );
+      float gxD = dot( gxN, gxL );
+      vec3 gxH = normalize( gxL + vec3( 0.0, 0.0, 1.0 ) );
+      float gxCs = max( dot( gxN, gxH ), 0.0 );
+      float gxSpecA = gxD > 0.0 ? clamp( gxCs * gxCs / max( 25.0 - 24.0 * gxCs * gxCs, 1e-3 ), 0.0, 1.0 ) : 0.0;
+      vec4 gxVtx = vec4( 1.0 );
+      #if defined( USE_COLOR_ALPHA )
+        gxVtx = vColor;
+      #elif defined( USE_COLOR )
+        gxVtx.rgb = vColor;
+      #endif
+      vGxN = gxN;
+      vGxC0 = vec4( ${gxChanGlsl(T.chan[0], 0, false)}, ${gxChanGlsl(T.chan[1], 0, true)} );
+      vGxC1 = vec4( ${gxChanGlsl(T.chan[2], 1, false)}, ${gxChanGlsl(T.chan[3], 1, true)} );
+      vLightFront = vec3( 1.0 ); vIndirectFront = vec3( 0.0 );
+      #ifdef DOUBLE_SIDED
+        vLightBack = vec3( 1.0 ); vIndirectBack = vec3( 0.0 );
+      #endif
+`;
+    gens.forEach((g, j) => { if (g && g.k === 'uv') vbody += `      vGxTc${j} = ${g.a.toLowerCase()};\n`; });
+    const coord = (j) => {
+      const g = gens[j];
+      if (!g) return 'vec2( 0.0 )';
+      if (g.k === 'uv') return `vGxTc${j}`;
+      if (g.k === 'srtg') return g.c ? 'clamp( vGxC1.rg, 0.0, 1.0 )' : 'clamp( vGxC0.rg, 0.0, 1.0 )';
+      const sv = g.s.map((v) => Number(v).toFixed(5)), tv = g.t.map((v) => Number(v).toFixed(5));
+      return `( vec2( 0.5 + 0.5 * normalize( vGxN ).x, 0.5 - 0.5 * normalize( vGxN ).y ) - 0.5 ) * vec2( ${sv[0]}, ${sv[1]} ) + 0.5 + vec2( ${tv[0]}, ${tv[1]} )`;
+    };
+    const body = gxTevGlsl(T, {
+      regs: true,
+      tex: (x) => x[20] >= 0 && x[20] < texs.length ? `texture2D( gxTex${x[20]}, ${coord(x[21])} )` : 'vec4( 1.0 )',
+      ras: (x) => ({ 0: 'vec4( vGxC0.rgb, 0.0 )', 1: 'vec4( vGxC1.rgb, 0.0 )', 2: 'vec4( 0.0, 0.0, 0.0, vGxC0.a )',
+        3: 'vec4( 0.0, 0.0, 0.0, vGxC1.a )', 4: 'vGxC0', 5: 'vGxC1' })[x[22]] || 'vec4( 0.0 )',
+    });
+    const aref = Number(T.aref || 0).toFixed(5);
+    sh.vertexShader = vs + sh.vertexShader.replace('#include <lights_lambert_vertex>', vbody);
+    sh.fragmentShader = fs + sh.fragmentShader
+      .replace('#include <map_fragment>', '')
+      .replace('#include <color_fragment>', body + `      if ( diffuseColor.a < ${aref} ) discard;\n`)
+      .replace('vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
+        'vec3 outgoingLight = diffuseColor.rgb;');
+    m.gxTevKey = body + vbody;
+  }
+  function gxTevKey() { return 'gxtev' + (this.gxTevKey || JSON.stringify(this.userData.gxTev.st)) + (this.gxTevTex ? this.gxTevTex.length : 0); }
+  function gxTevSetup(m) {   // blending and alpha for an emulated material
+    const T = m.userData.gxTev;
+    m.alphaTest = 0;
+    if (T.xlu && T.blend[0]) {
+      const [type, src, dst] = T.blend;
+      m.transparent = true; m.depthWrite = false;
+      m.blending = THREE.CustomBlending;
+      m.blendEquation = type === 3 ? THREE.ReverseSubtractEquation : THREE.AddEquation;
+      m.blendSrc = GX_SRC_F()[src] ?? THREE.OneFactor; m.blendDst = GX_DST_F()[dst] ?? THREE.ZeroFactor;
+      m.blendSrcAlpha = m.blendSrc; m.blendDstAlpha = m.blendDst;
+    } else { m.transparent = false; m.blending = THREE.NormalBlending; }
+    m.onBeforeCompile = gxTevCompile; m.customProgramCacheKey = gxTevKey;
+  }
+  // Textures named in extras.gxTev.tex, fetched from the glTF (raw texels, as GX samples them).
+  async function gxTevTextures(gltf) {
+    const mats = [];
+    gltf.scene.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.userData.gxTev && !mats.includes(m)) mats.push(m); }); });
+    await Promise.all(mats.map(async (m) => {
+      try {
+        m.gxTevTex = await Promise.all(m.userData.gxTev.tex.map((i) => gltf.parser.getDependency('texture', i).then((tx) => {
+          if (tx.encoding !== THREE.LinearEncoding) { tx = tx.clone(); tx.encoding = THREE.LinearEncoding; tx.needsUpdate = true; }
+          return tx;
+        })));
+      } catch (e) { m.gxTevTex = null; }
+    }));
+  }
+  // GX samples textures as stored and the frame is shown as is, so texels go through untouched:
+  // GLTFLoader marks base colour textures sRGB (decoded darker and more saturated), undone here.
+  // (Checked against a Dolphin recording: a secret course's wood planks keep the texture's hue.)
+  function rawTextures(gltf) {
+    gltf.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      [].concat(o.material).forEach((m) => {
+        ['map', 'emissiveMap'].forEach((k) => {
+          const t = m[k];
+          if (t && t.encoding !== THREE.LinearEncoding) { t.encoding = THREE.LinearEncoding; t.needsUpdate = true; m.needsUpdate = true; }
+        });
+      });
+    });
+    return gltf;
+  }
   const GX_TOON = new Map();   // toon ramp textures by glTF texture index (Mario's model)
   function gxCacheKey() {
     return 'gx' + (this.userData && this.userData.toon && GX_TOON.has(this.userData.toon.tex) ? '-toon' : '') + (this.gxEnvTex ? '-env' : '') + (this.npcGrad ? '-npc' : '');
@@ -420,6 +546,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, side: m.side, depthWrite: m.depthWrite });
     n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp; n.customProgramCacheKey = gxCacheKey;
     if (m.gxEnvTex) n.gxEnvTex = m.gxEnvTex;
+    if (m.userData.gxTev && m.gxTevTex) { n.gxTevTex = m.gxTevTex; gxTevSetup(n); }
     return n;
   }
   // Point a model's lit materials at a light set (materials are per placed object after cloning).
@@ -427,7 +554,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     root.traverse((o) => {
       if (!o.isMesh) return;
       [].concat(o.material).forEach((m) => {
-        if (m.onBeforeCompile !== gxClamp) return;
+        if (m.onBeforeCompile !== gxClamp && m.onBeforeCompile !== gxTevCompile) return;
         if (!m.gx) m.gx = { pos: new THREE.Vector3(), col: new THREE.Color(), amb: new THREE.Color() };
         m.gx.pos.copy(set.pos); m.gx.col.copy(set.col); m.gx.amb.copy(set.amb);
       });
@@ -446,7 +573,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   // Clones (one per ghost / placed object) keep the shader; their light values are set by gxApply.
   const lambertCopy = THREE.MeshLambertMaterial.prototype.copy;
-  THREE.MeshLambertMaterial.prototype.copy = function (src) { lambertCopy.call(this, src); if (src.onBeforeCompile === gxClamp) { this.onBeforeCompile = gxClamp; this.customProgramCacheKey = gxCacheKey; if (src.gxEnvTex) this.gxEnvTex = src.gxEnvTex; } return this; };
+  THREE.MeshLambertMaterial.prototype.copy = function (src) {
+    lambertCopy.call(this, src);
+    if (src.onBeforeCompile === gxClamp) { this.onBeforeCompile = gxClamp; this.customProgramCacheKey = gxCacheKey; if (src.gxEnvTex) this.gxEnvTex = src.gxEnvTex; }
+    if (src.onBeforeCompile === gxTevCompile) {
+      this.onBeforeCompile = gxTevCompile; this.customProgramCacheKey = gxTevKey; this.gxTevTex = src.gxTevTex;
+      if (src.gxRegs) this.gxRegs = src.gxRegs.map((r) => r.slice());
+      if (src.gxMatC) this.gxMatC = src.gxMatC.map((r) => r.slice());
+      if (src.gxKRegs) this.gxKRegs = src.gxKRegs.map((r) => r.slice());
+    }
+    return this;
+  };
   function gxLight(root) {
     root.traverse((o) => { if (o.isMesh && o.geometry.attributes.normal) o.material = Array.isArray(o.material) ? o.material.map(gxMaterial) : gxMaterial(o.material); });
   }
@@ -531,9 +668,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function loadGlb(entry) {
     return new Promise((resolve, reject) => {
       fetchBinary(entry.file).then((buf) => new THREE.GLTFLoader().parse(buf, '', async (gltf) => {
+        rawTextures(gltf);
         const group = new THREE.Group();
         const root = gltf.scene;
-        await gxEnvTextures(gltf); gxLight(root);   // the few lit stage parts
+        await gxEnvTextures(gltf); await gxTevTextures(gltf); gxLight(root);   // the few lit stage parts
         if (entry.scale) root.scale.setScalar(entry.scale);
         if (entry.rotateY) root.rotation.y = THREE.MathUtils.degToRad(entry.rotateY);
         if (entry.offset) root.position.fromArray(entry.offset);
@@ -551,7 +689,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         });
         group.add(root);
         group.userData.litMats = [];
-        root.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.onBeforeCompile === gxClamp) group.userData.litMats.push(m); }); });
+        root.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.onBeforeCompile === gxClamp || m.onBeforeCompile === gxTevCompile) group.userData.litMats.push(m); }); });
         resolve(group);
       }, () => reject(new Error('The stage model could not be loaded.')))).catch(reject);
     });
@@ -646,6 +784,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         // Glow cards the game adds on top (blend destination GX_BL_ONE).
         group.userData.materials.forEach((m) => {
           if (m.userData && m.userData.additive) { m.blending = THREE.AdditiveBlending; m.transparent = true; m.depthWrite = false; }
+          if (m.userData && m.userData.gxTev) applyGxTev(m, m.userData.gxTev);
         });
         // Frame on the playable area: skip sky domes and far-away sea planes when sizing the view.
         const box = new THREE.Box3();
@@ -797,6 +936,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // and 'grad' maps texture brightness from a dark to a light colour (TEV colours 1 and 2).
   function npcMaterial(m, spec) {
     const [, mode, a, b] = spec;
+    if (m.onBeforeCompile === gxTevCompile && spec.length > 4) {   // emulated TEV: set the registers the game sets
+      const [kind, c0, c1] = spec.slice(4), T = m.userData.gxTev;
+      const c = (v, al) => [...v.map((x) => x / 255), al];
+      m.gxRegs = (m.gxRegs || T.regs).map((r) => r.slice());
+      m.gxMatC = (m.gxMatC || T.matc).map((r) => r.slice());
+      if (kind === 0 && c0) m.gxMatC[0] = c(c0, 1);
+      if (kind === 1 && c0) m.gxRegs[0] = c(c0, m.gxRegs[0][3]);
+      if (kind === 2 && c0) m.gxRegs[1] = c(c0, m.gxRegs[1][3]);
+      if (kind === 2 && c1) m.gxRegs[2] = c(c1, m.gxRegs[2][3]);
+      m.needsUpdate = true;
+      return;
+    }
     const col = (c) => new THREE.Vector3(...c.map((v) => Math.min(1, v / 255)));
     if (mode === 'mul') { m.color = new THREE.Color(...a.map((v) => Math.min(1, v / 255))); return; }
     const lo = col(a), hi = col(b);
@@ -815,6 +966,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function applyNpcColors(root) {
     root.traverse((g) => {
+      const k0 = g.userData.npcK0;
+      if (k0) g.traverse((o) => {   // pollution threshold in KCOLOR0 on every material but the eyes
+        if (!o.isMesh) return;
+        for (let q = o; q && q !== g; q = q.parent) if (q.userData.npcPart) return;   // parts keep theirs
+        [].concat(o.material).forEach((m) => {
+          if (m.onBeforeCompile !== gxTevCompile || /_eye_mat$/.test(m.name || '')) return;
+          m.gxKRegs = (m.gxKRegs || m.userData.gxTev.k).map((r) => r.slice());
+          m.gxKRegs[0] = k0.map((v) => v / 255);
+          m.needsUpdate = true;
+        });
+      });
       const specs = g.userData.npcColors;
       if (!specs || !specs.length) return;
       g.traverse((o) => {
@@ -838,7 +1000,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     let lib = objLibCache.get(info.lib);
     if (!lib) {
       lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', async (g) => {
-        await gxEnvTextures(g); gxLight(g.scene); res(g.scene);
+        rawTextures(g);
+        await gxEnvTextures(g); await gxTevTextures(g); gxLight(g.scene); res(g.scene);
       }, rej)));
       objLibCache.set(info.lib, lib);
     }
@@ -885,9 +1048,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             part.matrixAutoUpdate = false;
             part.matrix.fromArray(m);
             part.userData.npcColors = specs;
+            part.userData.npcPart = true;
             node.add(part);
           });
           node.userData.npcColors = ex.npc.mats;
+          if (ex.npc.k0) node.userData.npcK0 = ex.npc.k0;
         }
         if (ex.cannon && ex.cannon.mole >= 0 && protos[ex.cannon.mole]) {   // the Monty Mole rides in the cannon
           const mole = protos[ex.cannon.mole].clone(true);
@@ -1452,6 +1617,96 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const e = arr;
     out.set(e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10], e[11], 0, 0, 0, 1);
     return out;
+  }
+
+  // ---------------------------------------------------------------- GX TEV + blend
+  // Materials whose blend reads the frame (tree shadows: C0 x dst + dst x (1 - a), and the like)
+  // run their own TEV stages here, on the raw texel and the channel colour, then the GX blend.
+  const GX_SRC_F = () => [THREE.ZeroFactor, THREE.OneFactor, THREE.DstColorFactor, THREE.OneMinusDstColorFactor,
+    THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor, THREE.DstAlphaFactor, THREE.OneMinusDstAlphaFactor];
+  const GX_DST_F = () => [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcColorFactor, THREE.OneMinusSrcColorFactor,
+    THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor, THREE.DstAlphaFactor, THREE.OneMinusDstAlphaFactor];
+  // opts.tex(stage) / opts.ras(stage): GLSL for that stage's texel and rasterised colour (default the
+  // material map and the vertex x material colour); opts.regs: read C0-C2 / PREV from uniforms.
+  function gxTevGlsl(tev, opts) {
+    opts = opts || {};
+    const f = (v) => Number(v).toFixed(5);
+    const vec = (r) => `vec4(${r.map(f).join(',')})`;
+    const regName = ['tPREV', 'tR0', 'tR1', 'tR2'];
+    const kc = (sel) => sel <= 7 ? `vec3(${f(1 - sel / 8)})` : sel >= 12 && sel <= 15 ? `kR${sel - 12}.rgb`
+      : sel >= 16 ? `vec3(kR${(sel - 16) % 4}.${'rgba'[Math.floor((sel - 16) / 4)]})` : 'vec3(1.0)';
+    const ka = (sel) => sel <= 7 ? f(1 - sel / 8) : sel >= 16 ? `kR${(sel - 16) % 4}.${'rgba'[Math.floor((sel - 16) / 4)]}` : '1.0';
+    const ci = (i, k) => ['tPREV.rgb', 'vec3(tPREV.a)', 'tR0.rgb', 'vec3(tR0.a)', 'tR1.rgb', 'vec3(tR1.a)', 'tR2.rgb', 'vec3(tR2.a)',
+      'gT.rgb', 'vec3(gT.a)', 'gRas.rgb', 'vec3(gRas.a)', 'vec3(1.0)', 'vec3(0.5)', kc(k), 'vec3(0.0)'][i];
+    const ai = (i, k) => ['tPREV.a', 'tR0.a', 'tR1.a', 'tR2.a', 'gT.a', 'gRas.a', ka(k), '0.0'][i];
+    const bias = ['0.0', '0.5', '-0.5', '0.0'], scale = ['1.0', '2.0', '4.0', '0.5'];
+    let g = opts.regs ? 'vec4 tR0 = gxR[0], tR1 = gxR[1], tR2 = gxR[2], tPREV = gxR[3];\n'
+      : `vec4 tR0 = ${vec(tev.regs[0])}, tR1 = ${vec(tev.regs[1])}, tR2 = ${vec(tev.regs[2])}, tPREV = ${vec(tev.regs[3])};\n`;
+    tev.k.forEach((r, i) => { g += opts.regs ? `vec4 kR${i} = gxK[${i}];\n` : `vec4 kR${i} = ${vec(r)};\n`; });
+    // GX compare ops (8-15): d + (a OP b ? c : 0) on 8-bit values; R8, GR16, BGR24, or per component.
+    const cmpKey = (op, v) => op < 10 ? `gxQ(${v}.r)` : op < 12 ? `(gxQ(${v}.g) * 256.0 + gxQ(${v}.r))`
+      : `(gxQ(${v}.b) * 65536.0 + gxQ(${v}.g) * 256.0 + gxQ(${v}.r))`;
+    tev.st.forEach((x) => {
+      const c = x.slice(0, 8), a = x.slice(8, 16), kcs = x[18], kas = x[19];
+      g += '{\n';
+      g += opts.tex ? `  vec4 gT = ${opts.tex(x)};\n` : '  vec4 gT = gTex;\n';
+      g += opts.ras ? `  vec4 gRas = ${opts.ras(x)};\n` : '  vec4 gRas = gRasIn;\n';
+      let cexp, aexp;
+      if (c[4] >= 8) {
+        const A = ci(c[0], kcs), B = ci(c[1], kcs), C = ci(c[2], kcs), D = ci(c[3], kcs);
+        if (c[4] >= 14) {
+          const cmp = c[4] === 14 ? 'greaterThan' : 'equal';
+          cexp = `${D} + ${C} * vec3(${cmp}(floor(${A} * 255.0 + 0.5), floor(${B} * 255.0 + 0.5)))`;
+        } else {
+          const ka_ = cmpKey(c[4], `vec3(${A})`), kb_ = cmpKey(c[4], `vec3(${B})`);
+          cexp = `${D} + ${C} * (${ka_} ${c[4] % 2 === 0 ? '>' : '=='} ${kb_} ? 1.0 : 0.0)`;
+        }
+      } else {
+        cexp = `(${ci(c[3], kcs)} ${c[4] === 1 ? '-' : '+'} mix(${ci(c[0], kcs)}, ${ci(c[1], kcs)}, ${ci(c[2], kcs)}) + ${bias[c[5]]}) * ${scale[c[6]]}`;
+      }
+      if (a[4] >= 8) {
+        const A = ai(a[0], kas), B = ai(a[1], kas), C = ai(a[2], kas), D = ai(a[3], kas);
+        aexp = `${D} + ${C} * (gxQ(${A}) ${a[4] % 2 === 0 ? '>' : '=='} gxQ(${B}) ? 1.0 : 0.0)`;
+      } else {
+        aexp = `(${ai(a[3], kas)} ${a[4] === 1 ? '-' : '+'} mix(${ai(a[0], kas)}, ${ai(a[1], kas)}, ${ai(a[2], kas)}) + ${bias[a[5]]}) * ${scale[a[6]]}`;
+      }
+      g += `  vec3 oc = ${cexp}; float oa = ${aexp};\n`;
+      g += `  ${regName[x[16]]}.rgb = ${c[7] ? 'clamp(oc, 0.0, 1.0)' : 'clamp(oc, -4.0, 4.0)'}; ${regName[x[17]]}.a = ${a[7] ? 'clamp(oa, 0.0, 1.0)' : 'clamp(oa, -4.0, 4.0)'};\n}\n`;
+    });
+    return g + 'diffuseColor = clamp(tPREV, 0.0, 1.0);\n';
+  }
+  const GX_Q_GLSL = 'float gxQ( float v ) { return floor( clamp( v, 0.0, 1.0 ) * 255.0 + 0.5 ); }\n';
+  function applyGxTev(m, tev) {
+    const [type, src, dst] = tev.blend;
+    m.transparent = true; m.depthWrite = false;
+    m.blending = THREE.CustomBlending;
+    m.blendEquation = type === 3 ? THREE.ReverseSubtractEquation : THREE.AddEquation;
+    m.blendSrc = GX_SRC_F()[src] ?? THREE.OneFactor; m.blendDst = GX_DST_F()[dst] ?? THREE.ZeroFactor;
+    m.blendSrcAlpha = m.blendSrc; m.blendDstAlpha = m.blendDst;
+    m.alphaTest = 0;
+    if (m.map) m.map.encoding = THREE.LinearEncoding;   // GX works on the raw texel
+    const body = gxTevGlsl(tev), aref = Number(tev.aref || 0).toFixed(5);
+    m.onBeforeCompile = (sh) => {
+      sh.fragmentShader = GX_Q_GLSL + sh.fragmentShader
+        .replace('#include <map_fragment>', '')
+        .replace('#include <color_fragment>', `
+          vec4 gRas = diffuseColor;
+          #if defined( USE_COLOR_ALPHA )
+            gRas *= vColor;
+          #elif defined( USE_COLOR )
+            gRas.rgb *= vColor;
+          #endif
+          #ifdef USE_MAP
+            vec4 gTex = texture2D( map, vUv );
+          #else
+            vec4 gTex = vec4( 1.0 );
+          #endif
+          vec4 gRasIn = gRas;
+          ${body}
+          if ( diffuseColor.a < ${aref} ) discard;`);
+    };
+    m.customProgramCacheKey = () => 'gxtev' + body + aref;
+    m.needsUpdate = true;
   }
 
   // ---------------------------------------------------------------- hanging bridge ropes
@@ -2141,7 +2396,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // (tools/build_mario_iso.py). Ghosts show a stand-in until both have loaded.
   function loadMarioModel() {
     const anims = fetch('models/mario_bck.json').then((r) => r.json());
-    fetchBinary('models/mario.glb.b64.txt').then((buf) => new Promise((resolve, reject) => new THREE.GLTFLoader().parse(buf, '', resolve, reject)))
+    fetchBinary('models/mario.glb.b64.txt').then((buf) => new Promise((resolve, reject) => new THREE.GLTFLoader().parse(buf, '', (g) => resolve(rawTextures(g)), reject)))
       .then(async (gltf) => {
         MarioRig.setData(await anims);
         marioModel = gltf.scene;
