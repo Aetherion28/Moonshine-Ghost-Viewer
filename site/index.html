@@ -495,9 +495,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       .replace('#include <color_fragment>', body + `      float gxAref = ${aref}\n`)
       .replace('vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
         'vec3 outgoingLight = diffuseColor.rgb;');
-    m.gxTevKey = body + vbody;
   }
-  function gxTevKey() { return 'gxtev' + (this.gxTevKey || JSON.stringify(this.userData.gxTev.st)) + (this.gxTevTex ? this.gxTevTex.length : 0); }
+  // three.js asks for the cache key before onBeforeCompile runs, so it is built from everything that
+  // shapes the program (stages, alpha compare, texgens, channels), not from the compiled text.
+  function gxTevKey() {
+    const T = this.userData.gxTev;
+    return 'gxtev' + JSON.stringify([T.st, T.acmp, T.aref, T.gen, T.chan]) + (this.gxTevTex ? this.gxTevTex.length : 0);
+  }
   function gxTevSetup(m) {   // blending and alpha for an emulated material
     const T = m.userData.gxTev;
     m.alphaTest = 0;
@@ -1085,6 +1089,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           if (ex.tint) [].concat(o.material).forEach((m) => { if (ex.tintMat && !(m.name || '').endsWith(ex.tintMat)) return; m.color.multiply(new THREE.Color(ex.tint[0] / 255, ex.tint[1] / 255, ex.tint[2] / 255)); });
         });
         if (node.userData.npcColors) applyNpcColors(node);
+        if (ex.gxSet) node.traverse((o) => {   // registers the game sets per object (e.g. the Boos' body colour)
+          if (!o.isMesh) return;
+          [].concat(o.material).forEach((m) => {
+            if (m.onBeforeCompile !== gxTevCompile) return;
+            ex.gxSet.forEach((e) => {
+              if (e.m && !(m.name || '').endsWith(e.m)) return;
+              if (e.r !== undefined) { m.gxRegs = (m.gxRegs || m.userData.gxTev.regs).map((r) => r.slice()); m.gxRegs[e.r] = e.c.map((v) => v / 255); }
+              if (e.k !== undefined) { m.gxKRegs = (m.gxKRegs || m.userData.gxTev.k).map((r) => r.slice()); m.gxKRegs[e.k] = e.c.map((v) => v / 255); }
+            });
+            m.needsUpdate = true;
+          });
+        });
         if (ex.c0) node.traverse((o) => {   // picture signs: their placed colour and progress in TEV colour 0
           if (!o.isMesh) return;
           [].concat(o.material).forEach((m) => {

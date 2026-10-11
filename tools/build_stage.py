@@ -151,11 +151,15 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
                         tex = w.texture_rgba(f"{prefix}:{t[0]}:alpha", rgba, t[2], t[3])
             alpha = {"alphaMode": "BLEND"}
         gx_tev = None
+        st_all = (mat.tev or {}).get("stages") or [] if mat is not None else []
+        plain_tev = len(st_all) == 1 and st_all[0]["c"][:4] == (15, 8, 10, 15) and st_all[0]["a"][:4] == (7, 4, 5, 7)
         if kind == "map" and mat is not None and mat.translucent and mat.blend_mode[0] == 1 \
-                and mat.blend_mode[1:3] not in ((4, 5), (4, 1)) and not glow_extra:
-            # Blends that read the frame (e.g. the shadows under trees, colour x dst + dst x (1 - a)):
-            # the viewer runs the material's own TEV stages and GX blend, so it needs both, raw.
-            st = (mat.tev or {}).get("stages") or []
+                and mat.blend_mode[1:3] != (4, 1) and not glow_extra \
+                and (mat.blend_mode[1:3] != (4, 5) or not plain_tev):
+            # Blends that read the frame (e.g. the shadows under trees, colour x dst + dst x (1 - a)),
+            # and alpha blends whose TEV isn't plain texture x colour (Bianco's tree shadows: C0 with
+            # alpha A0 x texture): the viewer runs the material's own TEV stages and GX blend.
+            st = st_all
             base_no = mat.base[0] if mat.base is not None else None
             if st and all(x["texmap"] in (-1, base_no) for x in st):
                 gx_tev = {"st": [list(x["c"][:8]) + list(x["a"][:8]) + [x["c"][8], x["a"][8], x["kc"], x["ka"], 1 if x["texmap"] >= 0 else 0]

@@ -701,8 +701,13 @@ def main(argv):
                     rgb = list(struct.unpack_from(">3i", o["payload"], len(o["payload"]) - 12))
                     if all(0 <= c <= 255 for c in rgb) and rgb != [255, 255, 255]:
                         extra = {"tint": rgb}
-                if typ == "BoxTelesa":   # TBoxTelesa::reset: the pink body colour (cTelesaColor[1] vs [0])
-                    extra = {"tint": [round(255 * c / 350) for c in (600, 270, 220)], "tintMat": "_mat_body"}
+                if typ in ("Telesa", "LoopTelesa", "BoxTelesa", "SeeTelesa", "MarioModokiTelesa"):
+                    # TTelesaManager::createEnemies / TTelesa::reset: _mat_body's TEV colour 0 is
+                    # cTelesaColor[0] (350, 350, 350), the box Boos' [1] (600, 270, 220, pink); KCOLOR0
+                    # is the fade colour, fully faded in once the Boo has appeared.
+                    body = [600, 270, 220, 255] if typ == "BoxTelesa" else [350, 350, 350, 255]
+                    extra = {**(extra or {}), "gxSet": [{"m": "_mat_body", "r": 0, "c": body},
+                                                        {"k": 0, "c": [255, 255, 255, 255]}]}
                 if typ == "Shine":   # TShine::loadBeforeInit: "normal" shown from the start, "quickly", else
                     try:             # hidden until its event (red coins, boss, ...) makes it appear
                         mode, q = _lstr(o["payload"], actor_tail(o["payload"]))
