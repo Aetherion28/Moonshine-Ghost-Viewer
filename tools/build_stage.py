@@ -170,7 +170,7 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map") ->
                 factor = tuple(c / 255 for c in mat.mat_color) if (not mat.use_vertex_color or color is None) else (1, 1, 1, 1)
                 alpha = {"alphaMode": "BLEND"}
         full_tev = None
-        if kind == "map" and mat is not None and not glow_extra and mat.blend_mode[:3] != (1, 4, 1) and st_all:
+        if kind == "map" and mat is not None and not glow_extra and st_all:
             # The material's own GX setup (channels, every TEV stage and texture, texgens, alpha
             # compare, blend): e.g. Bianco's cliffs mix a rock gradient and a grass texture in 3 stages.
             from build_mario_iso import gx_tev_spec
@@ -237,7 +237,10 @@ def build(scene_path: Path, out: Path, max_tex: int = 512, sky: bool = True) -> 
     tris = add_model(w, bmd.parse(arc["map/map/map.bmd"]), "map")
     for name in WATER_MODELS:
         if name in arc:
-            tris += add_model(w, bmd.parse(arc[name], decode_textures=False), "sea", "water")
+            # The sea surface: wave, shoreline and wet-sand layers with their own TEV and blends. The
+            # water itself (seaindirect.bmd) redraws the frame behind it through an indirect warp, so
+            # what shows is the sea floor under it; the viewer leaves that see-through.
+            tris += add_model(w, bmd.parse(arc[name]), "sea", "map")
     if sky:
         for name in SKY_MODELS:
             if name in arc:

@@ -510,7 +510,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       m.transparent = true; m.depthWrite = false;
       m.blending = THREE.CustomBlending;
       m.blendEquation = type === 3 ? THREE.ReverseSubtractEquation : THREE.AddEquation;
-      m.blendSrc = GX_SRC_F()[src] ?? THREE.OneFactor; m.blendDst = GX_DST_F()[dst] ?? THREE.ZeroFactor;
+      m.blendSrc = type === 3 ? THREE.OneFactor : GX_SRC_F()[src] ?? THREE.OneFactor; m.blendDst = type === 3 ? THREE.OneFactor : GX_DST_F()[dst] ?? THREE.ZeroFactor;   // GX_BM_SUBTRACT: dst - src, factors unused
       m.blendSrcAlpha = m.blendSrc; m.blendDstAlpha = m.blendDst;
     } else { m.transparent = false; m.blending = THREE.NormalBlending; }
     m.onBeforeCompile = gxTevCompile; m.customProgramCacheKey = gxTevKey;
@@ -764,7 +764,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
                   THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor, THREE.DstAlphaFactor, THREE.OneMinusDstAlphaFactor];
                 m.blending = THREE.CustomBlending;
                 m.blendEquation = type === 3 ? THREE.ReverseSubtractEquation : THREE.AddEquation;
-                m.blendSrc = S[src] ?? THREE.OneFactor; m.blendDst = D[dst] ?? THREE.ZeroFactor;
+                m.blendSrc = type === 3 ? THREE.OneFactor : S[src] ?? THREE.OneFactor; m.blendDst = type === 3 ? THREE.OneFactor : D[dst] ?? THREE.ZeroFactor;
               }
             }
             // Second sky texture multiplied over the first (TEV: previous x texture).
@@ -1720,7 +1720,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     m.transparent = true; m.depthWrite = false;
     m.blending = THREE.CustomBlending;
     m.blendEquation = type === 3 ? THREE.ReverseSubtractEquation : THREE.AddEquation;
-    m.blendSrc = GX_SRC_F()[src] ?? THREE.OneFactor; m.blendDst = GX_DST_F()[dst] ?? THREE.ZeroFactor;
+    m.blendSrc = type === 3 ? THREE.OneFactor : GX_SRC_F()[src] ?? THREE.OneFactor; m.blendDst = type === 3 ? THREE.OneFactor : GX_DST_F()[dst] ?? THREE.ZeroFactor;   // GX_BM_SUBTRACT: dst - src, factors unused
     m.blendSrcAlpha = m.blendSrc; m.blendDstAlpha = m.blendDst;
     m.alphaTest = 0;
     if (m.map) m.map.encoding = THREE.LinearEncoding;   // GX works on the raw texel
