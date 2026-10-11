@@ -34,6 +34,7 @@ import gx_texture  # noqa: E402
 import prm  # noqa: E402
 import npc_payload  # noqa: E402
 import scene_bin  # noqa: E402
+import btk  # noqa: E402
 from build_mario_iso import SUBSTITUTE, bck_pose, gx_tev_uvs, material_for, parse_bck  # noqa: E402
 from build_stage import uv_for  # noqa: E402
 from convert_map import rarc_files, yaz0_decompress  # noqa: E402
@@ -560,21 +561,28 @@ def add_models(w: GlbWriter, models, name: str) -> None:
             holder["children"].append(len(w.gltf["nodes"]) - 1)
 
 
+# Types whose model plays its .btk from the start (TMapObjAnimData with ANM_TYPE_BTK), e.g.
+# the Noki Bay gate's swirling light (MapObjInit.cpp MareGate_anim_data).
+BTK_TYPES = {"MareGate"}
+
 # Types whose colours come from TEV registers the viewer doesn't otherwise model (see tev_factor).
 TEV_TINT_TYPES = {"HaneHamuKuri", "HaneHamuKuri2", "DoroHaneKuri", "HamuKuri"}
 
 
-def add_model(w: GlbWriter, model: bmd.Model, name: str, tev: bool = False) -> None:
+def add_model(w: GlbWriter, model: bmd.Model, name: str, tev: bool = False, anim: dict | None = None) -> None:
+    """anim: a parsed .btk; its materials get the full TEV with the texture matrices animated."""
+    anims = {(an["mat"], an["tm"]): {**an, "duration": anim["duration"]} for an in (anim or {}).get("anims", [])}
     holder = {"name": name, "children": []}
     w.gltf["nodes"].append(holder)
     hi = len(w.gltf["nodes"]) - 1
     w.gltf["scenes"][0]["nodes"].append(hi)
     for mesh in model.meshes:
         mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
-        mi, entry = material_for(w, model, mat, name, tev, gx=True)
+        full = mat is not None and any(k[0] == mat.name for k in anims)
+        mi, entry = material_for(w, model, mat, name, tev, gx="full" if full else True, anims=anims)
         uv = uv_for(mesh, entry) if entry is not None else None
         color = mesh.get("color") if mat is not None and (mat.use_vertex_color or any(c and (c[1] == 1 or c[5] == 1) for c in (mat.gx or {}).get("chans") or [])) else None
-        w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"), gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else None)
+        w.add_arrays(f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, mesh.get("nrm"), gx_tev_uvs(mesh, mat, anims) if mat is not None and (mat.lit or full) else None)
         node = w.gltf["nodes"].pop()
         w.gltf["scenes"][0]["nodes"].pop()
         w.gltf["nodes"].append(node)
@@ -676,7 +684,9 @@ def main(argv):
                             model = bmd.parse(arc[mpath], pose=pose, bmt=bmt, bmt_tex_only=tex_only) if pose else raw
                             posed[digest] = model
                             idx = len(lib)
-                            add_model(w, model, f"m{idx}", typ in TEV_TINT_TYPES)
+                            btk_path = mpath[:-4] + ".btk"
+                            anim = btk.parse(arc[btk_path]) if typ in BTK_TYPES and btk_path in arc else None
+                            add_model(w, model, f"m{idx}", typ in TEV_TINT_TYPES, anim)
                             # Springs: bake frames along jumpbase_shrink (TJumpBase states in MapObjItem2.cpp).
                             shrink = arc.get(mpath.rsplit("/", 1)[0] + "/jumpbase_shrink.bck") if typ == "JumpBase" else None
                             if shrink:

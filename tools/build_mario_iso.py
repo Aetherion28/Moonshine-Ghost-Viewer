@@ -233,7 +233,8 @@ def gx_tev_uvs(mesh, mat, anims=None):
     return out
 
 
-def material_for(w, model, mat, prefix, tev=False, gx=False):
+def material_for(w, model, mat, prefix, tev=False, gx=False, anims=None):
+    # gx: emulate the TEV for lit materials; gx="full" for every material (anims: btk tracks).
     if mat is None:
         return w.custom_material(unlit(f"{prefix}"), ), None
     entry = pick_base(model, mat)
@@ -271,8 +272,8 @@ def material_for(w, model, mat, prefix, tev=False, gx=False):
                         "s": [round(v, 4) for v in layer["s"]], "t": [round(v, 4) for v in layer["t"]]})
     if env:
         spec.setdefault("extras", {})["env"] = env
-    if gx and mat.lit and not toon_stages(w, model, mat):
-        gt = gx_tev_spec(w, model, mat)
+    if gx and (mat.lit or gx == "full") and not toon_stages(w, model, mat):
+        gt = gx_tev_spec(w, model, mat, anims)
         if gt:
             spec.setdefault("extras", {})["gxTev"] = gt
     mi = w.custom_material(spec)
