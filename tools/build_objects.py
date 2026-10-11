@@ -35,6 +35,7 @@ import prm  # noqa: E402
 import npc_payload  # noqa: E402
 import scene_bin  # noqa: E402
 import btk  # noqa: E402
+import build_stage  # noqa: E402
 from build_mario_iso import SUBSTITUTE, bck_pose, gx_tev_uvs, material_for, parse_bck  # noqa: E402
 from build_stage import uv_for  # noqa: E402
 from convert_map import rarc_files, yaz0_decompress  # noqa: E402
@@ -589,6 +590,21 @@ def add_model(w: GlbWriter, model: bmd.Model, name: str, tev: bool = False, anim
         holder["children"].append(len(w.gltf["nodes"]) - 1)
 
 
+def add_goop(w: GlbWriter, raw: bytes, img, anim: bytes | None, name: str) -> None:
+    """A pollution layer as a library model: the stage builder's full-TEV map export, its dummy
+    I8 texture replaced by the layer's goop (see build_stage.pollution_layers)."""
+    model = bmd.parse(raw)
+    rgba = np.repeat(img[..., None], 4, axis=2)   # GX I8: the intensity in every channel
+    model.textures = [(t[0], rgba, t[2], t[3]) if t[0].startswith("DummyPollution") else t for t in model.textures]
+    roots = w.gltf["scenes"][0]["nodes"]
+    s0 = len(roots)
+    build_stage.add_model(w, model, name, "map", btk.parse(anim) if anim else None)
+    kids = roots[s0:]
+    del roots[s0:]
+    w.gltf["nodes"].append({"name": name, "children": kids})
+    roots.append(len(w.gltf["nodes"]) - 1)
+
+
 def lib_add(w: GlbWriter, lib: dict, key: str, build) -> int:
     """Add a model (list of parts) to the stage library once per key; returns its index or -1."""
     if key not in lib:
@@ -771,6 +787,21 @@ def main(argv):
                 instances.append([mi, typ, key or "", round(px, 2), round(py, 2), round(pz, 2),
                                   round(rx, 2), round(ry, 2), round(rz, 2), round(sx, 3), round(sy, 3), round(sz, 3),
                                   pick, hit[0], hit[1], o["hash"], CARRY_TYPES.get(typ, "")] + ([extra] if extra else []))
+            # The goop (TPollutionManager): each layer's model with this episode's starting goop.
+            for pname, praw, pimg, panim in build_stage.pollution_layers(arc, scene):
+                if not pimg.any():
+                    continue
+                digest = "goop:" + hashlib.sha1(praw + pimg.tobytes() + (panim or b"")).hexdigest()
+                if digest not in lib:
+                    idx = len(lib)
+                    try:
+                        add_goop(w, praw, pimg, panim, f"m{idx}")
+                        lib[digest] = idx
+                    except Exception as exc:
+                        print("  skip goop", scene, pname, exc)
+                        lib[digest] = -1
+                if lib[digest] >= 0:
+                    instances.append([lib[digest], "Pollution", pname, 0, 0, 0, 0, 0, 0, 1, 1, 1, "", 0, 0, 0, ""])
             data = {"o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
             ropes = bridge_ropes(arc, scene, scene_objs)
             if ropes:

@@ -240,6 +240,60 @@ def add_model(w: GlbWriter, model: bmd.Model, prefix: str, kind: str = "map", an
     return tris
 
 
+EDGE_ALPHA = 50   # TPollutionManager::mEdgeAlpha
+
+
+def _ptex_index(x: int, z: int, log2w: int) -> int:
+    """TPollutionPos::index: a texel of a GX I8 texture (8x4 blocks)."""
+    return (z & 3) * 8 + ((x >> 3) + ((z >> 2) << (log2w - 3))) * 0x20 + (x & 7)
+
+
+def pollution_layers(arc: dict, scene: str):
+    """The goop: TPollutionManager::initPollutionInfo / TPollutionLayer::initTexImage.
+
+    map/ymap.ymp lists the layers; layer i draws map/pollution/<name i>.bmd, whose dummy I8
+    texture the game overwrites with <name>.bmp (its starting goop, 0 = clean) minus 50 per
+    neighbouring texel outside the layer's height map (soft edges), cleared where the height map
+    says the layer doesn't reach. Yields (name, bmd bytes, I8 image as an h x w array, btk bytes).
+    """
+    import struct
+    ymp = arc.get("map/ymap.ymp")
+    if not ymp:
+        return
+    n, infos = struct.unpack_from(">H2xI", ymp, 0)
+    mare = scene.startswith("mare")
+    if mare and "map/pollution/pollutiona.bmd" in arc:
+        names = ["pollution00", "pollution01", "pollution02", "pollution03", "pollution04",
+                 "pollution05", "pollution06", "pollutionA", "pollutionB"]
+    else:
+        names = [f"pollution{i:02d}" for i in range(20)]
+    for i in range(min(n, len(names))):
+        o = infos + i * 0x2C
+        plane = struct.unpack_from(">H", ymp, o + 4)[0]
+        lw, lh = struct.unpack_from(">HH", ymp, o + 0x20)
+        hm_off = struct.unpack_from(">I", ymp, o + 0x28)[0]
+        w, h = 1 << lw, 1 << lh
+        name = names[i]
+        bmdf, bmpf = f"map/pollution/{name.lower()}.bmd", f"map/pollution/{name.lower()}.bmp"
+        if plane == 6 or bmdf not in arc or bmpf not in arc:   # 6: TPollutionLayerWave (no model)
+            continue
+        hm = np.frombuffer(ymp, np.uint8, w * h, hm_off)
+        bmp = np.frombuffer(arc[bmpf], np.uint8, w * h, 0x436).reshape(h, w)[::-1]   # bottom-up rows
+        img = np.zeros((h, w), np.uint8)
+        for y in range(h):
+            for x in range(w):
+                d = int(bmp[y, x])
+                if not d or hm[_ptex_index(x, y, lw)] == 0xFF:
+                    continue
+                if mare and not (0 < x < w - 1 and 0 < y < h - 1):
+                    continue
+                deg = sum(1 for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                          if (dx or dy) and 0 <= x + dx < w and 0 <= y + dy < h
+                          and hm[_ptex_index(x + dx, y + dy, lw)] == 0xFF)
+                img[y, x] = (d - deg * EDGE_ALPHA) & 0xFF   # u8 store, as the game
+        yield name, arc[bmdf], img, arc.get(f"map/pollution/{name.lower()}.btk")
+
+
 def build(scene_path: Path, out: Path, max_tex: int = 512, sky: bool = True) -> bytes:
     arc = rarc_files(yaz0_decompress(scene_path.read_bytes()))
     w = GlbWriter(max_tex)
