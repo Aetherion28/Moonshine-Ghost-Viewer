@@ -364,6 +364,18 @@ def build_glb(arc, out: Path):
         weights /= np.maximum(weights.sum(1, keepdims=True), 1e-6)
         _add_mesh(w, f"body_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, None, joints, weights, normal=mesh.get("nrm"))
         w.gltf["nodes"][-1]["skin"] = 0
+    # Eye textures for texture-pattern animations (ma_*_tx.btp swap _mat_eye_L/R's texture by
+    # TEX1 index, e.g. 8 = H_ma_eye4 shut while asleep): extras.eyes[i] = glTF texture of index i.
+    eyes = {}
+    for ti, tx in enumerate(body.textures):
+        if tx[0].startswith("H_ma_eye") and tx[1] is not None:
+            digest = hashlib.sha1(tx[1].tobytes()).hexdigest()[:10]
+            ref = w.texture_rgba(f"tex:{tx[0]}:{digest}", tx[1], tx[2], tx[3])
+            if ref:
+                eyes[str(ti)] = ref[0]
+    for m in w.gltf["materials"]:
+        if m.get("name", "").endswith(("_mat_eye_L", "_mat_eye_R")):
+            m.setdefault("extras", {})["eyes"] = eyes
     jidx = {n: joint_nodes[i] for i, n in enumerate(body.joint_names)}
     # --- hands (decomp TMario::changeHand: [0]=ma_hnd2, [1]=ma_hnd3, plus ma_hnd4r)
     for hid, side, joint in (("2", "r", "jnt_hand_R"), ("2", "l", "jnt_hand_L"), ("3", "r", "jnt_hand_R"),

@@ -2670,6 +2670,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           tx.magFilter = tx.minFilter = THREE.LinearFilter; tx.generateMipmaps = false;
           tx.wrapS = tx.wrapT = THREE.ClampToEdgeWrapping; tx.needsUpdate = true; GX_TOON.set(i, tx);
         }).catch(() => {})));
+        // Eye textures the texture-pattern animations switch to (ma_*_tx.btp), by TEX1 index.
+        const eyeIdx = new Set();
+        marioModel.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { Object.values(m.userData.eyes || {}).forEach((i) => eyeIdx.add(i)); }); });
+        await Promise.all([...eyeIdx].map((i) => gltf.parser.getDependency('texture', i).then((tx) => {
+          tx.encoding = THREE.LinearEncoding; MARIO_EYE_TEX.set(i, tx);
+        }).catch(() => {})));
         gxLight(marioModel);
         marioModel.traverse((o) => {
           if (o.isMesh) { o.frustumCulled = false; [].concat(o.material).forEach((m) => { m.side = THREE.DoubleSide; }); }
@@ -2680,7 +2686,28 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
 
   // No ghost loaded: Mario at the stage's start, asleep (TMario's sleep_wait loop, animation 309).
+  // The Z's over a sleeping Mario (TMario::sleepingEffect, ms_poi_zzz.jpa, its own Z texture):
+  // a Z every 20 frames, rising from 100 above him and drifting, growing, then fading.
+  const ZZZ_TEX = new THREE.TextureLoader().load('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAERElEQVR4nMWXXUgcVxTHf7M7xui6HzHu+tGwFpFW2mpBjQtWmthWTCCP4ktpRCgJSKEUEpT6EFhSpZTFLqEvslAfCoYg8cGGQsV9SCCFfehCIShpQqASNHFJFrMfs+zM3D5MRja6H8pu6R8u3Jm5957fnHPumTvwP0vK6Z8Dvq7QuingG+Cfo0zqAlRAVKj9BtSUMprrgVbgrtVq9fp8PlpaWo4Cv6dMJsPKyop5eQu4DMQPM/cEcN9isYj5+XlRjkKhkKiqqjI9EQDkwwDIwG1ATExMlAWQyWTElStXTIAk8N1hPfgtIAYHB8sCMHX+/HlhsVhMkHHeDHlefQaI+vr6igAkk0kxMjIiJEkSwA7wSSkA92tace/evYpAbG1tCY/Hk7s7BnINWvYB7AAbAOFwGCFE2a2xsZFoNEpXV5dpYx54r5gXbgDizJkzQlXVirVIJCIcDofphb9NY/m2x6/AV9FolFgshsvl4vnz52iahqIoxONxhBCkUil8Ph9VVVWlwgqAoijoug6QBX4oBrAOJBOJhK2npwdZlslkMggh0HWdbDaLLMvMzs7S19dHNps9FEAoFCKRSABEgaViAAngsa7rXU+fPs272MWLFxkeHkZV1ZKGFUUhHA6zuLho3roBvDAv8u3LYxjl831gF3gIfAF8DHDp0iUmJyex2WwljWuaxtTUFEtLS6TTaYD7wKeAUgwgV9XA2GvqY6Ojo1y/fp3jx4+XNByJRLh27RobGxu5jz4E/sq9UaxGS8CXwI+A3N/fz9WrV5EkiUwmU3DSq1evCAQC3Llzh3g8vv9x336AQh6wYFStW8CJgYEBgsEg1dXVBQ3rus6DBw/w+/2sr68D4HQ6aWhoIJFI8OzZM4BfMMJZFEACPgd+Ahy9vb34/X48Hk9B46lUioWFBZaXl0kmk3R3d3P27Fk6Ojrwer2srq4yOzsLRvKdzJ2bLwQfYcTc0dbWxszMDLW1tSiKcmCgpmlsb28zNzfH7u4uY2NjDA0N4XQ63xjX2dlpduuBZmCrEMAg8DPgOnXqFFNTU0iSZGbwAcViMTY3NxkfH8fr9SLLxnL7x7vdblwul5kTHxQCOAl8D7S63W4CgQA1NTUFjQPYbDY6OjoAyGazRYuS1+s1AU4Dq/kAXmBUqNOpVIqdnZ2icT+qGhoazO67gBXQ9gMIjMSbSCaTrcFgkOnpaSSp5BniUGpubja7jRj1JbUfAIzj02Vg+cmTJzWRSCT3M1qW7HY7siyjqurbgKMQAMBdYE1V1Qtra2u0t7dXBMBms5kALcBeHc8HkMYIxYVHjx4RjUb3Eq0c1dbWYrVaAexAO/AYDp6ITP0O3NY0jZs3b/Ly5UvS6XRZTQiB3W431z9ndoplmAf4E3irqamJurq6Mn0A29vb5pngD6C/1HgLRl2o1K9abtv7mhX7GuoYB8h3Dv2KR5OXI/68/if6FzVvlju+qxX+AAAAAElFTkSuQmCC');
+  function updateZzz(root, frame) {
+    if (!root.userData.zzz) {
+      root.userData.zzz = [0, 1, 2].map(() => {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: ZZZ_TEX, transparent: true, depthWrite: false }));
+        root.add(sp);
+        return sp;
+      });
+    }
+    const life = 60;
+    root.userData.zzz.forEach((sp, k) => {
+      const age = (frame + k * 20) % life, u = age / life;
+      sp.position.set(Math.sin(u * Math.PI * 2 + k) * 18 + u * 30, 100 + u * 90, 0);
+      const sc = 22 + u * 26;
+      sp.scale.set(sc, sc, 1);
+      sp.material.opacity = Math.min(1, u * 5) * Math.min(1, (1 - u) * 3);
+    });
+  }
   let sleepMario = null;
+  const MARIO_EYE_TEX = new Map();
   function updateSleeper() {
     const show = !!(marioModel && objSpawn && !ghosts.length && MarioRig.ready());
     if (!show) { if (sleepMario) sleepMario.visible = false; return; }
@@ -2688,6 +2715,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       sleepMario = new THREE.Group();
       const body = THREE.SkeletonUtils.clone(marioModel);
       body.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone(); });
+      // ma_sleep_wait_tx.btp: both eyes on TEX1 texture 8 (H_ma_eye4, shut) the whole loop.
+      body.traverse((o) => {
+        if (!o.isMesh) return;
+        [].concat(o.material).forEach((m) => {
+          const tx = m.userData.eyes ? MARIO_EYE_TEX.get(m.userData.eyes['8']) : null;
+          if (tx && m.map) { tx.wrapS = m.map.wrapS; tx.wrapT = m.map.wrapT; m.map = tx; m.needsUpdate = true; }
+        });
+      });
       sleepMario.userData.rig = MarioRig.attach(body);
       sleepMario.add(body);
       scene.add(sleepMario);
@@ -2701,9 +2736,21 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       gxApply(sleepMario, gxSet('player', lightSetAt(x, y, z)));
     }
     sleepMario.visible = true;
-    const a = MarioRig.bckFor(309, false), d = a && a.data ? a.data.d : 120;
-    const f = (idleClock / QF_PER_FRAME) * 2 % d;   // 60 fps animation at 30 fps (SMSGetAnmFrameRate)
-    MarioRig.pose(sleepMario.userData.rig, 309, false, (f / d) * 4096);
+    // TMario::sleeping: sit_wait (306) looped until it has finished 41 times, sleep (308) once,
+    // then sleep_wait (309) for good; 60 fps animations at 30 fps (SMSGetAnmFrameRate).
+    const F = (idleClock / QF_PER_FRAME) * 2, len = (id, dflt) => { const a = MarioRig.bckFor(id, false); return a && a.data ? a.data.d : dflt; };
+    const dSit = len(306, 120), dLie = len(308, 29), dSleep = len(309, 120), sitFor = 41 * dSit;
+    let id, f;
+    if (F < sitFor) { id = 306; f = F % dSit; }
+    else if (F < sitFor + dLie) { id = 308; f = F - sitFor; }
+    else { id = 309; f = (F - sitFor - dLie) % dSleep; }
+    const d = len(id, 120);
+    MarioRig.pose(sleepMario.userData.rig, id, false, (Math.min(f, d - 0.001) / d) * 4096);
+    updateZzz(sleepMario, F / 2);
+    // FLUDD with only its spray nozzle, as at the start of a stage.
+    const parts = sleepMario.userData.rig.parts;
+    Object.keys(parts).forEach((k) => { if (/^nozzle_/.test(k)) parts[k].visible = k === 'nozzle_normal_wg'; });
+    if (parts.fludd_body) parts.fludd_body.visible = true;
   }
 
   function setMarkerBody(group) {
