@@ -3329,15 +3329,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const tmp = new THREE.Vector3();
 
   // The game's follow camera (CameraKindFollow, params/camera/kindfollow.prm): it looks at a point
-  // 160 above Mario that chases him (XZ 0.1, Y 0.03 a frame), and sits mSLDist behind that point
-  // at a pitch between mSLXAngleMin and Max, chasing its spot (XZ 0.05, Y 0.08 a frame). Its yaw
+  // 160 above Mario that chases him, and sits mSLDist behind that point at a pitch between
+  // mSLXAngleMin and Max, chasing its spot. Its yaw
   // is wherever it was dragged, so it trails behind Mario as he runs and swings round when he
   // turns. After the user drags or zooms it, it waits 2 s and then takes over again.
-  const GAME_CAM = { atY: 160, atXZ: 0.1, atYr: 0.03, posXZ: 0.05, posY: 0.08, pitch: 22 * Math.PI / 180 };
+  // Chase rates a bit above kindfollow.prm's (0.1 / 0.03 / 0.05 / 0.08), which on their own trail
+  // well behind a running Mario here.
+  const GAME_CAM = { atY: 160, atXZ: 0.25, atYr: 0.12, posXZ: 0.3, posY: 0.2, pitch: 22 * Math.PI / 180 };
   const gameCam = { at: null, dist: 1200 };
   let userCamUntil = 0, camDragging = false;
   function gameCamStep(lead, dt) {
-    const k = Math.min(4, dt * 30);   // game frames this step
+    // Game frames this step: playback runs faster or slower than real time at other speeds.
+    const k = Math.min(8, dt * 30 * (playing ? playbackSpeed() : 1));
     const chase = (r) => 1 - Math.pow(1 - r, k);
     const mario = lead.clone().add(tmp.set(0, GAME_CAM.atY - 100, 0));
     if (!gameCam.at || gameCam.at.distanceTo(mario) > 3000) {   // first frame, or a jump in time: start behind
@@ -3352,8 +3355,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // distance and the game's pitch.
     const dx = camera.position.x - at.x, dz = camera.position.z - at.z, h = Math.hypot(dx, dz) || 1;
     const D = gameCam.dist, want = new THREE.Vector3(at.x + dx / h * D * Math.cos(GAME_CAM.pitch), at.y + D * Math.sin(GAME_CAM.pitch), at.z + dz / h * D * Math.cos(GAME_CAM.pitch));
-    camera.position.x += (want.x - camera.position.x) * chase(GAME_CAM.posXZ * 4);
-    camera.position.z += (want.z - camera.position.z) * chase(GAME_CAM.posXZ * 4);
+    camera.position.x += (want.x - camera.position.x) * chase(GAME_CAM.posXZ);
+    camera.position.z += (want.z - camera.position.z) * chase(GAME_CAM.posXZ);
     camera.position.y += (want.y - camera.position.y) * chase(GAME_CAM.posY);
     controls.target.copy(at);
   }
