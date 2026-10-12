@@ -63,13 +63,13 @@ TYPE_FOLDERS = {"NPCMareM": "marem", "NPCMareMB": "maremb", "NPCMareW": "marew",
                 "NPCBoard": "boardnpc", "NPCKinopio": "kinopio", "NPCKinojii": "kinojii", "NPCPeach": "peach",
                 "Amenbo": "amenbo", "AmenboManager": "amenbo", "HamuKuri": "hamukuri", "Hamukuri": "hamukuri",
                 "HaneHamuKuri": "hanekuri", "HaneHamuKuri2": "hanekuri", "DoroHaneKuri": "hanekuri",
-                "KageMario": "kagemario", "Kazekun": "kazekun", "Manta": "manta", "FireWanwan": "firewanwan",
+                "KageMario": "kagemario", "Kazekun": "kazekun", "Manta": "manta", "FireWanwan": "firewanwan", "BossWanwan": "bwanwan",
                 "BeeHive": "beehive", "Kugu": "kug", "Aminoko": "aminoko", "GateKeeper": "gatekeeper",
                 "OrangeSeal": "seal", "BossPakkun": "kbosspakkun", "Gorogoro": "gorogoro"}
 PREFERRED_FILES = {"poihana": "default.bmd", "sambohead": "sambohead.bmd", "telesa": "telesa.bmd",
                    "mamegesso": "default.bmd", "rikugesso": "geso_model1.bmd", "bgeso": "bgeso_body.bmd",
                    "pakkun": "pakun.bmd", "kinopio": "kinopio_body.bmd", "kinojii": "kinoji_body.bmd",
-                   "peach": "peach_model.bmd", "beehive": "bee_nest.bmd", "firewanwan": "wanwan.bmd",
+                   "peach": "peach_model.bmd", "beehive": "bee_nest.bmd", "firewanwan": "wanwan.bmd", "bwanwan": "bwanwan_body.bmd",
                    "gatekeeper": "gene_pakkun_model1.bmd", "seal": "gene_orange_model1.bmd"}
 # NPC bodies (NpcManager.cpp createModelData): the Noki variants share /scene/mareM or /scene/mareW.
 NPC_BODIES = {**{f"NPCMareM{v}": ("marem", "marem.bmd") for v in ("", "A", "B", "C", "D")},
