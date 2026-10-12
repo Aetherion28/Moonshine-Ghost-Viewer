@@ -2651,7 +2651,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const ray = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, 1e5);
         const objFloor = (yy) => {
           ray.ray.origin.set(x, yy + 1, z);
-          const h = ray.intersectObjects(solid, true).find((hit) => hit.face && hit.face.normal.clone().transformDirection(hit.object.matrixWorld).y > 0.2);
+          // either winding: GX culling flips some models' faces
+          const h = ray.intersectObjects(solid, true).find((hit) => hit.face && Math.abs(hit.face.normal.clone().transformDirection(hit.object.matrixWorld).y) > 0.2);
           return h ? h.point.y : -Infinity;
         };
         // He lands on the nearest floor under the Shine: the stage's, or a map object's.
