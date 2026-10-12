@@ -207,7 +207,7 @@ def walk_anim_rate(typ: str) -> float:
 
 # Classes whose graph speed isn't a plain parameter: TBoidLeader's base speed for schools of
 # fish (fishoid.cpp) and butterflies (Butterfly.cpp); TAnimalBase::execWalk runs animals at
-# mSLMaxMarchSpeed x SMSGetAnmFrameRate (seagulls); birds walk at bird.prm mWalkingSpeed, assumed
+# mSLMaxMarchSpeed x SMSGetAnmFrameRate (seagulls); birds fly their loops at bird.prm mMarchSpeed, assumed
 # to follow the same animal convention (TAnimalBird isn't decompiled yet).
 FIXED_SPEED = {"FishoidA": 4.0, "FishoidB": 4.0, "FishoidC": 4.0, "FishoidD": 4.0,
                "Butterfly": 6.0, "ButterflyB": 6.0, "ButterflyC": 6.0}
@@ -219,9 +219,9 @@ def walk_speed(arc: dict, typ: str) -> float:
     if typ == "AnimalMew":
         v = global_params("animal/mew.prm").get("mSLMaxMarchSpeed")
         return round(2.0 * (v if isinstance(v, float) else 6.0), 3)
-    if typ == "AnimalBird":
-        v = global_params("animal/bird.prm").get("mWalkingSpeed")
-        return round(2.0 * (v if isinstance(v, float) else 1.5), 3)
+    if typ == "AnimalBird":   # their graphs are flight loops above the perches: bird.prm mMarchSpeed
+        v = global_params("animal/bird.prm").get("mMarchSpeed")
+        return round(2.0 * (v if isinstance(v, float) else 5.0), 3)
     if typ in NPC_ORDER:   # TBaseNPC::walk: up to mMaxMarchSpeed (TNpcSaveIndividual default 3)
         v = npc_prm(typ).get("mMaxMarchSpeed")
         return round(v if isinstance(v, float) and v > 0 else 3.0, 3)
@@ -969,9 +969,9 @@ def main(argv):
                     if wk:
                         extra = {**(extra or {}), **wk}
                         used_graphs.add(wk["walk"])
-                    words = WALK_ANIM_WORDS if wk else IDLE_ANIM_WORDS
+                    words = (("fly",) + WALK_ANIM_WORDS if typ == "AnimalBird" else WALK_ANIM_WORDS) if wk else IDLE_ANIM_WORDS
                     bmt, tex_only = mat_table(arc, keys, objtable)
-                    skey = ("skin:" if wk else "idle:") + hashlib.sha1(arc[mpath] + (bmt or b"") + (b"T" if tex_only else b"")).hexdigest()
+                    skey = ("skin:" if wk else "idle:") + ("fly:" if wk and typ == "AnimalBird" else "") + hashlib.sha1(arc[mpath] + (bmt or b"") + (b"T" if tex_only else b"")).hexdigest()
                     if skey not in lib:
                         lib[skey] = -1
                         try:
