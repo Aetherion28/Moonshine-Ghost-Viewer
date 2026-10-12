@@ -38,6 +38,7 @@ import btk  # noqa: E402
 import build_stage  # noqa: E402
 from build_mario_iso import SUBSTITUTE, _add_mesh, bck_pose, gx_tev_uvs, material_for, parse_bck, quat_from_matrix  # noqa: E402
 from build_stage import uv_for  # noqa: E402
+from convert_map import parse_col  # noqa: E402
 from convert_map import rarc_files, yaz0_decompress  # noqa: E402
 from dae_to_glb import GlbWriter  # noqa: E402
 
@@ -45,6 +46,7 @@ SKIP_TYPES = re.compile(r"^(Light|AmbColor|Cube\w*|AreaCylinder|\w*Manager|Map|S
                         r"GroupObj|IdxGroup|MarScene|MapObjSoundGroup|MapObjWave|Pollution|\w*Camera\w*|"
                         r"\w*Event\w*Point|Strategy|ConductorInit|NameRefGrp|ScenarioArchiveName\w*|"
                         r"Shimmer)$")   # Shimmer: the heat-haze screen effect's plane
+OBJ_COLS: dict = {}
 PICKUP_TYPES = {"Coin": "coin", "CoinBlue": "coin_blue", "CoinRed": "coin_red", "Shine": "shine",
                 "Mushroom1up": "1up", "Mushroom1upR": "1up", "Mushroom1upX": "1up",
                 "NozzleItem": "nozzle", "Item": "item"}
@@ -255,8 +257,30 @@ def walk_extra(typ: str, payload: bytes, rails: dict, arc: dict):
     return {"walk": name, "v": walk_speed(arc, typ), "ar": walk_anim_rate(typ)}
 
 
-def move_extra(typ: str, payload: bytes, rails: dict):
+# Map objects that turn on their own every step (QF), degrees per step about a model axis
+# (0 x, 1 y, 2 z): TBigWindmill::control (sSpeed), TBiancoWatermill (unk138 0.3),
+# TMerrygoround::mRotSpeed. TBiancoWatermillVertical reads its speed (x 1/1000) and turns the
+# matching BiaTurnBridge at mBridgeRotRate times it.
+SPIN_TYPES = {"BigWindmill": (2, -0.05), "BiaWatermill": (2, -0.3), "Merrygoround": (1, 0.1)}
+WATERMILL_BRIDGE_RATE = 0.03
+
+
+def move_extra(typ: str, payload: bytes, rails: dict, name: str = "", spin_rates: dict | None = None):
     try:
+        if typ in SPIN_TYPES:
+            ax, rate = SPIN_TYPES[typ]
+            return {"spin": {"ax": ax, "rate": rate}}
+        if typ == "BiaWatermillVertical":
+            return {"spin": {"ax": 1, "rate": round(watermill_vertical_rate(payload), 5)}}
+        if typ == "BiaTurnBridge" and spin_rates is not None:
+            rate = spin_rates.get(name.split()[-1] if name else "0", 0.0) * WATERMILL_BRIDGE_RATE
+            return {"spin": {"ax": 1, "rate": round(rate, 5)}} if rate else None
+        if typ == "CraneRotY":   # TCraneRotY: base angle to base + [tail], 0.05-0.15 a step (0.1), 120-step waits
+            mx = struct.unpack_from(">f", payload, actor_tail(payload))[0]
+            return {"osc": {"ax": 1, "lo": 0.0, "hi": round(mx, 3), "sp": 0.1, "wait": 120, "start": "lo"}}
+        if typ == "craneUpDown":   # TCraneUpDown: pitch between -25 and 45 (crane 0) / 30, 0.1 a step
+            return {"osc": {"ax": 0, "lo": -25.0, "hi": 45.0 if name.endswith(" 0") else 30.0, "sp": 0.1, "wait": 120,
+                            "abs": 1, "start": "mid"}}
         if typ in ROLL_TYPES:
             p = actor_tail(payload)
             return {"roll": struct.unpack_from(">i", payload, p)[0] * 0.01}
@@ -273,6 +297,36 @@ def move_extra(typ: str, payload: bytes, rails: dict):
     except (struct.error, ValueError):
         pass
     return None
+
+
+def watermill_vertical_rate(payload: bytes) -> float:
+    """TBiancoWatermillVertical::load: one value after TMapObjBase's, / 1000."""
+    raw = payload[actor_tail(payload):][:4]
+    f = struct.unpack(">f", raw)[0]
+    if not (abs(f) < 1e6) or (f != 0 and abs(f) < 1e-6):
+        f = struct.unpack(">i", raw)[0]
+    return f / 1000.0
+
+
+def windmill_blocks(objs) -> list:
+    """TBigWindmill::load makes four bigWindmillBlock that ride its wheel: sRadius 2380 out
+    from its centre, sSubZ 150 in front, 90 degrees apart, at the wheel's angle."""
+    out = []
+    kb = b"bigWindmillBlock"
+    for o in objs:
+        if o["type"] != "BigWindmill":
+            continue
+        pl = scene_bin.placement(o["payload"])
+        if pl is None:
+            continue
+        (px, py, pz), (rx, ry, rz), _ = pl
+        for i in range(4):
+            a = rz + 90 * i
+            p = (px + 2380 * math.cos(math.radians(a)), py + 2380 * math.sin(math.radians(a)), pz - 150)
+            out.append({"type": "MapObjBase", "name": "", "hash": 0, "path": [], "ptypes": (),
+                        "orbit": {"c": [px, py, pz], "r": 2380, "sub": 150, "a": a, "rate": -0.05},
+                        "payload": struct.pack(">9f", *p, 0, 0, 0, 1, 1, 1) + struct.pack(">HH", 0, len(kb)) + kb})
+    return out
 
 
 DYNAMIC_CARRY = {0x1000001E: ("bombhei/nejibomb_model1.bmd", "bomb", "bombhei")}
@@ -813,6 +867,9 @@ def main(argv):
     scene_dir, table = Path(argv[0]), json.load(open(argv[1]))
     PARAMS_SZS = scene_dir.parent / "params.szs"
     objtable, site = json.load(open(argv[2])), Path(argv[3])
+    global OBJ_COLS
+    cpath = Path(argv[2]).parent / "mapobj_cols.json"   # tools/extract_mapobj_cols.py
+    OBJ_COLS = json.load(open(cpath)) if cpath.exists() else {}
     max_tex = int(argv[argv.index("--max-tex") + 1]) if "--max-tex" in argv else 128
     index_path = site / "maps" / "index.json"
     entries = json.load(open(index_path))
@@ -855,10 +912,18 @@ def main(argv):
                     except Exception:
                         pass
             instances = []
+            cols = {}   # this scene's map object collision meshes, by file
             used_graphs = set()
             rails = parse_rails(arc["map/scene.ral"]) if "map/scene.ral" in arc else {}
             scene_objs = scene_bin.parse(arc["map/scene.bin"])
-            scene_objs += bridge_boards(scene, scene_objs)
+            scene_objs += bridge_boards(scene, scene_objs) + windmill_blocks(scene_objs)
+            spin_rates = {}
+            for so in scene_objs:
+                if so["type"] == "BiaWatermillVertical":
+                    try:
+                        spin_rates[(so.get("name") or "x 0").split()[-1]] = watermill_vertical_rate(so["payload"])
+                    except (struct.error, ValueError):
+                        pass
             for o in scene_objs:
                 typ = o["type"]
                 if SKIP_TYPES.match(typ):
@@ -965,8 +1030,11 @@ def main(argv):
                     r, g, b = struct.unpack_from(">3I", o["payload"], len(o["payload"]) - 12)
                     prog = PICTURE_START.get(key or "", 255)
                     extra = {**(extra or {}), "c0": [r & 255, g & 255, b & 255, prog]}
-                if typ in ROLL_TYPES or typ in RAIL_TYPES or typ in LIFT_TYPES:
-                    mv = move_extra(typ, o["payload"], rails)
+                if (typ in ROLL_TYPES or typ in RAIL_TYPES or typ in LIFT_TYPES or typ in SPIN_TYPES or o.get("orbit")
+                        or typ in ("BiaWatermillVertical", "BiaTurnBridge", "CraneRotY", "craneUpDown")):
+                    mv = move_extra(typ, o["payload"], rails, o.get("name") or "", spin_rates)
+                    if o.get("orbit"):
+                        mv = {"orbit": o["orbit"]}
                     if mv:
                         extra = {**(extra or {}), **mv}
                 elif mpath and is_spine(o["payload"]):
@@ -995,6 +1063,18 @@ def main(argv):
                         extra = {**(extra or {}), "skin": lib[skey]}
                         if not wk:
                             extra["ar"] = 2.0   # SMSGetAnmFrameRate
+                # TMapObjBase::initMapCollisionData: the object's .col files, placed with its matrix
+                ckey = (key[len("invisible_"):] if hidden else key) or ""
+                for ce in OBJ_COLS.get(ckey, []):
+                    cname = ce["col"].lower()
+                    if cname not in cols and f"mapobj/{cname}.col" in arc:
+                        try:
+                            cv, ct, cty = parse_col(arc[f"mapobj/{cname}.col"])
+                            cols[cname] = {"v": [round(float(c), 1) for vv in cv for c in vv], "t": [i for tt in ct for i in tt], "ty": list(cty)}
+                        except ValueError:
+                            cols[cname] = None
+                    if cols.get(cname):
+                        extra = {**(extra or {}), "col": (extra or {}).get("col", []) + [cname]}
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
                 pick = PICKUP_TYPES.get(typ, "")
                 if hidden and pick:
@@ -1025,8 +1105,11 @@ def main(argv):
                         lib[digest] = -1
                 if lib[digest] >= 0:
                     instances.append([lib[digest], "Pollution", pname, 0, 0, 0, 0, 0, 0, 1, 1, 1, "", 0, 0, 0, ""])
+            used_cols = {c for inst in instances if len(inst) > 17 for c in inst[17].get("col", [])}
             data = {"g": {k: [n[:3] + [n[7], n[8]] for n in rails[k]] for k in sorted(used_graphs)},
                     "o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
+            if used_cols:
+                data["cols"] = {c: cols[c] for c in sorted(used_cols)}
             ropes = bridge_ropes(arc, scene, scene_objs)
             if ropes:
                 data["ropes"] = ropes

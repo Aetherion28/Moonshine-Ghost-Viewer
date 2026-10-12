@@ -1163,6 +1163,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           if (anims[nm]) node.userData.rig = { bones, anim: anims[nm], idle: anims[nm + '~idle'] || null, ar: ex.ar || 2, phase: (objNodes.length * 37) % anims[nm].d };
         }
         if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]), cloud: !!ex.cloud };
+        if (ex.spin || ex.orbit || ex.osc) node.userData.move = { spin: ex.spin, orbit: ex.orbit, osc: ex.osc };
+        if (ex.col && data.cols) node.userData.cols = ex.col.map((c) => objColMesh(data.cols, c)).filter(Boolean);
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
           ex.npc.parts.forEach(([pi, m, specs, ji]) => {
             if (!protos[pi]) return;
@@ -1396,9 +1398,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const WATER_SURFACE = new Set([0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104]);
   const WATER_SLIP = new Set([0x500, 0x4004, 0x8004, 0xc004]);
   function waterSegment(p, q) {
+    const o = objSegment(p, q);
+    const st = waterStageSegment(p, q);
+    if (o && (!st || o.f < st.f)) {
+      const ty = o.ty || 0;
+      return { f: o.f, n: o.n, ground: o.n[1] > 0.2, roof: o.n[1] < -0.2, water: WATER_SURFACE.has(ty), slip: WATER_SLIP.has(ty) };
+    }
+    return st;
+  }
+  function waterStageSegment(p, q) {
     const C = activeCol();
     if (!C) {
-      const h = stageSegment(p, q);
+      const h = stageOnlySegment(p, q);
       return h ? { f: h.f, n: [0, 1, 0], ground: h.ny > 0.2, roof: false, water: false, slip: false } : null;
     }
     let best = null, bk = -1, bn = null;
@@ -1472,16 +1483,96 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     return mapGroup.userData.rayGroup;
   }
+  // Map objects' own collision (TMapObjBase::initMapCollisionData: mapObj/<name>.col placed with
+  // the object's matrix, so it moves with it): triangles in the object's space, tested through
+  // the object's current matrix.
+  function objColMesh(cols, name) {
+    const c = cols[name];
+    if (!c) return null;
+    if (!c.mesh) {
+      const v = new Float32Array(c.v), t = Uint32Array.from(c.t);
+      let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < v.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], v[i + k]); hi[k] = Math.max(hi[k], v[i + k]); }
+      const cen = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
+      c.mesh = { v, t, ty: c.ty, cen, r: Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2 };
+    }
+    return c.mesh;
+  }
+  const _ocInv = new THREE.Matrix4(), _ocA = new THREE.Vector3(), _ocB = new THREE.Vector3(), _ocC = new THREE.Vector3(), _ocN = new THREE.Vector3();
+  // First object collision along p -> q: { f, n (world, facing back along it), ty } or null.
+  function objSegment(p, q) {
+    let best = null;
+    const dx = q[0] - p[0], dy = q[1] - p[1], dz = q[2] - p[2], len = Math.hypot(dx, dy, dz) || 1;
+    for (const node of objNodes) {
+      const cols = node.userData.cols;
+      if (!cols || !cols.length || !node.visible) continue;
+      const M = node.matrixWorld, e = M.elements, sc = Math.max(Math.hypot(e[0], e[1], e[2]), Math.hypot(e[4], e[5], e[6]), Math.hypot(e[8], e[9], e[10]));
+      let inv = null;
+      for (const m of cols) {
+        // the segment against the mesh's bounding sphere, in world space
+        _ocC.set(m.cen[0], m.cen[1], m.cen[2]).applyMatrix4(M);
+        const R = m.r * sc, cx = _ocC.x - p[0], cy = _ocC.y - p[1], cz = _ocC.z - p[2];
+        const along = Math.max(0, Math.min(len, (cx * dx + cy * dy + cz * dz) / len));
+        if (Math.hypot(cx - dx / len * along, cy - dy / len * along, cz - dz / len * along) > R) continue;
+        if (!inv) inv = _ocInv.copy(M).invert();
+        _ocA.set(p[0], p[1], p[2]).applyMatrix4(inv); _ocB.set(q[0], q[1], q[2]).applyMatrix4(inv);
+        const ox = _ocA.x, oy = _ocA.y, oz = _ocA.z, ex = _ocB.x - ox, ey = _ocB.y - oy, ez = _ocB.z - oz;
+        const v = m.v, t = m.t;
+        for (let k = 0; k < t.length; k += 3) {
+          const a = t[k] * 3, b = t[k + 1] * 3, c = t[k + 2] * 3;
+          const e1x = v[b] - v[a], e1y = v[b + 1] - v[a + 1], e1z = v[b + 2] - v[a + 2];
+          const e2x = v[c] - v[a], e2y = v[c + 1] - v[a + 1], e2z = v[c + 2] - v[a + 2];
+          const px = ey * e2z - ez * e2y, py = ez * e2x - ex * e2z, pz = ex * e2y - ey * e2x;
+          const det = e1x * px + e1y * py + e1z * pz;
+          if (Math.abs(det) < 1e-9) continue;
+          const id = 1 / det, sx = ox - v[a], sy = oy - v[a + 1], sz = oz - v[a + 2];
+          const u = (sx * px + sy * py + sz * pz) * id;
+          if (u < 0 || u > 1) continue;
+          const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+          const w = (ex * qx + ey * qy + ez * qz) * id;
+          if (w < 0 || u + w > 1) continue;
+          const f = (e2x * qx + e2y * qy + e2z * qz) * id;
+          if (f < 0 || f > 1 || (best && f >= best.f)) continue;
+          // the triangle's normal in world space (inverse transpose), facing back along the segment
+          _ocN.set(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+          _ocN.set(_ocN.x * inv.elements[0] + _ocN.y * inv.elements[1] + _ocN.z * inv.elements[2],
+            _ocN.x * inv.elements[4] + _ocN.y * inv.elements[5] + _ocN.z * inv.elements[6],
+            _ocN.x * inv.elements[8] + _ocN.y * inv.elements[9] + _ocN.z * inv.elements[10]).normalize();
+          if (_ocN.x * dx + _ocN.y * dy + _ocN.z * dz > 0) _ocN.negate();
+          best = { f, n: [_ocN.x, _ocN.y, _ocN.z], ty: m.ty ? m.ty[k / 3] : 0 };
+        }
+      }
+    }
+    return best;
+  }
+  // Highest object floor at or below y (+1) at (x, z), or -Infinity.
+  function objGround(x, y, z) {
+    let top = y + 1;
+    for (let tries = 0; tries < 4; tries++) {   // skip walls and roofs under the point
+      const h = objSegment([x, top, z], [x, top - 60000, z]);
+      if (!h) return -Infinity;
+      const hy = top - 60000 * h.f;
+      if (h.n[1] > 0.2) return hy;
+      top = hy - 0.5;
+    }
+    return -Infinity;
+  }
   function groundY(x, y, z) {
+    const og = objGround(x, y, z);
     const C = activeCol();
-    if (C) return colGround(C, x, y, z);
-    if (!mapGroup) return -Infinity;
+    if (C) return Math.max(colGround(C, x, y, z), og);
+    if (!mapGroup) return og;
     _o.set(x, y, z); _ray.set(_o, _down); _ray.far = 40000;
     const h = _ray.intersectObject(rayTarget(), true);
-    return h.length ? h[0].point.y : -Infinity;
+    return Math.max(og, h.length ? h[0].point.y : -Infinity);
   }
   // First hit of the stage along p -> q: fraction along it and |normal y|, or null.
   function stageSegment(p, q) {
+    const o = objSegment(p, q), oh = o ? { f: o.f, ny: Math.abs(o.n[1]) } : null;
+    const st = stageOnlySegment(p, q);
+    return st && (!oh || st.f <= oh.f) ? st : oh;
+  }
+  function stageOnlySegment(p, q) {
     const C = activeCol();
     if (C) return colSegment(C, p, q);
     if (!mapGroup) return null;
@@ -2353,12 +2444,36 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // step (2 until the first node), and rolls by each node's pitch/yaw/roll on the way there.
   const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v3 = new THREE.Vector3(), _v3b = new THREE.Vector3(), _s3 = new THREE.Vector3();
   const DEG = Math.PI / 180;
+  // TCraneRotY / TCraneUpDown: turn from lo to hi at sp a step, wait, turn back, wait (degrees).
+  function oscAngle(o, f) {
+    const run = (o.hi - o.lo) / o.sp, cyc = 2 * (run + o.wait);
+    let k = ((f + (o.start === 'mid' ? run / 2 : 0)) % cyc + cyc) % cyc;
+    if (k < run) return o.lo + k * o.sp;
+    k -= run; if (k < o.wait) return o.hi;
+    k -= o.wait; if (k < run) return o.hi - k * o.sp;
+    return o.lo;
+  }
   function placeMoving(node, f, g, stageStart) {   // f: QF since the stage started
     const mv = node.userData.move, b = node.userData.base;
     if (!$('optSmooth').checked) f = Math.floor(f / QF_PER_FRAME) * QF_PER_FRAME;
     f = Math.max(0, f);
     node.matrixAutoUpdate = false;
     _s3.set(b.s[0], b.s[1], b.s[2]);
+    if (mv.spin || mv.orbit || mv.osc) {
+      const r = b.r.slice();
+      let p = b.p;
+      if (mv.spin) r[mv.spin.ax] += mv.spin.rate * f * DEG;
+      if (mv.osc) r[mv.osc.ax] = (mv.osc.abs ? 0 : r[mv.osc.ax]) + oscAngle(mv.osc, f) * DEG;
+      if (mv.orbit) {   // TBigWindmill::control: the blocks ride the wheel, staying level
+        const o = mv.orbit, a = (o.a + o.rate * f) * DEG;
+        p = [o.c[0] + o.r * Math.cos(a), o.c[1] + o.r * Math.sin(a), o.c[2] - o.sub];
+      }
+      _q.setFromEuler(_e.set(r[0], r[1], r[2], 'ZYX'));
+      node.matrix.compose(_v3.set(p[0], p[1], p[2]), _q, _s3);
+      node.matrixWorldNeedsUpdate = true;
+      node.visible = true;
+      return;
+    }
     if (mv.lift) {
       const c = liftCache(node, mv, g, stageStart, Math.ceil(f) + 1), i = Math.floor(f), a = f - i;
       const s0 = c[i], s1 = c[i + 1];
@@ -2644,21 +2759,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const s0 = ghostSampleAt(d, q), s1 = ghostSampleAt(d, q - QF_PER_FRAME);
         let y = s0.y, v = s0.y - s1.y + 1.5;   // TMario::mVel.y: a frame moves 0.25 v four times as v drops by 1 each
         const ys = [y];
-        // Map objects Mario can stand on (blocks, lifts, the secret courses' whole floors) carry
-        // their own collision in the game; their models stand in for it here.
-        const solid = objNodes.filter((n, k) => n.visible && !n.userData.pick && !n.userData.walk && !n.userData.rig
-          && !n.userData.npcColors && !n.userData.carry && k !== i);
-        const ray = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, 1e5);
-        const objFloor = (yy) => {
-          ray.ray.origin.set(x, yy + 1, z);
-          // either winding: GX culling flips some models' faces
-          const h = ray.intersectObjects(solid, true).find((hit) => hit.face && Math.abs(hit.face.normal.clone().transformDirection(hit.object.matrixWorld).y) > 0.2);
-          return h ? h.point.y : -Infinity;
-        };
         // He lands on the nearest floor under the Shine: the stage's, or a map object's.
         const top = Math.max(y, it[4]);
         if (objectsGroup) objectsGroup.updateMatrixWorld(true);
-        const floorAt = (yy) => Math.max(C ? colGround(C, x, yy, z) : -Infinity, objectsGroup ? objFloor(yy) : -Infinity);
+        const floorAt = (yy) => Math.max(C ? colGround(C, x, yy, z) : -Infinity, objGround(x, yy, z));   // objects' own collision too
         let floor = floorAt(top);
         if (floor > y + 1) floor = floorAt(y);   // touched from below it: the floor under him
         if (floor > -Infinity) {
@@ -3294,7 +3398,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BOMB = { num: 127, dirT: 0.6, powT: 0, pow: 35, size: 80, sizeT: 30, type: 2 };
   // TModelWaterManager::load unk5D88: splash chance on the ground / wall, chance to stay as a wet
   // spot on the ground / run down a wall; gWaterManagerPlaneInfo: wet spot friction and fade.
-  const WM = { splashGround: 0.5, splashWall: 0.8, stayGround: 0.5, mergeDist: 2.5, life: 256,
+  const WM = { splashGround: 0.5, splashWall: 0.8, stayGround: 0.5, stayWall: 0.5, mergeDist: 2.5, life: 256, fall: 1, fallSlip: 3,
     friction: 0.7, frictionSlip: 0.93, vanish: 1, vanishSlip: 2, stretch: 4, far: 6000 };
   const SPLASH = { life: 16, size0: 50, size1: 100, v0: 5, g: -2, near: 250, far: 3000 };   // TSplashManager
   const WATER_DROPS = 1024, WATER_SPLASHES = 64, WATER_SPOTS = 256;
@@ -3459,7 +3563,7 @@ void main() {
           pt.slip = hseg.slip;
           const rs = sprayRand(key, k * 8 + 5), rk = sprayRand(key, k * 8 + 6);
           if (pt.kind === 'ground') { pt.splash = rs < WM.splashGround; pt.stay = rk < WM.stayGround; }
-          else if (pt.kind === 'wall') pt.splash = rs < WM.splashWall;
+          else if (pt.kind === 'wall') { pt.splash = rs < WM.splashWall; pt.stay = rk < WM.stayWall; }
           if (pt.splash) pt.splashAt = pt.kind === 'wall' ? pt.at.map((c, i) => c + pt.n[i] * size) : pt.at;
           pt.vh = [v[0], v[2]];
           break;
@@ -3499,7 +3603,7 @@ void main() {
     const tmp = [0, 0, 0];
     let live = [];          // death frames of particles holding a slot
     const kept = [];        // wet spots
-    let anchor = null;
+    let anchor = null, anchorW = null;
     const show = (pt, e, key) => {
       const a = F - e;
       if (a <= 0) return;
@@ -3546,6 +3650,27 @@ void main() {
             return;
           }
         }
+        if (pt.kind === 'wall' && pt.stay && land <= F) {
+          // State 3: it runs down the wall (getPlaneFall: 1 a frame, 3 on water-slip walls) until it
+          // reaches the floor, shrinking as it dries; the same hand-over rule as on the ground.
+          const size = pt.size * pt.W.mag, life0 = Math.min(WM.life, pt.W.alive - pt.hit), van = pt.slip ? WM.vanishSlip : WM.vanish;
+          const fall = pt.slip ? WM.fallSlip : WM.fall;
+          if (pt.floorY === undefined) pt.floorY = groundY(pt.at[0] + pt.n[0] * 20, pt.at[1], pt.at[2] + pt.n[2] * 20);
+          const toFloor = pt.floorY > -Infinity ? Math.max(0, (pt.at[1] - pt.floorY) / fall) : Infinity;
+          const spotEnd = land + Math.min(life0 / van, toFloor);
+          if (anchorW && anchorW.end > land && Math.hypot(anchorW.pt.at[0] - pt.at[0], anchorW.pt.at[1] - pt.at[1], anchorW.pt.at[2] - pt.at[2]) < WM.mergeDist * (anchorW.size + size)) {
+            anchorW.size = size; anchorW.end = spotEnd; anchorW.from = land; anchorW.life = life0; anchorW.van = van;
+            anchorW.slot.end = spotEnd;
+          } else {
+            anchorW = { pt, land, size, end: spotEnd, from: land, life: life0, van, fall, wall: true };
+            kept.push(anchorW);
+            end = spotEnd;
+            anchorW.slot = { end };
+            live.push(anchorW.slot);
+            show(pt, e, key);
+            return;
+          }
+        }
         live.push({ end });
         show(pt, e, key);
       }));
@@ -3557,6 +3682,23 @@ void main() {
       const life = k.life - (F - k.from) * k.van;
       const r = 11.76 * k.size * Math.max(0, life) / WM.life;
       if (r < 1) return;
+      if (k.wall) {   // water_shadow_kabe: 8.5 across, 7.29 up and 14.1 down from its centre, x the size
+        const f = k.size * Math.max(0, life) / WM.life, n = k.pt.n;
+        const down = k.fall * (F - k.land);
+        let ux = [-n[2], 0, n[0]];
+        const ul = Math.hypot(ux[0], ux[2]) || 1; ux = ux.map((x) => x / ul);
+        let vx = [n[1] * ux[2] - n[2] * ux[1], n[2] * ux[0] - n[0] * ux[2], n[0] * ux[1] - n[1] * ux[0]];
+        if (vx[1] < 0) vx = vx.map((x) => -x);   // up the wall
+        const hx = 8.5 * f, hy = (7.29 + 14.1) / 2 * f, cy = (7.29 - 14.1) / 2 * f;
+        const c = [k.pt.at[0] + n[0] * 3 + vx[0] * cy, k.pt.at[1] - down + n[1] * 3 + vx[1] * cy, k.pt.at[2] + n[2] * 3 + vx[2] * cy];
+        [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([i, j], q) => {
+          const o = (ns * 4 + q) * 3;
+          pa[o] = c[0] + ux[0] * i * hx + vx[0] * j * hy; pa[o + 1] = c[1] + ux[1] * i * hx + vx[1] * j * hy; pa[o + 2] = c[2] + ux[2] * i * hx + vx[2] * j * hy;
+          ua[(ns * 4 + q) * 2] = i; ua[(ns * 4 + q) * 2 + 1] = j;
+        });
+        ns++;
+        return;
+      }
       const b = Math.min(F - k.land, 60), slide = k.fr * (1 - Math.pow(k.fr, b)) / (1 - k.fr);
       const n = k.pt.n, c = [k.pt.at[0] + k.pt.vh[0] * slide + n[0] * 3, k.pt.at[1] + n[1] * 3, k.pt.at[2] + k.pt.vh[1] * slide + n[2] * 3];
       // disc axes on the plane
