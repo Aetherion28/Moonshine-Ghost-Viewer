@@ -2154,6 +2154,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     });
     g.shineSpawn = g.shineSpawn || new Map();
     g.shineSpawn.set(objectsKey, spawn);
+    g.finalShine = g.finalShine || new Map();   // the only shines shown in this stage
+    g.finalShine.set(objectsKey, new Set(lastShine.values()));
     g.pickups.set(objectsKey, out);
   }
 
@@ -3048,6 +3050,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (node.userData.shineMode === 'demo' && !$('optShines').checked) {   // only once it has appeared
         const sp = g && g.shineSpawn ? g.shineSpawn.get(objectsKey) : null;
         if (!sp || !(t >= sp[i])) node.visible = false;
+      }
+      if (/^shine/.test(pick) && !$('optShines').checked && g && g.finalShine) {   // only the one it collects
+        const keep = g.finalShine.get(objectsKey);
+        if (keep && keep.size && !keep.has(i)) node.visible = false;
       }
       if (got) { const k = pick.replace(/_hidden$/, ''); if (k in counts) counts[k]++; }
       if (node.userData.spin) node.rotation.y = node.userData.baseRotY + spin;
