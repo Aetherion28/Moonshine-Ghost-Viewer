@@ -2736,6 +2736,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       .then(async (gltf) => {
         const animJson = await anims;
         MarioRig.setData(animJson);
+        MARIO_BCK_JSON = animJson;
         FLUDD_BCK = animJson.fludd || {};
         marioModel = gltf.scene;
         // Toon ramps referenced by Mario's materials (extras.toon.tex), loaded before first compile.
@@ -2806,6 +2807,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function poseFludd(rig, st) {
     if (!rig || !rig.fludd) return;
     if (st.h > 0) fluddPlay(rig.fludd.body, 'wg_house', st.h * fluddLen('wg_house'), true);
+    else if (st.pump !== null && st.pump !== undefined) fluddPlay(rig.fludd.body, 'wg_pump', st.pump, true);   // Mario's pump frame
     else if (st.spray !== null) fluddPlay(rig.fludd.body, 'wg_pump', st.power * (fluddLen('wg_pump') - 1), true);
     else fluddPlay(rig.fludd.body, 'wg_house', 0, true);
     const n = st.nozzle, bones = rig.fludd.noz[n];
@@ -2851,13 +2853,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (st !== null) runs.push([st, Infinity]);
     return (g.sprayRuns = runs);
   }
-  function fluddState(g, time, nozzle, power) {
+  function fluddState(g, time, nozzle, power, pump = null) {
     const runs = sprayRuns(g), af = (q) => (q / QF_PER_FRAME) * 2;   // 60 fps animations at 30 fps
     let lo = 0, hi = runs.length - 1, k = -1;
     while (lo <= hi) { const m = (lo + hi) >> 1; if (runs[m][0] <= time) { k = m; lo = m + 1; } else hi = m - 1; }
     const h = fluddHousing(runs, time);
-    if (k >= 0 && time < runs[k][1]) return { spray: af(time - runs[k][0]), since: null, power, nozzle, h };
-    return { spray: null, since: k >= 0 ? af(time - runs[k][1]) : null, power, nozzle, h };
+    if (k >= 0 && time < runs[k][1]) return { spray: af(time - runs[k][0]), since: null, power, nozzle, h, pump };
+    return { spray: null, since: k >= 0 ? af(time - runs[k][1]) : null, power, nozzle, h, pump };
   }
   let sleepMario = null;
   const MARIO_EYE_TEX = new Map();
@@ -3231,6 +3233,50 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     });
   }
 
+  // Mario's upper body while he works FLUDD's pump (TMario::addUpper / stateMachineUpper): with R
+  // in (or FLUDD spraying) the current animation's upper-body animation from gMarioAnimeData
+  // (pump, swpmp, fepmp, hgpmp; 200 none) replaces its chest, arms and head, ping-ponging at
+  // R x mPumpAnmSpeed (upperbody.prm 0.015) frames a frame. Returns the pump frame (FLUDD's own
+  // wg_pump follows it, TWaterGun::calcAnimation), or null when he isn't pumping.
+  let MARIO_BCK_JSON = null;
+  // upperbody.prm; the upper layer's mtx calc sits on jnt_chest (TMario::initModel setInfo[1]).
+  const PUMP_SPEED = 0.015, PUMP_WAIT = 5, UPPER_FROM = 'jnt_chest';
+  function pumpPhase(g) {
+    // TMario::addUpper: ping-pong at mCompSPos[3] (analog R, 0-255) * mPumpAnmSpeed per game frame.
+    // stateMachineUpper: R released -> HOLDING_PUMP for mPumpWaitTime frames (pose frozen), then idle.
+    if (g.pumpCum) return g.pumpCum;
+    const inp = g.data.inputs, n = inp ? inp.count : 0, cum = new Float32Array(n), on = new Uint8Array(n);
+    let lastOn = -1e9;
+    for (let i = 0; i < n; i++) {
+      const pumping = inp.trig[i * 2 + 1] > 30 || !!(inp.fluddMode[i] & 0x10);
+      if (pumping) lastOn = inp.qf[i];
+      on[i] = pumping ? 1 : (inp.qf[i] - lastOn <= PUMP_WAIT * QF_PER_FRAME ? 2 : 0);
+      if (i && on[i - 1] === 1) cum[i] = cum[i - 1] + inp.trig[(i - 1) * 2 + 1] * PUMP_SPEED * (inp.qf[i] - inp.qf[i - 1]) / QF_PER_FRAME;
+      else if (i && on[i]) cum[i] = cum[i - 1];
+    }
+    return (g.pumpCum = { cum, on });
+  }
+  function poseUpper(g, rig, a, time) {
+    const inp = g.data.inputs;
+    if (!inp || !inp.count || !MARIO_BCK_JSON || a.yoshi || typeof MARIO_UPPER_TABLE === 'undefined') return null;
+    const up = MARIO_UPPER_TABLE[a.id];
+    if (up === undefined || up === 200) return null;
+    let lo = 0, hi = inp.count - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (inp.qf[m] <= time) lo = m; else hi = m - 1; }
+    const P = pumpPhase(g);
+    if (!P.on[lo]) return null;
+    const anim = MARIO_BCK_JSON.anims[MARIO_BCK_FILES[up]];
+    if (!anim) return null;
+    const rate = P.on[lo] === 1 ? inp.trig[lo * 2 + 1] * PUMP_SPEED : 0;
+    const len = anim.d - 1, c = (P.cum[lo] + rate * (time - inp.qf[lo]) / QF_PER_FRAME) % (2 * len);
+    const fr = c < len ? c : 2 * len - c;   // J3DFrameCtrl ping-pong
+    const joints = MARIO_BCK_JSON.joints, from = joints.indexOf(UPPER_FROM);
+    const sub = [], tracks = [];
+    for (let i = from; i >= 0 && i < joints.length; i++) { sub.push(rig.bones[i]); tracks.push(anim.j[i]); }
+    poseBck(sub, { d: anim.d + 1, j: tracks }, fr);
+    return fr;
+  }
+
   function applyFludd(g, s) {
     const f = ghostFluddAt(g.data, t);
     const rig = g.marker.userData.rig;
@@ -3264,7 +3310,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === 0 || active === 2);
       if (hasFludd) {
         const nm = active === 0 || active === 2 ? 'normal_wg' : (NOZZLE_PARTS[active] || 'nozzle_normal_wg').replace(/^nozzle_/, '');
-        poseFludd(rig, fluddState(g, t, nm, f && f.present ? (f.power || 0) / 255 : 0));
+        poseFludd(rig, fluddState(g, t, nm, f && f.present ? (f.power || 0) / 255 : 0, g.pumpFrame));
       }
       Object.entries(NOZZLE_PARTS).forEach(([n, part]) => {
         if (rig.parts[part]) rig.parts[part].visible = hasFludd && Number(n) === active;
@@ -3485,7 +3531,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       g.marker.rotation.y = (s.yaw / 32768) * Math.PI;
       g.marker.visible = g.visible && !s.gap;
       const rig = g.marker.userData.rig;
-      if (rig) { const a = ghostAnimAt(g.data, t); MarioRig.pose(rig, a.id, a.yoshi, a.phase); }
+      if (rig) { const a = ghostAnimAt(g.data, t); MarioRig.pose(rig, a.id, a.yoshi, a.phase); g.pumpFrame = poseUpper(g, rig, a, t); }
       const fludd = applyFludd(g, s);
       updateAppear(g);
       if (!hud && g.visible) {
