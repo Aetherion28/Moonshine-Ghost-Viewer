@@ -2736,16 +2736,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       gxApply(sleepMario, gxSet('player', lightSetAt(x, y, z)));
     }
     sleepMario.visible = true;
-    // TMario::sleeping: sit_wait (306) looped until it has finished 41 times, sleep (308) once,
-    // then sleep_wait (309) for good; 60 fps animations at 30 fps (SMSGetAnmFrameRate).
-    const F = (idleClock / QF_PER_FRAME) * 2, len = (id, dflt) => { const a = MarioRig.bckFor(id, false); return a && a.data ? a.data.d : dflt; };
-    const dSit = len(306, 120), dLie = len(308, 29), dSleep = len(309, 120), sitFor = 41 * dSit;
-    let id, f;
-    if (F < sitFor) { id = 306; f = F % dSit; }
-    else if (F < sitFor + dLie) { id = 308; f = F - sitFor; }
-    else { id = 309; f = (F - sitFor - dLie) % dSleep; }
-    const d = len(id, 120);
-    MarioRig.pose(sleepMario.userData.rig, id, false, (Math.min(f, d - 0.001) / d) * 4096);
+    // TMario::sleeping's last state, already lying down: sleep_wait (309) looped (the game first
+    // sits him through sit_wait 41 times and lies him down with sleep); 60 fps animation at 30 fps.
+    const F = (idleClock / QF_PER_FRAME) * 2, a = MarioRig.bckFor(309, false), d = a && a.data ? a.data.d : 120;
+    MarioRig.pose(sleepMario.userData.rig, 309, false, ((F % d) / d) * 4096);
     updateZzz(sleepMario, F / 2);
     // FLUDD with only its spray nozzle, as at the start of a stage.
     const parts = sleepMario.userData.rig.parts;
