@@ -2745,7 +2745,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     updateZzz(sleepMario, F / 2);
     // FLUDD with only its spray nozzle, as at the start of a stage.
     const parts = sleepMario.userData.rig.parts;
-    Object.keys(parts).forEach((k) => { if (/^nozzle_/.test(k)) parts[k].visible = k === 'nozzle_normal_wg'; });
+    if (parts.nozzle_normal_wg) parts.nozzle_normal_wg.visible = true;
+    Object.values(NOZZLE_PARTS).forEach((k) => { if (parts[k]) parts[k].visible = false; });
     if (parts.fludd_body) parts.fludd_body.visible = true;
   }
 
