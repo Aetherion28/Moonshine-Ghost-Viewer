@@ -2037,6 +2037,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     return wk.segs;
   }
+  let idleClock = 0;
+  const walkClock = (stageClock) => (ghosts.length ? stageClock : idleClock);
+  function updateWalkers() {
+    objNodes.forEach((node) => { if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME); });
+  }
   function placeWalker(node, f) {
     const wk = node.userData.walk, b = node.userData.base;
     const segs = walkSegs(wk, b, Math.max(0, f));
@@ -2516,7 +2521,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
-      if (node.userData.walk) { placeWalker(node, stageClock / QF_PER_FRAME); return; }
+      if (node.userData.walk) { placeWalker(node, walkClock(stageClock) / QF_PER_FRAME); return; }
       if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
       const pick = node.userData.pick;
       const gate = g && g.shineSpawn && !$('optShines').checked ? g.shineSpawn.get(objectsKey) : null;
@@ -3253,6 +3258,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const shown = $('optSmooth').checked || playClock >= duration ? playClock : Math.floor(playClock / QF_PER_FRAME) * QF_PER_FRAME;
       if (shown !== t || $('optSmooth').checked) { t = shown; update(); }
     } else playClock = null;
+    // With no ghost loaded the stage still lives: its walkers run on their own clock.
+    if (!ghosts.length && objectsGroup) { idleClock += dt * QF_PER_SECOND; updateWalkers(); }
     if (cameraMode === 'follow') {
       const p = leadPosition();
       if (p) {
