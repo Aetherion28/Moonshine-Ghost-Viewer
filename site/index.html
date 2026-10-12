@@ -1192,21 +1192,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           node.add(mole);
           node.userData.mole = mole;
         }
-        if (ex.bw) {   // the Chain Chomp's stake and leash (TBWPicket, TBWLeash), links strung from stake to head
-          const inv = node.matrix.clone().invert();
-          const P = new THREE.Vector3(...ex.bw.p), H = new THREE.Vector3(px, py, pz);
-          if (protos[ex.bw.pk]) { const pk = protos[ex.bw.pk].clone(true); pk.matrixAutoUpdate = false; pk.matrix.copy(inv).multiply(new THREE.Matrix4().makeTranslation(P.x, P.y, P.z)); node.add(pk); }
-          if (protos[ex.bw.ch]) {
-            const n = ex.bw.n, dir = H.clone().sub(P), yaw = Math.atan2(dir.x, dir.z), pitch = -Math.atan2(dir.y, Math.hypot(dir.x, dir.z));
-            for (let k = 0; k < n; k++) {
-              const at = P.clone().lerp(H, (k + 0.5) / n);
-              at.y += 60 - 40 * Math.sin(Math.PI * (k + 0.5) / n);   // slack between the stake top and the head
-              const link = protos[ex.bw.ch].clone(true);
-              link.matrixAutoUpdate = false;
-              link.matrix.copy(inv).multiply(new THREE.Matrix4().compose(at, new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, yaw, k & 1 ? Math.PI / 2 : 0, 'YXZ')), new THREE.Vector3(1, 1, 1)));
-              node.add(link);
-            }
-          }
+        if (ex.bw) {   // the Chain Chomp's stake and leash (TBWPicket, TBWLeash); placed each frame by placeChomp
+          const pk = protos[ex.bw.pk] ? protos[ex.bw.pk].clone(true) : null;
+          const links = protos[ex.bw.ch] ? Array.from({ length: ex.bw.n }, () => protos[ex.bw.ch].clone(true)) : [];
+          [pk, ...links].forEach((o) => { if (o) { o.matrixAutoUpdate = false; group.add(o); } });
+          node.userData.bw = { ...ex.bw, pkNode: pk, links, graph: ex.bw.g && data.g ? data.g[ex.bw.g] : null, start: [px, py, pz], ry: ry * D, sim: null };
         }
         node.userData.pick = pick;
         node.userData.spin = /^(coin|shine)/.test(pick);
@@ -2234,7 +2224,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function updateWalkers() {
     objNodes.forEach((node) => {
-      if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME);
+      if (node.userData.bw) placeChomp(node, idleClock / QF_PER_FRAME);
+      else if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME);
       else if (node.userData.rig) poseRig(node, idleClock / QF_PER_FRAME);
     });
   }
@@ -2331,6 +2322,70 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s);
     node.visible = true;
     poseRig(node, f);
+  }
+  // The Chain Chomp (TBossWanwan, TNerveBWGraphWander): marches along its graph at mSLMarchSpeed,
+  // held by a leash of n links of mSLLeashNodeLen from its stake; a node out of reach makes it
+  // strain at the end of the chain and turn back. The ball (radius 500) rolls on the floor.
+  const BW_RADIUS = 500, _bwM = new THREE.Matrix4(), _bwQ = new THREE.Quaternion(), _bwE = new THREE.Euler(0, 0, 0, 'YXZ'), _bwS = new THREE.Vector3(1, 1, 1), _bwP = new THREE.Vector3();
+  function chompSim(bw, f) {
+    const G = bw.graph, R = bw.n * bw.len, P = bw.p;
+    if (!bw.sim) {
+      let cur = -1, best = Infinity;
+      (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; cur = k; } });
+      bw.sim = { x: [bw.start[0]], z: [bw.start[2]], yaw: [bw.ry], st: { cur, prev: -1, stuck: 0, seed: 12345 } };
+    }
+    const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 1, 60 * 60 * 30);
+    while (S.x.length < N) {
+      const k = S.x.length - 1;
+      let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
+      if (G && st.cur >= 0) {
+        const tn = G[st.cur], dx = tn[0] - x, dz = tn[2] - z, d = Math.hypot(dx, dz);
+        if (d <= bw.v || st.stuck > 60) {   // at the node (or held back from it): on to a neighbour
+          const nb = (tn[4] || []).filter((j) => j >= 0 && j < G.length);
+          const near = nb.filter((j) => j !== st.prev && Math.hypot(G[j][0] - P[0], G[j][2] - P[2]) <= R);
+          const pool = near.length ? near : nb.length ? nb : [st.prev];
+          st.seed = (st.seed * 1103515245 + 12345) >>> 0;
+          const nx = pool[(st.seed >>> 8) % pool.length];
+          st.prev = st.cur; st.cur = nx; st.stuck = 0;
+        } else {
+          const tyaw = Math.atan2(dx, dz);
+          let dy = tyaw - yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+          yaw += Math.max(-0.08, Math.min(0.08, dy));
+          x += Math.sin(yaw) * bw.v; z += Math.cos(yaw) * bw.v;
+          const ox = x - P[0], oz = z - P[2], r = Math.hypot(ox, oz);
+          if (r > R) { x = P[0] + ox / r * R; z = P[2] + oz / r * R; st.stuck++; }
+        }
+      }
+      S.x.push(x); S.z.push(z); S.yaw.push(yaw);
+    }
+    const k = Math.min(S.x.length - 1, Math.max(0, Math.floor(f)));
+    return [S.x[k], S.z[k], S.yaw[k]];
+  }
+  function placeChomp(node, f) {
+    const bw = node.userData.bw, [x, z, yaw] = chompSim(bw, f);
+    const gy = groundY(x, bw.start[1] + 2000, z), y = (gy > -Infinity ? gy : bw.start[1]) + BW_RADIUS;
+    placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
+    node.visible = true;
+    poseRig(node, f);
+    const P = bw.p, pg = groundY(P[0], P[1] + 2000, P[2]), py = (pg > -Infinity ? pg : P[1]) + 90;
+    if (bw.pkNode) { bw.pkNode.matrix.makeTranslation(P[0], py, P[2]); bw.pkNode.matrixWorldNeedsUpdate = true; bw.pkNode.visible = true; }
+    // Stake top to the back of the ball, sagging with the slack and resting on the floor.
+    const A = [P[0], py + 60, P[2]], B = [x - Math.sin(yaw) * BW_RADIUS * 0.9, y - BW_RADIUS * 0.55, z - Math.cos(yaw) * BW_RADIUS * 0.9];
+    const n = bw.links.length, d = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]), L = n * bw.len, sag = Math.sqrt(Math.max(0, L * L - d * d)) * 0.5;
+    const pts = [];
+    for (let k = 0; k <= n; k++) {
+      const u = k / n, p = [A[0] + (B[0] - A[0]) * u, A[1] + (B[1] - A[1]) * u - sag * Math.sin(Math.PI * u), A[2] + (B[2] - A[2]) * u];
+      const g2 = groundY(p[0], p[1] + 300, p[2]);
+      if (g2 > -Infinity && p[1] < g2 + 20) p[1] = g2 + 20;
+      pts.push(p);
+    }
+    bw.links.forEach((lk, k) => {
+      const a = pts[k], b = pts[k + 1], dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+      _bwE.set(-Math.atan2(dy, Math.hypot(dx, dz)), Math.atan2(dx, dz), k & 1 ? Math.PI / 2 : 0, 'YXZ');
+      lk.matrix.compose(_bwP.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2), _bwQ.setFromEuler(_bwE), _bwS);
+      lk.matrixWorldNeedsUpdate = true;
+      lk.visible = true;
+    });
   }
   // A BCK pose at frame f (looped): per joint scale, ZYX rotation and translation, Hermite keys.
   const _bckEuler = new THREE.Euler(0, 0, 0, 'ZYX');
@@ -3045,6 +3100,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
+      if (node.userData.bw) { placeChomp(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.walk && node.userData.walk.bird && ghosts.length) { placeBird(node, g, t); return; }
       if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.rig) { poseRig(node, walkClock(g, t) / QF_PER_FRAME); return; }

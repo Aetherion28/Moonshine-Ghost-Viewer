@@ -1109,7 +1109,12 @@ def main(argv):
                     # .bss, set in __sinit_bosswanwan_cpp).
                     pk = lib_add(w, lib, "bwpicket", lambda: [bmd.parse(arc["bwanwan/bwanwan_picket.bmd"])] if "bwanwan/bwanwan_picket.bmd" in arc else None)
                     ch = lib_add(w, lib, "bwchain", lambda: [bmd.parse(arc["bwanwan/bwanwan_chain.bmd"])] if "bwanwan/bwanwan_chain.bmd" in arc else None)
-                    extra = {**(extra or {}), "bw": {"pk": pk, "ch": ch, "p": [6012.84, 0.0, 7323.15], "n": 15}}
+                    # TBWParams defaults (no bosswanwan.prm on the disc): mSLMarchSpeed 6, mSLLeashNodeLen 120.
+                    # TNerveBWGraphWander walks the scene's "bwanwan" graph.
+                    extra = {**(extra or {}), "bw": {"pk": pk, "ch": ch, "p": [6012.84, 0.0, 7323.15], "n": 15,
+                                                     "len": 120.0, "v": 6.0, "g": "bwanwan" if "bwanwan" in rails else None}}
+                    if "bwanwan" in rails:
+                        used_graphs.add("bwanwan")
                     px, py, pz = 5741.72, -100.0, 6311.62
                 if mi < 0 and not pick:
                     continue
