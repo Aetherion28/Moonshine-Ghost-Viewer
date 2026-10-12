@@ -533,9 +533,25 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const sv = g.s.map((v) => Number(v).toFixed(5)), tv = g.t.map((v) => Number(v).toFixed(5));
       return `( vec2( 0.5 + 0.5 * normalize( vGxN ).x, 0.5 - 0.5 * normalize( vGxN ).y ) - 0.5 ) * vec2( ${sv[0]}, ${sv[1]} ) + 0.5 + vec2( ${tv[0]}, ${tv[1]} )`;
     };
-    const body = gxTevGlsl(T, {
+    // Indirect texturing: each indirect stage's texel A, B, G (s, t, u, 0..255) goes through a
+    // TEV stage's matrix (times 2^exponent) and offsets that stage's texture lookup by that many
+    // texels (e.g. the goop's swirl: a scrolling metal texture warps the goop pattern).
+    const IND = T.ind, tsz = T.tsz || [];
+    let indPre = '';
+    if (IND) IND.st.forEach(([tc, sl, ss, stt], j) => {
+      if (sl < texs.length) indPre += `vec3 gxI${j} = texture2D( gxTex${sl}, ${coord(tc)} / vec2( ${(2 ** ss).toFixed(1)}, ${(2 ** stt).toFixed(1)} ) ).abg * 255.0;\n`;
+    });
+    const indCoord = (x, base) => {
+      const i = T.st.indexOf(x), it = IND && IND.tev[i];
+      if (!it || it[0] >= IND.st.length || IND.st[it[0]][1] >= texs.length || it[3] < 1 || it[3] > 3 || !tsz[x[20]]) return base;
+      const m = IND.mtx[it[3] - 1], f = (v) => Number(v).toFixed(6);
+      const bias = `vec3( ${it[2] & 1 ? '-128.0' : '0.0'}, ${it[2] & 2 ? '-128.0' : '0.0'}, ${it[2] & 4 ? '-128.0' : '0.0'} )`;
+      const k = (2 ** m[6]).toFixed(6);
+      return `( ${base} + vec2( dot( vec3( ${f(m[0])}, ${f(m[1])}, ${f(m[2])} ), gxI${it[0]} + ${bias} ), dot( vec3( ${f(m[3])}, ${f(m[4])}, ${f(m[5])} ), gxI${it[0]} + ${bias} ) ) * ${k} / vec2( ${tsz[x[20]][0].toFixed(1)}, ${tsz[x[20]][1].toFixed(1)} ) )`;
+    };
+    const body = indPre + gxTevGlsl(T, {
       regs: true,
-      tex: (x) => x[20] >= 0 && x[20] < texs.length ? `texture2D( gxTex${x[20]}, ${coord(x[21])} )` : 'vec4( 1.0 )',
+      tex: (x) => x[20] >= 0 && x[20] < texs.length ? `texture2D( gxTex${x[20]}, ${indCoord(x, coord(x[21]))} )` : 'vec4( 1.0 )',
       ras: (x) => ({ 0: 'vec4( vGxC0.rgb, 0.0 )', 1: 'vec4( vGxC1.rgb, 0.0 )', 2: 'vec4( 0.0, 0.0, 0.0, vGxC0.a )',
         3: 'vec4( 0.0, 0.0, 0.0, vGxC1.a )', 4: 'vGxC0', 5: 'vGxC1' })[x[22]] || 'vec4( 0.0 )',
     });
@@ -555,7 +571,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // shapes the program (stages, alpha compare, texgens, channels), not from the compiled text.
   function gxTevKey() {
     const T = this.userData.gxTev;
-    return 'gxtev' + JSON.stringify([T.st, T.acmp, T.aref, T.gen, T.chan]) + (this.gxTevTex ? this.gxTevTex.length : 0);
+    return 'gxtev' + JSON.stringify([T.st, T.acmp, T.aref, T.gen, T.chan, T.ind]) + (this.gxTevTex ? this.gxTevTex.length : 0);
   }
   function gxTevSetup(m) {   // blending and alpha for an emulated material
     const T = m.userData.gxTev;

@@ -148,34 +148,34 @@ def gx_tev_spec(w, model, mat, anims=None):
     if not gx or not st:
         return None
     texnos = gx["texnos"]
-    samplers, slot, mips = [], {}, {}
+    samplers, slot, sizes = [], {}, []
+
+    def add_slot(tm):   # the sampler slot of texmap tm, adding its texture once (None: unusable)
+        if tm in slot:
+            return slot[tm]
+        tx = model.textures[texnos[tm]]
+        if tx[0] in SUBSTITUTE:
+            tx = SUBSTITUTE[tx[0]]
+        if tx[1] is None:
+            return None
+        digest = hashlib.sha1(tx[1].tobytes()).hexdigest()[:10]
+        ref = w.texture_rgba(f"tex:{tx[0]}:{digest}", tx[1], tx[2], tx[3])
+        if ref is None:
+            return None
+        slot[tm] = len(samplers)
+        samplers.append(ref[0])
+        sizes.append([int(tx[1].shape[1]), int(tx[1].shape[0])])
+        # TODO: the textures' own mip levels (bmd texture_mips) need the sea colour the game sets
+        # at runtime first, or the distant waves flood the sea with their placeholder yellow.
+        return slot[tm]
+
     stages = []
     for x, (tc, tm) in zip(st, gx["orders"]):
         t = -1
         if tm < 8 and texnos[tm] >= 0:
-            if tm not in slot:
-                tx = model.textures[texnos[tm]]
-                if tx[0] in SUBSTITUTE:
-                    tx = SUBSTITUTE[tx[0]]
-                if tx[1] is None:
-                    return None
-                digest = hashlib.sha1(tx[1].tobytes()).hexdigest()[:10]
-                ref = w.texture_rgba(f"tex:{tx[0]}:{digest}", tx[1], tx[2], tx[3])
-                if ref is None:
-                    return None
-                slot[tm] = len(samplers)
-                samplers.append(ref[0])
-                levels = None   # TODO: own mip levels (see bmd texture_mips); needs the sea colour the game sets
-                # at runtime first, or the distant waves flood the sea with their placeholder yellow
-                if levels:   # the texture's own mip levels (they differ from scaled-down level 0)
-                    refs = []
-                    for li, lv in enumerate(levels[1:], 1):
-                        r2 = w.texture_rgba(f"tex:{tx[0]}:{digest}:mip{li}", lv, tx[2], tx[3])
-                        if r2 is None:
-                            break
-                        refs.append(r2[0])
-                    mips[str(slot[tm])] = refs
-            t = slot[tm]
+            t = add_slot(tm)
+            if t is None:
+                return None
         stages.append(list(x["c"][:8]) + list(x["a"][:8]) + [x["c"][8], x["a"][8], x["kc"], x["ka"], t,
                       tc if tc < 8 else -1, x["chan"]])
     gens = []
@@ -200,12 +200,27 @@ def gx_tev_spec(w, model, mat, anims=None):
             gens.append(gen)
         else:
             gens.append(None)
+    # Indirect texturing (J3DIndInitData): an indirect stage samples a texture whose A, B, G
+    # (s, t, u) offset, through a matrix, the texture coordinate of the TEV stages that use it.
+    ind = None
+    gi = gx.get("ind")
+    if gi:
+        ist = []
+        for itc, itm in gi["ord"]:
+            sl = add_slot(itm) if itm < 8 and itc < 8 and texnos[itm] >= 0 else None
+            if sl is None:
+                ist = None
+                break
+            ist.append(sl)
+        if ist is not None:
+            ind = {"st": [[tc, sl, sc[0], sc[1]] for (tc, _), sl, sc in zip(gi["ord"], ist, gi["sc"])],
+                   "mtx": [list(m) for m in gi["mtx"]], "tev": [list(t[:7]) for t in gi["tev"][:len(stages)]]}
     q = lambda c: [round(v / 255, 4) for v in c]
     return {"st": stages, "regs": [q(r) for r in mat.tev["regs"]], "k": [q(r) for r in mat.tev["kregs"]],
             "tex": samplers, "gen": gens, "chan": [list(c) if c else None for c in gx["chans"]],
             "matc": [q(c) for c in gx["matc"]], "amb": [q(c) for c in gx["amb"]],
             "blend": list(mat.blend_mode[:3]), "xlu": int(mat.translucent), "aref": mat.alpha_ref or 0,
-            "acmp": list(gx.get("acmp") or (7, 0, 0, 7, 0)), **({"mips": mips} if mips else {})}
+            "acmp": list(gx.get("acmp") or (7, 0, 0, 7, 0)), "tsz": sizes, **({"ind": ind} if ind else {})}
 
 
 def gx_tev_uvs(mesh, mat, anims=None):

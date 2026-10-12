@@ -231,6 +231,13 @@ def parse(data: bytes, decode_textures: bool = True, bmt: bytes | None = None,
     # --- MAT3
     if mat is not None:
         m.materials = _parse_materials(mat)
+        # J3DMaterialFactory: the indirect setup (J3DIndInitData per material) sits in MAT3 itself,
+        # at the header's 0x18 offset when that isn't just past the name table.
+        ind_o, names_o = u32(mat, 0x18), u32(mat, 0x14)
+        if ind_o and ind_o - names_o > 4:
+            for i, x in enumerate(m.materials):
+                if x.gx is not None:
+                    x.gx["ind"] = _parse_indirect(mat, ind_o, i)
         if table_mat is not None:
             by_name = {t.name: t for t in _parse_materials(table_mat)}
             m.materials = [by_name.get(x.name, x) for x in m.materials]
@@ -384,6 +391,25 @@ def _decode_colors(raw: bytes, ctype: int) -> np.ndarray:
         out = np.stack([(v >> 18) & 63, (v >> 12) & 63, (v >> 6) & 63, v & 63], 1)
         out = (out << 2) | (out >> 4)
     return out.astype(np.uint8)
+
+
+def _parse_indirect(ind, base, i):
+    """J3DIndInitData of material i: None when the material has no indirect stages,
+    else {"n": stage count, "ord": [(texcoord, texmap)], "sc": [(scaleS, scaleT)],
+    "mtx": [(m00, m01, m02, m10, m11, m12, scale exponent)], "tev": per TEV stage
+    (ind stage, format, bias, matrix, wrapS, wrapT, addPrev, utcLod, alpha)}."""
+    o = base + i * 0x138
+    if o + 0x138 > len(ind) or ind[o] != 1 or not ind[o + 1]:
+        return None
+    n = ind[o + 1]
+    order = [(ind[o + 4 + j * 4], ind[o + 5 + j * 4]) for j in range(4)]
+    mtx = []
+    for j in range(3):
+        mo = o + 0x14 + j * 0x1C
+        mtx.append(tuple(round(f32(ind, mo + k * 4), 6) for k in range(6)) + (struct.unpack_from(">b", ind, mo + 0x18)[0],))
+    sc = [(ind[o + 0x68 + j * 4], ind[o + 0x69 + j * 4]) for j in range(4)]
+    tev = [tuple(ind[o + 0x78 + j * 0x0C: o + 0x78 + j * 0x0C + 9]) for j in range(16)]
+    return {"n": n, "ord": order[:n], "sc": sc[:n], "mtx": mtx, "tev": tev}
 
 
 def _tex_matrix(mat, tbl, idx):

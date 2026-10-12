@@ -652,7 +652,11 @@ def main(argv):
                 continue
             # TNPCManager::changeTextureToPollution_: the NPCs' H_ma_rak_dummy is the stage's pollution.
             # TMonteM/WBaseManager::changeTextureToStraw_ and the jellyfish's real texture likewise.
+            # TBiancoGateKeeper::init and TLauncher (gatekeeper.cpp, launcher.cpp): the gatekeeper's
+            # and the goop launchers' goop is the stage's pollution texture too.
             for dummy, real in (("H_ma_rak_dummy", "map/pollution/h_ma_rak.bti"),
+                                ("Q_kepper_dummy_128IA4", "map/pollution/h_ma_rak.bti"),
+                                ("Q_gene_dummy_I4", "map/pollution/h_ma_rak.bti"),
                                 ("I_mom_mino_dummyI4", "montemcommon/i_mom_mino_rgba.bti"),
                                 ("I_mow_mino_dummyI4", "montewcommon/i_mow_mino_rgba.bti"),
                                 ("J_jellyFish_dummy", "marejellyfish/j_kurage.bti")):
