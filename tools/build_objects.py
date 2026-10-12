@@ -205,7 +205,23 @@ def walk_anim_rate(typ: str) -> float:
     return 2.0
 
 
+# Classes whose graph speed isn't a plain parameter: TBoidLeader's base speed for schools of
+# fish (fishoid.cpp) and butterflies (Butterfly.cpp); TAnimalBase::execWalk runs animals at
+# mSLMaxMarchSpeed x SMSGetAnmFrameRate (seagulls); birds walk at bird.prm mWalkingSpeed, assumed
+# to follow the same animal convention (TAnimalBird isn't decompiled yet).
+FIXED_SPEED = {"FishoidA": 4.0, "FishoidB": 4.0, "FishoidC": 4.0, "FishoidD": 4.0,
+               "Butterfly": 6.0, "ButterflyB": 6.0, "ButterflyC": 6.0}
+
+
 def walk_speed(arc: dict, typ: str) -> float:
+    if typ in FIXED_SPEED:
+        return FIXED_SPEED[typ]
+    if typ == "AnimalMew":
+        v = global_params("animal/mew.prm").get("mSLMaxMarchSpeed")
+        return round(2.0 * (v if isinstance(v, float) else 6.0), 3)
+    if typ == "AnimalBird":
+        v = global_params("animal/bird.prm").get("mWalkingSpeed")
+        return round(2.0 * (v if isinstance(v, float) else 1.5), 3)
     if typ in NPC_ORDER:   # TBaseNPC::walk: up to mMaxMarchSpeed (TNpcSaveIndividual default 3)
         v = npc_prm(typ).get("mMaxMarchSpeed")
         return round(v if isinstance(v, float) and v > 0 else 3.0, 3)
@@ -642,12 +658,16 @@ def idle_pose(arc: dict, model_path: str, model: bmd.Model):
 WALK_ANIM_WORDS = ("walk", "fly", "swim", "run", "move", "march", "swing", "wait")
 
 
-def walk_anim(arc: dict, model_path: str, model: bmd.Model):
+# Standing still: the idle animation (wait / idle), else any.
+IDLE_ANIM_WORDS = ("wait", "idle", "stand", "taiki", "walk", "fly", "swim", "swing")
+
+
+def walk_anim(arc: dict, model_path: str, model: bmd.Model, words=None):
     folder = model_path.rsplit("/", 1)[0]
     # NPCs keep their animations in the family's shared folder (montema -> montemcommon).
     folders = [folder, folder + "anm", folder + "common", folder[:-1] + "common", folder[:-2] + "common"]
     cands = [k for f in folders for k in sorted(arc) if k.startswith(f + "/") and k.count("/") == 1 and k.endswith(".bck")]
-    for word in WALK_ANIM_WORDS:
+    for word in words or WALK_ANIM_WORDS:
         for k in cands:
             if word in k.rsplit("/", 1)[1].lower():
                 try:
@@ -943,26 +963,30 @@ def main(argv):
                     if mv:
                         extra = {**(extra or {}), **mv}
                 elif mpath and is_spine(o["payload"]):
+                    # Enemies, NPCs and animals: walkers walk their graph playing their walking
+                    # animation; the rest stand where they were placed playing their idle one.
                     wk = walk_extra(typ, o["payload"], rails, arc)
                     if wk:
                         extra = {**(extra or {}), **wk}
                         used_graphs.add(wk["walk"])
-                        # The walking animation, on a skinned copy of the model.
-                        bmt, tex_only = mat_table(arc, keys, objtable)
-                        skey = "skin:" + hashlib.sha1(arc[mpath] + (bmt or b"") + (b"T" if tex_only else b"")).hexdigest()
-                        if skey not in lib:
-                            lib[skey] = -1
-                            try:
-                                bind = bmd.parse(arc[mpath], bmt=bmt, bmt_tex_only=tex_only)
-                                anim = walk_anim(arc, mpath, bind) if len(bind.joint_names) > 1 else None
-                                if anim:
-                                    sidx = len(lib)
-                                    add_skinned(w, bind, f"m{sidx}", anim)
-                                    lib[skey] = sidx
-                            except Exception as exc:
-                                print("  skip skinned", mpath, exc)
-                        if lib[skey] >= 0:
-                            extra["skin"] = lib[skey]
+                    words = WALK_ANIM_WORDS if wk else IDLE_ANIM_WORDS
+                    bmt, tex_only = mat_table(arc, keys, objtable)
+                    skey = ("skin:" if wk else "idle:") + hashlib.sha1(arc[mpath] + (bmt or b"") + (b"T" if tex_only else b"")).hexdigest()
+                    if skey not in lib:
+                        lib[skey] = -1
+                        try:
+                            bind = bmd.parse(arc[mpath], bmt=bmt, bmt_tex_only=tex_only)
+                            anim = walk_anim(arc, mpath, bind, words) if len(bind.joint_names) > 1 else None
+                            if anim:
+                                sidx = len(lib)
+                                add_skinned(w, bind, f"m{sidx}", anim)
+                                lib[skey] = sidx
+                        except Exception as exc:
+                            print("  skip skinned", mpath, exc)
+                    if lib[skey] >= 0:
+                        extra = {**(extra or {}), "skin": lib[skey]}
+                        if not wk:
+                            extra["ar"] = 2.0   # SMSGetAnmFrameRate
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
                 pick = PICKUP_TYPES.get(typ, "")
                 if hidden and pick:

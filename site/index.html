@@ -1131,8 +1131,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           node = new THREE.Group();
           node.userData.variants = [];
           for (let k = 0; protos[mi + '_s' + k]; k++) { const v = protos[mi + '_s' + k].clone(true); v.visible = k === 0; node.add(v); node.userData.variants.push(v); }
-        } else if (it[17] && it[17].walk && it[17].skin !== undefined && protos[it[17].skin]) {
-          node = THREE.SkeletonUtils.clone(protos[it[17].skin]);   // a walker: its skinned copy
+        } else if (it[17] && it[17].skin !== undefined && protos[it[17].skin]) {
+          node = THREE.SkeletonUtils.clone(protos[it[17].skin]);   // animated: its skinned copy
           node.userData.skin = it[17].skin;
         } else if (mi >= 0 && protos[mi]) node = protos[mi].clone(true);
         else { node = new THREE.Mesh(new THREE.SphereGeometry(30, 10, 8), fallback); node.position.y = 40; node = new THREE.Group().add(node); }
@@ -1145,12 +1145,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         node.userData.baseMatrix = node.matrix.clone();
         node.userData.carry = it[16] || '';
         const ex = it[17] || {};
-        if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), ar: ex.ar || 2, seed: objNodes.length + 1 };
-        if (node.userData.walk && node.userData.skin !== undefined) {   // its bones and walking animation
+        if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), ar: ex.ar || 2, seed: objNodes.length + 1,
+          // On foot: kept on the floor under the graph (gravity and ground collision in the game);
+          // flyers, swimmers, Boos, boats and hanging things follow the graph's own heights.
+          ground: !/^(Animal|Butterfly|Fishoid|Telesa|LoopTelesa|BoxTelesa|SeeTelesa|MarioModokiTelesa|FruitsBoat|TabePuku|Boss|Kumokun|RiccoHook)/.test(it[1]) };
+        if (node.userData.skin !== undefined) {   // its bones and animation (walking, or idle)
           const nm = 'm' + node.userData.skin, bones = [];
-          node.traverse((o) => { const m = o.isBone || o.name ? new RegExp('^' + nm + '_j(\\d+)$').exec(o.name) : null; if (m) bones[+m[1]] = o; });
+          node.traverse((o) => { const m = o.name ? new RegExp('^' + nm + '_j(\\d+)$').exec(o.name) : null; if (m) bones[+m[1]] = o; });
           const anims = (libScene.userData && libScene.userData.anims) || {};
-          if (anims[nm]) { node.userData.walk.bones = bones; node.userData.walk.anim = anims[nm]; }
+          if (anims[nm]) node.userData.rig = { bones, anim: anims[nm], ar: ex.ar || 2, phase: (objNodes.length * 37) % anims[nm].d };
         }
         if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]), cloud: !!ex.cloud };
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
@@ -1158,7 +1161,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             if (!protos[pi]) return;
             const part = protos[pi].clone(true);
             part.matrixAutoUpdate = false;
-            const bone = node.userData.walk && node.userData.walk.bones ? node.userData.walk.bones[ji || 0] : null;
+            const bone = node.userData.rig ? node.userData.rig.bones[ji || 0] : null;
             part.matrix.fromArray(m);
             if (bone) part.matrix.identity();   // on its joint, which the walk animation moves
             part.userData.npcColors = specs;
@@ -2019,7 +2022,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const G = wk.g;
     while (!wk.done && wk.end <= upTo && wk.segs.length < 20000) {
       const n = G[wk.cur], to = [n[0], n[1], n[2]];
-      const d = Math.hypot(to[0] - wk.pos[0], to[1] - wk.pos[1], to[2] - wk.pos[2]);
+      // On foot the speed is along the floor (XZ, as polarXZ); flyers and swimmers in 3D.
+      const d = Math.hypot(to[0] - wk.pos[0], wk.ground ? 0 : to[1] - wk.pos[1], to[2] - wk.pos[2]);
       const dur = Math.max(1, d / wk.v);
       wk.segs.push({ t0: wk.end, t1: wk.end + dur, a: wk.pos, b: to });
       wk.end += dur; wk.pos = to;
@@ -2052,7 +2056,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return s0 === null ? 0 : time - s0;
   }
   function updateWalkers() {
-    objNodes.forEach((node) => { if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME); });
+    objNodes.forEach((node) => {
+      if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME);
+      else if (node.userData.rig) poseRig(node, idleClock / QF_PER_FRAME);
+    });
   }
   function placeWalker(node, f) {
     const wk = node.userData.walk, b = node.userData.base;
@@ -2063,6 +2070,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!sg || f < 0) { placeFree(node, b.p, b.r, b.s); node.visible = true; return; }
     const u = Math.min(1, Math.max(0, (f - sg.t0) / (sg.t1 - sg.t0)));
     const p = [sg.a[0] + (sg.b[0] - sg.a[0]) * u, sg.a[1] + (sg.b[1] - sg.a[1]) * u, sg.a[2] + (sg.b[2] - sg.a[2]) * u];
+    if (wk.ground && activeCol()) {
+      // The floor under it, looked for from above the graph or its starting height, whichever is
+      // higher: some graphs lie flat at 0 under raised floors (TGraphWeb::attachToGround only
+      // drops flagged nodes; the walker itself keeps to the floor it stands on).
+      const ref = Math.max(p[1], b.p[1]) + 300, gy = groundY(p[0], ref, p[2]);
+      if (gy > -Infinity && ref - gy < 2500) p[1] = gy;
+    }
     // Facing: this segment's direction (the last moving one when standing at a dead end).
     let k = lo;
     while (k > 0 && Math.hypot(segs[k].b[0] - segs[k].a[0], segs[k].b[2] - segs[k].a[2]) < 1e-3) k--;
@@ -2070,7 +2084,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const yaw = Math.hypot(dx, dz) > 1e-3 ? Math.atan2(dx, dz) : b.r[1];
     placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s);
     node.visible = true;
-    if (wk.bones && wk.anim && camera.position.distanceToSquared(node.position) < 9000 * 9000) poseBck(wk.bones, wk.anim, f * wk.ar);
+    poseRig(node, f);
   }
   // A BCK pose at frame f (looped): per joint scale, ZYX rotation and translation, Hermite keys.
   const _bckEuler = new THREE.Euler(0, 0, 0, 'ZYX');
@@ -2086,6 +2100,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }
     }
     return tr[(n - 1) * 4 + 1];
+  }
+  // Animated characters near the camera: their animation at frame f of the stage clock (idle
+  // ones offset per character, so a crowd doesn't move in step).
+  function poseRig(node, f) {
+    const rg = node.userData.rig;
+    if (!rg || camera.position.distanceToSquared(node.position) > 9000 * 9000) return;
+    poseBck(rg.bones, rg.anim, Math.max(0, f) * rg.ar + (node.userData.walk ? 0 : rg.phase));
   }
   function poseBck(bones, anim, f) {
     const fr = ((f % anim.d) + anim.d) % anim.d;
@@ -2534,6 +2555,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         return;
       }
       if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
+      if (node.userData.rig) { poseRig(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
       const pick = node.userData.pick;
       const gate = g && g.shineSpawn && !$('optShines').checked ? g.shineSpawn.get(objectsKey) : null;
@@ -2655,6 +2677,33 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         ghosts.forEach((g) => setMarkerBody(g.marker));
         update();
       }).catch(() => { /* keep the stand-in figure */ });
+  }
+
+  // No ghost loaded: Mario at the stage's start, asleep (TMario's sleep_wait loop, animation 309).
+  let sleepMario = null;
+  function updateSleeper() {
+    const show = !!(marioModel && objSpawn && !ghosts.length && MarioRig.ready());
+    if (!show) { if (sleepMario) sleepMario.visible = false; return; }
+    if (!sleepMario) {
+      sleepMario = new THREE.Group();
+      const body = THREE.SkeletonUtils.clone(marioModel);
+      body.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone(); });
+      sleepMario.userData.rig = MarioRig.attach(body);
+      sleepMario.add(body);
+      scene.add(sleepMario);
+    }
+    const [x, y, z, yaw] = objSpawn;
+    const ck = activeCol() ? 1 : 0;
+    if (sleepMario.userData.at !== objSpawn || sleepMario.userData.col !== ck) {   // light set from the floor, once collision is in
+      sleepMario.userData.at = objSpawn; sleepMario.userData.col = ck;
+      sleepMario.position.set(x, y, z);
+      sleepMario.rotation.set(0, yaw * Math.PI / 180, 0);
+      gxApply(sleepMario, gxSet('player', lightSetAt(x, y, z)));
+    }
+    sleepMario.visible = true;
+    const a = MarioRig.bckFor(309, false), d = a && a.data ? a.data.d : 120;
+    const f = (idleClock / QF_PER_FRAME) * 2 % d;   // 60 fps animation at 30 fps (SMSGetAnmFrameRate)
+    MarioRig.pose(sleepMario.userData.rig, 309, false, (f / d) * 4096);
   }
 
   function setMarkerBody(group) {
@@ -3272,6 +3321,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     } else playClock = null;
     // With no ghost loaded the stage still lives: its walkers run on their own clock.
     if (!ghosts.length && objectsGroup) { idleClock += dt * QF_PER_SECOND; updateWalkers(); }
+    updateSleeper();
     if (cameraMode === 'follow') {
       const p = leadPosition();
       if (p) {
