@@ -1149,7 +1149,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           // On foot: kept on the floor under the graph (gravity and ground collision in the game);
           // flyers, swimmers, Boos, boats and hanging things follow the graph's own heights.
           // Birds take off one by one: each sits on its perch for its own 0-12 s first.
-          delay: it[1] === 'AnimalBird' ? ((objNodes.length * 2654435761) >>> 0) % 360 : 0,
+          delay: it[1] === 'AnimalBird' ? ((objNodes.length * 2654435761) >>> 0) % 360 : 0, bird: it[1] === 'AnimalBird',
           ground: !/^(Animal|Butterfly|Fishoid|Telesa|LoopTelesa|BoxTelesa|SeeTelesa|MarioModokiTelesa|FruitsBoat|TabePuku|Boss|Kumokun|RiccoHook)/.test(it[1]) };
         if (node.userData.skin !== undefined) {   // its bones and animation (walking, or idle)
           const nm = 'm' + node.userData.skin, bones = [];
@@ -2063,6 +2063,68 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       else if (node.userData.rig) poseRig(node, idleClock / QF_PER_FRAME);
     });
   }
+  // With a ghost, birds sit on their perch until Mario comes near (bird.prm: within mSearchAware
+  // 1000, or mSearchLength 2000 across and mSearchHeight 750 up or down), fly their loop for
+  // mReturnTimer (1800 frames), then fly straight back to the perch and settle until next time.
+  const BIRD = { aware: 1000, len: 2000, height: 750, ret: 1800 };
+  function birdFlights(node, g, time) {
+    const wk = node.userData.walk, b = node.userData.base, d = g.data, here = objectsKey.split('|').pop();
+    // The ghost's stay on this stage that `time` falls in: [q0, q1).
+    let q0 = null, q1 = Infinity;
+    d.segments.forEach((seg) => {
+      const k = `${seg.route.area}:${seg.route.episode}`, a = seg.startQf - d.header.startQf;
+      if (k === here && a <= time && (q0 === null || a > q0)) { q0 = a; q1 = seg.endQf - d.header.startQf; }
+    });
+    if (q0 === null) return null;
+    wk.flights = wk.flights || new Map();
+    const key = g.data.header.startQf + ':' + q0;
+    if (wk.flights.has(key)) return wk.flights.get(key);
+    const out = [], v = wk.v, P = b.p;
+    let cursor = q0;
+    for (let s = 0; s < d.qf.length; s++) {
+      const q = d.qf[s];
+      if (q < cursor || q < q0) continue;
+      if (q >= q1) break;
+      const dx = d.pos[s * 3] - P[0], dy = d.pos[s * 3 + 1] - P[1], dz = d.pos[s * 3 + 2] - P[2], hz = dx * dx + dz * dz;
+      if (hz + dy * dy > BIRD.aware * BIRD.aware && !(hz < BIRD.len * BIRD.len && Math.abs(dy) < BIRD.height)) continue;
+      const segs = walkSegs(wk, b, BIRD.ret), at = segAt(segs, BIRD.ret);
+      const back = Math.hypot(at[0] - P[0], at[1] - P[1], at[2] - P[2]) / v;
+      const fl = { trig: q, ret: q + BIRD.ret * QF_PER_FRAME, land: q + (BIRD.ret + back) * QF_PER_FRAME, from: at };
+      out.push(fl);
+      cursor = fl.land;
+    }
+    wk.flights.set(key, out);
+    return out;
+  }
+  function segAt(segs, f) {
+    let lo = 0, hi = segs.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (segs[m].t0 <= f) lo = m; else hi = m - 1; }
+    const sg = segs[lo], u = Math.min(1, Math.max(0, (f - sg.t0) / (sg.t1 - sg.t0)));
+    return [sg.a[0] + (sg.b[0] - sg.a[0]) * u, sg.a[1] + (sg.b[1] - sg.a[1]) * u, sg.a[2] + (sg.b[2] - sg.a[2]) * u];
+  }
+  function placeBird(node, g, time) {
+    const wk = node.userData.walk, b = node.userData.base, rg = node.userData.rig;
+    const fls = g ? birdFlights(node, g, time) : null;
+    const fl = fls ? fls.find((x) => time >= x.trig && time < x.land) : null;
+    const near = rg && camera.position.distanceToSquared(node.position) < 9000 * 9000;
+    if (!fl) {   // on the perch
+      placeFree(node, b.p, b.r, b.s); node.visible = true;
+      if (near) poseBck(rg.bones, rg.idle || rg.anim, (time / QF_PER_FRAME) * rg.ar + rg.phase);
+      return;
+    }
+    const f = (time - fl.trig) / QF_PER_FRAME;
+    if (time < fl.ret) {   // its loop, as without a ghost (no perch wait)
+      const save = wk.delay; wk.delay = 0;
+      placeWalker(node, f);
+      wk.delay = save;
+      return;
+    }
+    const u = (time - fl.ret) / (fl.land - fl.ret), A = fl.from, P = b.p;   // straight back home
+    const p = [A[0] + (P[0] - A[0]) * u, A[1] + (P[1] - A[1]) * u, A[2] + (P[2] - A[2]) * u];
+    const yaw = Math.hypot(P[0] - A[0], P[2] - A[2]) > 1e-3 ? Math.atan2(P[0] - A[0], P[2] - A[2]) : b.r[1];
+    placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s); node.visible = true;
+    if (near) poseBck(rg.bones, rg.anim, f * rg.ar);
+  }
   function placeWalker(node, f) {
     const wk = node.userData.walk, b = node.userData.base;
     if (wk.delay && f < wk.delay) {   // still waiting where it was placed
@@ -2563,6 +2625,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
+      if (node.userData.walk && node.userData.walk.bird && ghosts.length) { placeBird(node, g, t); return; }
       if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.rig) { poseRig(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
