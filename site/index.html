@@ -2353,11 +2353,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k = `${seg.route.area}:${seg.route.episode}`, s0 = seg.startQf - base;
       if (k === objectsKey.split('|').pop() && s0 <= time && (seg0 === null || s0 > seg0.s0)) seg0 = { s0, s1: seg.endQf - base };
     });
-    return seg0 === null ? time : time - seg0.s0 + stageOffset(g, seg0.s0, seg0.s1) - (STAGE_DELAY_QF[objectsKey.split('|').pop()] || 0);
+    const entry = seg0 !== null && seg0.s0 > 0 ? (STAGE_ENTRY_QF[objectsKey.split('|').pop()] || 0) : 0;
+    return seg0 === null ? time : time - seg0.s0 + stageOffset(g, seg0.s0, seg0.s1) + entry;
   }
-  // Stages whose moving objects start later than the ghost's segment, matched by eye against
-  // runs' videos (QF; 120 a second): Bianco 3 Secret's lifts and blocks run a second behind.
-  const STAGE_DELAY_QF = { '47:0': 120 };
+  // Areas entered from another one: how far their moving objects already are into their cycle
+  // when the ghost's segment there begins (QF). An IL ghost starts with the area's objects, a
+  // full run's segment a little after them. Measured from where Mario lands on them: Bianco 3
+  // Secret entered from Bianco 3 (lotfy's 37.337).
+  const STAGE_ENTRY_QF = { '47:0': 96 };
 
   // How far into its cycle the stage already was when the ghost's segment began, found from the
   // ghost: try each offset and keep the one where Mario's standing samples (that aren't on fixed
@@ -2563,8 +2566,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         hide: 0, hidden: false, recycle: 0, rc: 180, vis: true, tick: 0, frames: [], g, stageStart };
       if (!N.length) st.stop = true;   // a ride cloud with no rail
       else {
+        // TRailMapObj::initGraphTracer: the nearest node is the first target (resetStep: 0 steps
+        // when placed on it), its 0x80 holds the lift until Mario rides it. The first move arrives
+        // there (TNormalLift::control): readRailFlag's 0x800 pause, then the next node's speed.
+        // Checked against an IL run of Bianco 3 Secret: the blocks and lifts Mario bounces off sit
+        // exactly under him.
         st.cur = nearestNode(N, st.pos);
-        st.cur = nextNode(st);
         if (N[st.cur][7] & 0x80) st.stop = true;
         st.steps = Math.trunc(st.pos.distanceTo(nodeV(N[st.cur])) / st.spd);
       }
