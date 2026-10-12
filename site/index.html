@@ -3347,9 +3347,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const k = Math.max(0, Math.min(8, dq / QF_PER_FRAME));
     const chase = (r) => 1 - Math.pow(1 - r, k);
     const mario = lead.clone().add(tmp.set(0, GAME_CAM.atY - 100, 0));
-    if (!gameCam.at || gameCam.at.distanceTo(mario) > 3000) {   // first frame, or a jump in time: start behind
+    if (gameCam.key !== objectsKey) { gameCam.key = objectsKey; gameCam.at = null; }   // a new stage or sub area
+    if (!gameCam.at || gameCam.at.distanceTo(mario) > 3000) {
+      // First frame, a new area, or a jump in time: start behind him, the way he faces, as the
+      // game's camera does when he enters a stage.
       gameCam.at = mario.clone();
-      gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target) || 1200));
+      if (!gameCam.dist) gameCam.dist = 1200;
+      const g = ghosts.find((x) => x.visible), yaw = g ? g.marker.rotation.y : 0, D = gameCam.dist;
+      camera.position.set(mario.x - Math.sin(yaw) * D * Math.cos(GAME_CAM.pitch), mario.y + D * Math.sin(GAME_CAM.pitch),
+        mario.z - Math.cos(yaw) * D * Math.cos(GAME_CAM.pitch));
+      controls.target.copy(mario);
+      return;
     }
     const at = gameCam.at;
     at.x += (mario.x - at.x) * chase(GAME_CAM.atXZ);
