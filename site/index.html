@@ -712,7 +712,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 
   // Binary assets may be published as base64 text (*.b64.txt) where raw binaries can't be served.
   async function fetchBinary(url) {
-    const res = await fetch(url);
+    const res = await fetch(url, { cache: 'no-cache' });   // revalidate: a new deploy shows at once
     if (!res.ok) throw new Error('A file for this page is missing from the site.');
     if (!url.endsWith('.b64.txt')) return res.arrayBuffer();
     const bin = atob((await res.text()).trim());
@@ -1109,7 +1109,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     const file = info.scenes[routeKey];
     let list = objListCache.get(file);
-    if (!list) { list = fetch(file).then((r) => r.json()); objListCache.set(file, list); }
+    if (!list) { list = fetch(file, { cache: 'no-cache' }).then((r) => r.json()); objListCache.set(file, list); }
     try {
       const [libScene, data] = await Promise.all([lib, list]);
       if (key !== objectsKey) return;
@@ -2658,7 +2658,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // Mario + FLUDD from the game, skinned to his 29-joint skeleton, plus his animation set
   // (tools/build_mario_iso.py). Ghosts show a stand-in until both have loaded.
   function loadMarioModel() {
-    const anims = fetch('models/mario_bck.json').then((r) => r.json());
+    const anims = fetch('models/mario_bck.json', { cache: 'no-cache' }).then((r) => r.json());
     fetchBinary('models/mario.glb.b64.txt').then((buf) => new Promise((resolve, reject) => new THREE.GLTFLoader().parse(buf, '', (g) => resolve(rawTextures(g)), reject)))
       .then(async (gltf) => {
         const animJson = await anims;
@@ -3790,7 +3790,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   async function boot() {
     resize();
     renderGhostList();
-    try { maps = await (await fetch('maps/index.json')).json(); }
+    try { maps = await (await fetch('maps/index.json', { cache: 'no-cache' })).json(); }
     catch { maps = []; showNotice('The stage list could not be loaded.'); }
     const sel = $('mapSelect');
     buildWorlds();
