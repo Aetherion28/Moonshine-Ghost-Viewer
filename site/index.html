@@ -112,6 +112,7 @@ aside h2 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing
 .ghost:first-of-type { border-top: 0; }
 .swatch { width: 12px; height: 12px; border-radius: 50%; margin-top: 4px; }
 .ghost .name { font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+.ghost .name .old { padding: 0 2px; border: 0; background: none; font-size: 13px; line-height: 1; cursor: help; vertical-align: 1px; }
 .ghost .meta { grid-column: 2 / 4; font-size: 12px; color: var(--muted); font-family: var(--mono); display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .ghost .tag { font-size: 10px; font-family: var(--display); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
   border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--muted); }
@@ -4283,6 +4284,7 @@ void main() {
   let followGhost = null;
   function leadGhost() { return followGhost && followGhost.visible && ghosts.includes(followGhost) ? followGhost : ghosts.find((x) => x.visible); }
   function setFollow(g) { followGhost = g; gameCam.at = null; renderGhostList(); updateMapNotice(); update(); }
+  const GHOST_LATEST = 6;   // newest Moonshine ghost format
   function renderGhostList() {
     const list = $('ghostList');
     list.textContent = '';
@@ -4303,6 +4305,16 @@ void main() {
       const name = document.createElement('div');
       name.className = 'name';
       name.textContent = h.name || g.fileName;
+      // Older ghost formats (an older Moonshine): a ⚠ with what the file is missing.
+      if (h.version < GHOST_LATEST) {
+        const miss = [h.version < 4 && 'Yoshi and held objects', h.version < 5 && 'controller inputs', 'FLUDD'].filter(Boolean);
+        const msg = `Ghost format v${h.version} (current is v${GHOST_LATEST}), recorded with an older Moonshine. It has no ${miss.join(', ').replace(/, ([^,]*)$/, ' or $1')} data, so the viewer guesses ${h.version < 5 ? 'the inputs and FLUDD' : 'FLUDD'}.`;
+        const w = document.createElement('button');
+        w.className = 'old'; w.type = 'button'; w.textContent = '\u26a0\ufe0f';
+        w.title = msg; w.setAttribute('aria-label', msg);
+        w.onclick = () => { const n = row.querySelector('.oldNote'); if (n) n.remove(); else { const d = document.createElement('div'); d.className = 'warn oldNote'; d.textContent = msg; row.append(d); } };
+        name.append(' ', w);
+      }
       const actions = document.createElement('div');
       actions.className = 'actions';
       const vis = document.createElement('button');
