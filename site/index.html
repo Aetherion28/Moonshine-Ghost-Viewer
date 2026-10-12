@@ -316,6 +316,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 <script src="ghost.js"></script>
 <script src="mario_anims.js"></script>
 <script src="mario_rig.js"></script>
+<script src="water_tex.js"></script>
 <script>
 (() => {
   const QF_PER_FRAME = 4;
@@ -1303,7 +1304,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const t = big ? new Uint32Array(buf.slice(o, o + nt * 12)) : Uint32Array.from(new Uint16Array(buf.slice(o, o + nt * 6)));
     // Optional per-triangle light set after the types ('LGHT'): which light set actors standing there use.
     let light = null;
-    o += big ? nt * 12 : nt * 6; o = (o + 3) & ~3; o += nt * 2; o = (o + 3) & ~3;
+    o += big ? nt * 12 : nt * 6; o = (o + 3) & ~3;
+    const types = new Uint16Array(buf.slice(o, o + nt * 2));   // TBGCheckData::mBGType
+    o += nt * 2; o = (o + 3) & ~3;
     if (o + 4 + nt <= buf.byteLength && dv.getUint32(o, true) === 0x5448474c) light = new Uint8Array(buf.slice(o + 4, o + 4 + nt));
     // grid
     let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
@@ -1323,7 +1326,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const [cx0, cx1, cz0, cz1] = ranges.subarray(k * 4, k * 4 + 4);
       for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) cells[fill[cz * gw + cx]++] = k;
     }
-    return { v, t, nt, x0, z0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0, light, lastTri: -1 };
+    let y0 = Infinity;
+    for (let i = 1; i < v.length; i += 3) y0 = Math.min(y0, v[i]);
+    return { v, t, nt, x0, z0, y0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0, light, types, lastTri: -1 };
   }
   function colCellRange(C, xa, xb, za, zb, fn) {
     const cx0 = Math.max(0, Math.floor((Math.min(xa, xb) - C.x0) / COL_CELL)), cx1 = Math.min(C.gw - 1, Math.floor((Math.max(xa, xb) - C.x0) / COL_CELL));
@@ -1381,6 +1386,46 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       best = { f, ny: Math.abs(ny) / Math.hypot(nx, ny, nz) };
     });
     return best;
+  }
+  // First surface FLUDD water hits from p to q, skipping what water passes through
+  // (TBGCheckData::isWaterThrough). Normal faces back along the segment; water: a water surface.
+  const WATER_THROUGH = new Set([0x401, 0x801, 0x10a, 0x8400]);
+  const WATER_SURFACE = new Set([0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104]);
+  const WATER_SLIP = new Set([0x500, 0x4004, 0x8004, 0xc004]);
+  function waterSegment(p, q) {
+    const C = activeCol();
+    if (!C) {
+      const h = stageSegment(p, q);
+      return h ? { f: h.f, n: [0, 1, 0], ground: h.ny > 0.2, roof: false, water: false, slip: false } : null;
+    }
+    let best = null, bk = -1, bn = null;
+    const v = C.v, t = C.t;
+    const dx = q[0] - p[0], dy = q[1] - p[1], dz = q[2] - p[2];
+    colCellRange(C, p[0], q[0], p[2], q[2], (k) => {
+      if (C.types && WATER_THROUGH.has(C.types[k])) return;
+      const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
+      const e1x = v[b] - v[a], e1y = v[b + 1] - v[a + 1], e1z = v[b + 2] - v[a + 2];
+      const e2x = v[c] - v[a], e2y = v[c + 1] - v[a + 1], e2z = v[c + 2] - v[a + 2];
+      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (Math.abs(det) < 1e-9) return;
+      const inv = 1 / det, sx = p[0] - v[a], sy = p[1] - v[a + 1], sz = p[2] - v[a + 2];
+      const u = (sx * px + sy * py + sz * pz) * inv;
+      if (u < 0 || u > 1) return;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const w = (dx * qx + dy * qy + dz * qz) * inv;
+      if (w < 0 || u + w > 1) return;
+      const f = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (f < 0 || f > 1 || (best !== null && f >= best)) return;
+      best = f; bk = k;
+      let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+      const l = Math.hypot(nx, ny, nz) || 1, sg = nx * dx + ny * dy + nz * dz > 0 ? -1 / l : 1 / l;
+      bn = [nx * sg, ny * sg, nz * sg];
+    });
+    if (best === null) return null;
+    const ty = C.types ? C.types[bk] : 0;
+    // TBGCheckData::setVertex: floor above 0.2, roof below -0.2, wall between.
+    return { f: best, n: bn, ground: bn[1] > 0.2, roof: bn[1] < -0.2, water: WATER_SURFACE.has(ty), slip: WATER_SLIP.has(ty) };
   }
   async function loadCollision(entry) {
     if (!entry.col) return;
@@ -2987,122 +3032,339 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return out;
   }
 
-  // FLUDD water as the game emits it (TNozzleBase::emitCommon with mario/watergun/nozzle*.prm):
-  // each frame the nozzle shoots particles at the recorded power along the recorded direction,
-  // with the nozzle's direction and power jitter and size; they fall with the nozzle's gravity and
-  // burst into a splash where they reach the stage. Drawn as soft translucent water blobs.
-  const SPRAY_KIND = {   // per nozzle: particles per frame, dir jitter, power jitter, size, size jitter, gravity, streams
-    0: { n: 8, dir: 0.08, pow: 0.8, size: 45, sizeJ: 0.3, g: 0.3, life: 40, jets: [0] },
-    2: { n: 8, dir: 0.08, pow: 0.8, size: 45, sizeJ: 0.3, g: 0.3, life: 40, jets: [0] },
-    4: { n: 5, dir: 0.03, pow: 0.5, size: 40, sizeJ: 0.1, g: 0.3, life: 24, jets: [-28, 28] },
-    1: { n: 6, dir: 0.25, pow: 3, size: 30, sizeJ: 0.2, g: 0.3, life: 18, jets: [0] },
-    5: { n: 4, dir: 0.06, pow: 1, size: 40, sizeJ: 0.1, g: 0.3, life: 20, jets: [-22, 22] },
+  // FLUDD water as the game makes it. Emission is TNozzle*::emit -> TModelWaterManager::makeEmit
+  // with params.szs mario/watergun/nozzle*.prm and mario/wtp*.prm; flight, landing, splashes and
+  // the wet spots left on the ground are TModelWaterManager::move; the look is drawRefracAndSpec
+  // (and TSplashManager, drawWaterVolume). A ghost records FLUDD's emit position, direction and
+  // power each frame, so every frame's particles are rebuilt from that with a fixed random
+  // sequence per particle: scrubbing shows the same water.
+  //
+  // Particle types (TWaterParticleType): mExtension stretches a drop along its view-space speed,
+  // mMagnify scales it on landing, mGravity is added to its y speed each frame, mAlive its life.
+  const WTP = {
+    0: { ext: 0.7, mag: 0.4, g: -0.4, alive: 255 },    // WTP00_Normal
+    2: { ext: 0.8, mag: 0.3, g: -0.2, alive: 100 },    // WTP02_Bomb
+    7: { ext: 1.3, mag: 0.1, g: 1.0, alive: 120 },     // WTP07_Diving
+    15: { ext: 0.5, mag: 0.3, g: -1.0, alive: 255 },   // WTP15_Hover
   };
-  const SPRAY_MAX = 1400;
-  function makeWaterStream(blob = 85, max = SPRAY_MAX) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 3), 3));
-    geo.setAttribute('size', new THREE.BufferAttribute(new Float32Array(max), 1));
-    geo.setAttribute('alpha', new THREE.BufferAttribute(new Float32Array(max), 1));
-    // Soft round water blob (white core, pale blue rim, a small highlight).
-    const cv = document.createElement('canvas'); cv.width = cv.height = 64;
-    const cx = cv.getContext('2d');
-    const gr = cx.createRadialGradient(28, 28, 2, 32, 32, 31);
-    gr.addColorStop(0, 'rgba(255,255,255,0.95)'); gr.addColorStop(0.25, 'rgba(235,248,255,0.8)');
-    gr.addColorStop(0.75, 'rgba(160,215,255,0.55)'); gr.addColorStop(1, 'rgba(140,200,255,0)');
-    cx.fillStyle = gr; cx.beginPath(); cx.arc(32, 32, 31, 0, Math.PI * 2); cx.fill();
-    const mat = new THREE.PointsMaterial({ size: blob, map: new THREE.CanvasTexture(cv), transparent: true, depthWrite: false, sizeAttenuation: true, opacity: 0.85 });
-    const pts = new THREE.Points(geo, mat);
-    pts.frustumCulled = false;
-    pts.visible = false;
-    pts.renderOrder = 2;
-    return pts;
+  // Per nozzle (TWaterGun: 0 Spray, 1 Rocket, 2 Underwater, 4 Hover, 5 Turbo) from the recorded
+  // power p: particles per frame, direction / power jitter (rand11 * x per axis), size and size
+  // jitter, particle type, and the nozzle's emitters (nozzleBmdData mNumEmitters; side offsets).
+  // Spray is TNozzleDeform: pressure u = p / mEmitPow lerps mNumMin..mNum, mDirTrembleMin..
+  // mDirTremble and mSizeMin..mSize (full size from mSizeMaxPressure 0.8).
+  function nozzleEmit(nozzle, p) {
+    switch (nozzle) {
+      case 4: return { num: 1, dirT: 0, powT: 0, size: 40, sizeT: 10, type: 15, jets: [-28, 28] };   // NozzleTrgHover
+      case 2: return { num: 1, dirT: 0.05, powT: 0, size: 30, sizeT: 50, type: 7, jets: [-28, 28] };  // NozzleDiving
+      case 1: return { num: 1, dirT: 0, powT: 0, size: 30, sizeT: 20, type: 0, jets: [0] };           // NozzleTrgRocket
+      case 5: return { num: 1, dirT: 0.01, powT: 1, size: 40, sizeT: 16, type: 0, jets: [0] };        // NozzleTrgTurbo
+      default: {                                                                                     // NozzleDeform
+        const u = Math.min(1, p / 40);
+        return { num: u * (0.8 - 1) + 1, dirT: u * (0.02 - 0.8) + 0.8, powT: 0, size: Math.min(1, u / 0.8) * (50 - 1) + 1, sizeT: 0.03, type: 0, jets: [0] };
+      }
+    }
   }
+  // Spam spray (A pressed while R is fully held): TNozzleDeform's mBomb, NozzleDeformBomb.prm.
+  const BOMB = { num: 127, dirT: 0.6, powT: 0, pow: 35, size: 80, sizeT: 30, type: 2 };
+  // TModelWaterManager::load unk5D88: splash chance on the ground / wall, chance to stay as a wet
+  // spot on the ground / run down a wall; gWaterManagerPlaneInfo: wet spot friction and fade.
+  const WM = { splashGround: 0.5, splashWall: 0.8, stayGround: 0.5, mergeDist: 2.5, life: 256,
+    friction: 0.7, frictionSlip: 0.93, vanish: 1, vanishSlip: 2, stretch: 4, far: 6000 };
+  const SPLASH = { life: 16, size0: 50, size1: 100, v0: 5, g: -2, near: 250, far: 3000 };   // TSplashManager
+  const WATER_DROPS = 1024, WATER_SPLASHES = 64, WATER_SPOTS = 256;
+
+  function rand11(e, k) { return (Math.floor(sprayRand(e, k) * 256) - 128) / 128; }   // ((rand() & 0xff) - 128) / 128
+
+  const waterScene = new THREE.Scene();   // drawn after the scene, over a copy of it (TScreenTexture)
+  let waterScreen = null;
+  const _wsz = new THREE.Vector2();
+  function waterTex(url, mips) {
+    const tx = new THREE.TextureLoader().load(url);
+    tx.flipY = false;   // GX t = 0 is the image's top row
+    if (!mips) { tx.generateMipmaps = false; tx.minFilter = THREE.LinearFilter; }
+    return tx;
+  }
+  const WATER_TX = { ref: waterTex(WATER_TEX.ref), mask: waterTex(WATER_TEX.mask, true), spec: waterTex(WATER_TEX.spec, true), splash: waterTex(WATER_TEX.splash, true) };
+  const VIEW_VS = `#include <common>
+#include <logdepthbuf_pars_vertex>
+attribute float alpha;
+varying vec2 vUv; varying float vA;
+void main() {
+  vUv = uv; vA = alpha;
+  gl_Position = projectionMatrix * vec4(position, 1.0);   // already in view space
+#include <logdepthbuf_vertex>
+}`;
+  // drawRefracAndSpec, three passes folded into one: (1) the screen copy, offset by waterref through
+  // the indirect stage (matrix 0.07, texels of the half-size screen texture), at the mask's alpha;
+  // (2) water colour 0x3C4678 at alpha 0x14 * mask; (3) waterSpec added as (C0 * spec + C1) * spec.
+  const dropMat = new THREE.ShaderMaterial({
+    uniforms: { tScreen: { value: null }, tRef: { value: WATER_TX.ref }, tMask: { value: WATER_TX.mask }, tSpec: { value: WATER_TX.spec }, uView: { value: new THREE.Vector2(1, 1) } },
+    vertexShader: VIEW_VS,
+    fragmentShader: `#include <common>
+#include <logdepthbuf_pars_fragment>
+uniform sampler2D tScreen, tRef, tMask, tSpec; uniform vec2 uView;
+varying vec2 vUv; varying float vA;
+void main() {
+#include <logdepthbuf_fragment>
+  vec2 ind = (floor(texture2D(tRef, vUv).rg * 255.0 + 0.5) - 128.0) * 0.07;
+  vec2 suv = clamp(gl_FragCoord.xy / uView + ind * vec2(1.0 / 320.0, -1.0 / 224.0), 0.0, 1.0);
+  vec3 refr = texture2D(tScreen, suv).rgb;
+  float m = texture2D(tMask, vUv).r, k = m * (20.0 / 255.0), s = texture2D(tSpec, vUv).r;
+  vec3 spec = min(vec3(188.0, 204.0, 220.0) / 255.0 * s + vec3(142.0, 142.0, 158.0) / 255.0, 1.0) * s;
+  gl_FragColor = vec4(refr * m * (1.0 - k) + vec3(60.0, 70.0, 120.0) / 255.0 * k + spec, 1.0 - (1.0 - m) * (1.0 - k));
+}`,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  });
+  // TSplashManager::draw: colour C0 (168, 203, 227) towards white by the texture, alpha tex * fade.
+  const splashMat = new THREE.ShaderMaterial({
+    uniforms: { tSplash: { value: WATER_TX.splash } },
+    vertexShader: VIEW_VS,
+    fragmentShader: `#include <common>
+#include <logdepthbuf_pars_fragment>
+uniform sampler2D tSplash;
+varying vec2 vUv; varying float vA;
+void main() {
+#include <logdepthbuf_fragment>
+  vec2 t = texture2D(tSplash, vUv).rg;
+  gl_FragColor = vec4(mix(vec3(168.0, 203.0, 227.0) / 255.0, vec3(1.0), t.r), t.g * vA);
+}`,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+  });
+  // drawWaterVolume: each wet spot is a volume (water_shadow_yuka, radius 11.76 at scale 1) that
+  // marks the ground it cuts; the marked ground is blended once 80/255 towards the water colour.
+  // Drawn as flat discs on the ground, the stencil keeping overlaps from darkening twice.
+  const spotMat = new THREE.ShaderMaterial({
+    vertexShader: `#include <common>
+#include <logdepthbuf_pars_vertex>
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+#include <logdepthbuf_vertex>
+}`,
+    fragmentShader: `#include <common>
+#include <logdepthbuf_pars_fragment>
+varying vec2 vUv;
+void main() {
+#include <logdepthbuf_fragment>
+  if (dot(vUv, vUv) > 1.0) discard;
+  gl_FragColor = vec4(vec3(60.0, 70.0, 120.0) / 255.0, 80.0 / 255.0);
+}`,
+    transparent: true, depthWrite: false, depthTest: true,
+    stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.ReplaceStencilOp,
+  });
+  function quadMesh(max, mat, worldSpace) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 12), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(max * 8), 2));
+    geo.setAttribute('alpha', new THREE.BufferAttribute(new Float32Array(max * 4), 1));
+    const idx = new Uint16Array(max * 6);
+    for (let i = 0; i < max; i++) idx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.setDrawRange(0, 0);
+    const m = new THREE.Mesh(geo, mat);
+    m.frustumCulled = false;
+    if (!worldSpace) m.matrixAutoUpdate = false;
+    m.userData.n = 0;
+    return m;
+  }
+  function makeWaterFx() {
+    const fx = new THREE.Group();
+    fx.userData.drops = quadMesh(WATER_DROPS, dropMat);
+    fx.userData.splash = quadMesh(WATER_SPLASHES, splashMat);
+    fx.userData.splash.renderOrder = 1;
+    fx.add(fx.userData.drops, fx.userData.splash);
+    fx.visible = false;
+    fx.userData.list = { drops: [], splashes: [] };
+    return fx;
+  }
+  function makeWetSpots() {
+    const m = quadMesh(WATER_SPOTS, spotMat, true);
+    m.renderOrder = 1;
+    m.visible = false;
+    return m;
+  }
+
   function sprayRand(e, k) {   // deterministic per particle, so scrubbing shows the same water
     let x = (e * 374761393 + k * 668265263) | 0;
     x = (x ^ (x >>> 13)) * 1274126177 | 0;
     return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
   }
-  // Age (in frames) at which an emitted particle reaches the stage, from a few ray casts along its arc.
-  function sprayHitAge(p0, v, g, life) {
-    let prev = p0;
-    for (let a = 2; a <= life; a += 2) {
-      const n = [p0[0] + v[0] * a, p0[1] + v[1] * a - 0.5 * g * a * a, p0[2] + v[2] * a];
-      const h = stageSegment(prev, n);
-      if (h) return a - 2 + 2 * h.f;
-      prev = n;
+
+  // One emission (frame e, emitter ji): its particles' start, speed and fate, kept per stage.
+  // Flight: v.y += gravity, then p += v, each frame (TModelWaterManager::move); speed across the
+  // ground is capped just under the drop's size. Fate is where the path first meets the stage.
+  function waterEmission(g, e, ji, fe, se, ve, K, bomb) {
+    const key = bomb ? -1 - e : e * 4 + ji;
+    let em = g.sprayHits.get(key);
+    if (em) return em;
+    const cp = Math.cos(fe.pitch);
+    const dir = [Math.sin(fe.yaw) * cp, Math.sin(fe.pitch), Math.cos(fe.yaw) * cp];
+    const side = [Math.cos(fe.yaw), 0, -Math.sin(fe.yaw)], off = K.jets ? K.jets[ji] : 0;
+    const p0 = [se.x + fe.offset[0] + side[0] * off, se.y + fe.offset[1], se.z + fe.offset[2] + side[2] * off];
+    const W = WTP[K.type] || WTP[0];
+    const pow = bomb ? BOMB.pow : fe.power;
+    // emitted this frame: the nozzle's running count (mEmitNum) passing whole numbers
+    const n = bomb ? BOMB.num : Math.floor((e + 1) * K.num + 1e-6) - Math.floor(e * K.num + 1e-6);
+    const parts = [];
+    for (let k = 0; k < n; k++) {
+      const r = (i) => rand11(key, k * 8 + i);
+      let ux = dir[0] + r(0) * K.dirT, uy = dir[1] + r(1) * K.dirT, uz = dir[2] + r(2) * K.dirT;
+      if (!ux && !uy && !uz) uy = -1;
+      const ul = Math.hypot(ux, uy, uz), sp = r(3) * K.powT + pow;
+      const v = [ux / ul * sp + ve[0], uy / ul * sp, uz / ul * sp + ve[2]];
+      const size = Math.abs(r(4) * K.sizeT + K.size);
+      const h = Math.hypot(v[0], v[2]);
+      if (h > size) { v[0] *= (size - 0.1) / h; v[2] *= (size - 0.1) / h; }
+      const pt = { p0, v, size, W, hit: W.alive, kind: null };
+      // walk the arc a frame at a time until it meets the stage
+      // (without the stage's collision, rays against its meshes, a few frames per ray)
+      let px = p0[0], py = p0[1], pz = p0[2], a0 = 0;
+      const col = activeCol(), floorY = col ? col.y0 - 500 : -1e9, step = col ? 1 : 4;
+      for (let a = 1; a <= W.alive; a++) {
+        if (a % step && a < W.alive) continue;
+        const qy = p0[1] + v[1] * a + W.g * a * (a + 1) / 2;
+        const q = [p0[0] + v[0] * a, qy, p0[2] + v[2] * a];
+        const hseg = waterSegment([px, py, pz], q);
+        if (hseg) {
+          pt.hit = a0 + (a - a0) * hseg.f;
+          pt.at = [px + (q[0] - px) * hseg.f, py + (q[1] - py) * hseg.f, pz + (q[2] - pz) * hseg.f];
+          pt.n = hseg.n;
+          pt.kind = hseg.water ? 'water' : hseg.ground ? 'ground' : hseg.roof ? 'roof' : 'wall';
+          pt.slip = hseg.slip;
+          const rs = sprayRand(key, k * 8 + 5), rk = sprayRand(key, k * 8 + 6);
+          if (pt.kind === 'ground') { pt.splash = rs < WM.splashGround; pt.stay = rk < WM.stayGround; }
+          else if (pt.kind === 'wall') pt.splash = rs < WM.splashWall;
+          if (pt.splash) pt.splashAt = pt.kind === 'wall' ? pt.at.map((c, i) => c + pt.n[i] * size) : pt.at;
+          pt.vh = [v[0], v[2]];
+          break;
+        }
+        px = q[0]; py = q[1]; pz = q[2]; a0 = a;
+        if (py < floorY) { pt.hit = a; break; }
+      }
+      parts.push(pt);
     }
-    return life;
+    em = { e, parts };
+    g.sprayHits.set(key, em);
+    return em;
   }
+  function waterPosAt(pt, a, out) {
+    const g = pt.W.g;
+    out[0] = pt.p0[0] + pt.v[0] * a; out[1] = pt.p0[1] + pt.v[1] * a + g * a * (a + 1) / 2; out[2] = pt.p0[2] + pt.v[2] * a;
+    return out;
+  }
+  function marioSpeedAt(d, e) {   // TWaterGun::getEmitPosDirSpeed: Mario's speed * 0.125 across the ground
+    const a = ghostSampleAt(d, e * QF_PER_FRAME), b = ghostSampleAt(d, (e - 1) * QF_PER_FRAME);
+    const dx = a.x - b.x, dz = a.z - b.z;
+    return Math.hypot(dx, dz) > 200 ? [0, 0, 0] : [dx * 0.125, 0, dz * 0.125];
+  }
+
+  // Rebuilds what of the ghost's water is in the air, splashing or lying on the ground at frame F.
+  // The manager holds 256 particles (SLOT_NUM): an emission only gets the free slots, and wet
+  // spots hold theirs until they dry. Walked oldest first, as the particle array is.
+  const WATER_SLOTS = 256;
   function updateSpray(g, s) {
-    const w = g.water, d = g.data;
-    const pos = w.geometry.attributes.position.array, size = w.geometry.attributes.size.array, alpha = w.geometry.attributes.alpha.array;
-    const F = t / QF_PER_FRAME, f0 = Math.floor(F);
+    const d = g.data, F = t / QF_PER_FRAME, f0 = Math.floor(F);
     g.sprayHits = g.sprayHits || new Map();
     const colKey = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
     if (g.sprayHits.mapId !== colKey) { g.sprayHits.clear(); g.sprayHits.mapId = colKey; }
-    let n = 0;
-    const put = (x, y, z, sz, al) => { if (n >= SPRAY_MAX) return; pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z; size[n] = sz; alpha[n] = al; n++; };
-    for (let e = f0; e > f0 - 41 && e >= 0; e--) {
+    const L = g.water.userData.list;
+    L.drops.length = 0; L.splashes.length = 0;
+    const bursts = burstFrames(g);
+    const tmp = [0, 0, 0];
+    let live = [];          // death frames of particles holding a slot
+    const kept = [];        // wet spots
+    let anchor = null;
+    const show = (pt, e, key) => {
+      const a = F - e;
+      if (a <= 0) return;
+      if (a < pt.hit) {
+        if (a > 1 && a < pt.W.alive) {   // drawn once its life is under mAlive - 1 (unk5D88[7])
+          waterPosAt(pt, a, tmp);
+          L.drops.push({ x: tmp[0], y: tmp[1], z: tmp[2], vx: pt.v[0], vy: pt.v[1] + pt.W.g * a, vz: pt.v[2], size: pt.size, ext: pt.W.ext });
+        }
+      } else if (pt.splash && a - pt.hit < SPLASH.life) L.splashes.push({ p: pt.splashAt, b: a - pt.hit, key });
+    };
+    for (let e = Math.max(0, f0 - 300); e <= f0; e++) {
       const fe = ghostFluddAt(d, e * QF_PER_FRAME);
-      if (!fe || !fe.present || !fe.spraying || !fe.power) continue;
-      const K = SPRAY_KIND[fe.nozzle] || SPRAY_KIND[0];
-      const age = F - e;
-      if (burstFrames(g).some((b) => e >= b && e <= b + 2)) continue;   // a spam spray is drawn as its burst
-      const bs = burstFrames(g);
-      if (bs.some((b) => e >= b && e <= b + 2)) continue;   // a spam spray is drawn as its burst
-      if (age > K.life + 8) continue;
-      const se = ghostSampleAt(d, e * QF_PER_FRAME);
-      const cp = Math.cos(fe.pitch);
-      const dir = [Math.sin(fe.yaw) * cp, Math.sin(fe.pitch), Math.cos(fe.yaw) * cp];
-      const side = [Math.cos(fe.yaw), 0, -Math.sin(fe.yaw)];
-      K.jets.forEach((off, ji) => {
-        const p0 = [se.x + fe.offset[0] + side[0] * off, se.y + fe.offset[1], se.z + fe.offset[2] + side[2] * off];
-        const key = e * 4 + ji;
-        let hit = g.sprayHits.get(key);
-        if (hit === undefined) { hit = sprayHitAge(p0, dir.map((c) => c * fe.power), K.g, K.life); g.sprayHits.set(key, hit); }
-        for (let k = 0; k < K.n; k++) {
-          const r1 = sprayRand(key, k * 4), r2 = sprayRand(key, k * 4 + 1), r3 = sprayRand(key, k * 4 + 2), r4 = sprayRand(key, k * 4 + 3);
-          const pw = fe.power + (r1 - 0.5) * 2 * K.pow;
-          const th = r2 * Math.PI * 2, jr = K.dir * Math.sqrt(r3);
-          // jitter the direction inside a small cone
-          const ux = dir[0] + side[0] * Math.cos(th) * jr, uy = dir[1] + Math.sin(th) * jr, uz = dir[2] + side[2] * Math.cos(th) * jr;
-          const a = age - k / K.n;
-          if (a < 0) continue;
-          const sz = K.size * (1 + (r4 - 0.5) * 2 * K.sizeJ);
-          const myHit = hit * (pw / fe.power);
-          if (a < myHit) {
-            put(p0[0] + ux * pw * a, p0[1] + uy * pw * a - 0.5 * K.g * a * a, p0[2] + uz * pw * a, sz * (0.6 + 0.4 * Math.min(1, a / 3)), 0.55);
-          } else if (a < myHit + 8 && hit < K.life) {   // splash: droplets bouncing out of the impact
-            const b = a - myHit, hx = p0[0] + ux * pw * myHit, hy = p0[1] + uy * pw * myHit - 0.5 * K.g * myHit * myHit, hz = p0[2] + uz * pw * myHit;
-            const sp = 6 + r1 * 6, ang = th + k;
-            put(hx + Math.cos(ang) * sp * b, hy + 12 * b - 1.2 * b * b + 10, hz + Math.sin(ang) * sp * b, sz * (0.7 + b * 0.12), 0.5 * (1 - b / 8));
+      if (!fe || !fe.present) continue;
+      const ems = [];
+      if (bursts.includes(e)) ems.push([waterEmission(g, e, 0, fe, ghostSampleAt(d, e * QF_PER_FRAME), marioSpeedAt(d, e), BOMB, true), -1 - e]);
+      else if (fe.spraying && fe.power && !bursts.some((b) => e > b && e <= b + 2)) {
+        const K = nozzleEmit(fe.nozzle, fe.power);
+        const se = ghostSampleAt(d, e * QF_PER_FRAME), ve = marioSpeedAt(d, e);
+        K.jets.forEach((_, ji) => ems.push([waterEmission(g, e, ji, fe, se, ve, K, false), e * 4 + ji]));
+      }
+      if (!ems.length) continue;
+      live = live.filter((x) => x.end > e);
+      ems.forEach(([em, key0]) => em.parts.forEach((pt, k) => {
+        if (live.length >= WATER_SLOTS) return;
+        const key = key0 + k * 0.25, land = e + pt.hit;
+        let end = e + Math.min(pt.hit, pt.W.alive);
+        if (pt.kind === 'ground' && pt.stay && land <= F) {
+          // A wet spot landing within 2.5 x the summed sizes of the last one hands that one its size
+          // and life and goes; life counts on from the drop's (at most 256) and sets the radius.
+          const size = pt.size * pt.W.mag, life0 = Math.min(WM.life, pt.W.alive - pt.hit), van = pt.slip ? WM.vanishSlip : WM.vanish;
+          const spotEnd = land + life0 / van;
+          if (anchor && anchor.end > land && Math.hypot(anchor.pt.at[0] - pt.at[0], anchor.pt.at[2] - pt.at[2]) < WM.mergeDist * (anchor.size + size)) {
+            anchor.size = size; anchor.end = spotEnd; anchor.from = land; anchor.life = life0; anchor.van = van;
+            anchor.slot.end = spotEnd;
+          } else {
+            anchor = { pt, land, size, end: spotEnd, from: land, life: life0, van, fr: pt.slip ? WM.frictionSlip : WM.friction };
+            kept.push(anchor);
+            end = spotEnd;
+            anchor.slot = { end };
+            live.push(anchor.slot);
+            show(pt, e, key);
+            return;
           }
         }
-      });
+        live.push({ end });
+        show(pt, e, key);
+      }));
     }
-    w.geometry.setDrawRange(0, n);
-    w.geometry.attributes.position.needsUpdate = true;
-    w.geometry.attributes.size.needsUpdate = true;
-    w.geometry.attributes.alpha.needsUpdate = true;
-    w.visible = n > 0;    updateBurst(g, F);
+    const sp = g.puddles, pa = sp.geometry.attributes.position.array, ua = sp.geometry.attributes.uv.array;
+    let ns = 0;
+    kept.forEach((k) => {
+      if (F < k.land || F >= k.end || ns >= WATER_SPOTS) return;
+      const life = k.life - (F - k.from) * k.van;
+      const r = 11.76 * k.size * Math.max(0, life) / WM.life;
+      if (r < 1) return;
+      const b = Math.min(F - k.land, 60), slide = k.fr * (1 - Math.pow(k.fr, b)) / (1 - k.fr);
+      const n = k.pt.n, c = [k.pt.at[0] + k.pt.vh[0] * slide + n[0] * 3, k.pt.at[1] + n[1] * 3, k.pt.at[2] + k.pt.vh[1] * slide + n[2] * 3];
+      // disc axes on the plane
+      const ax = Math.abs(n[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+      let ux = [n[1] * ax[2] - n[2] * ax[1], n[2] * ax[0] - n[0] * ax[2], n[0] * ax[1] - n[1] * ax[0]];
+      const ul = Math.hypot(...ux); ux = ux.map((x) => x / ul);
+      const vx = [n[1] * ux[2] - n[2] * ux[1], n[2] * ux[0] - n[0] * ux[2], n[0] * ux[1] - n[1] * ux[0]];
+      [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([i, j], q) => {
+        const o = (ns * 4 + q) * 3;
+        pa[o] = c[0] + (ux[0] * i + vx[0] * j) * r; pa[o + 1] = c[1] + (ux[1] * i + vx[1] * j) * r; pa[o + 2] = c[2] + (ux[2] * i + vx[2] * j) * r;
+        ua[(ns * 4 + q) * 2] = i; ua[(ns * 4 + q) * 2 + 1] = j;
+      });
+      ns++;
+    });
+    sp.geometry.setDrawRange(0, ns * 6);
+    sp.geometry.attributes.position.needsUpdate = true;
+    sp.geometry.attributes.uv.needsUpdate = true;
+    sp.visible = ns > 0;
+    g.water.visible = L.drops.length > 0 || L.splashes.length > 0;
   }
 
-  // Spam spray (Jump pressed while digital R is fully held): FLUDD fires one big burst instead of a jet,
-  // the grounded-backflip spray. Many small droplets fly out in a wide cone from the nozzle and
-  // fall (NozzleDeformBomb.prm style burst: 127 drops, direction jitter 0.6, power 35).
-  const BURST = { n: 127, dir: 0.8, pow: 10, life: 22, g: 0.3 };
+  // Spam spray (Jump pressed while digital R is fully held): FLUDD fires one burst instead of a jet.
   function burstFrames(g) {
     if (g.bursts) return g.bursts;
     const inp = g.data.inputs, out = [];
     if (inp && inp.hasFludd) {
-      let prev = 0;
+      // TNozzleTrigger::movement for the bomb: A pressed (rising edge) while digital R is held fires
+      // it once; it stays spent (SPRAY_STATE_DEAD) until R's analog level is back to 0
+      // (TMario::getLRLevel: under mAnalogLRToZeroVal 30).
+      let prev = 0, armed = true;
       for (let i = 0; i < inp.count; i++) {
-        // A pressed (rising edge) while digital R is held, however long R has been down.
         const b = inp.buttons[i];
-        if ((b & 0x100) && !(prev & 0x100) && (b & 0x20)) {
+        if (inp.trig[i * 2 + 1] < 30 && !(b & 0x20)) armed = true;
+        if (armed && (b & 0x100) && !(prev & 0x100) && (b & 0x20)) {
           const f = ghostFluddAt(g.data, inp.qf[i]);
-          if (f && f.present && (f.nozzle === 0 || f.nozzle === 2)) out.push(Math.round(inp.qf[i] / QF_PER_FRAME));
+          if (f && f.present && (f.nozzle === 0 || f.nozzle === 2)) { out.push(Math.round(inp.qf[i] / QF_PER_FRAME)); armed = false; }
         }
         prev = b;
       }
@@ -3110,34 +3372,81 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     g.bursts = out;
     return out;
   }
-  function updateBurst(g, F) {
-    const w = g.burst, d = g.data;
-    const pos = w.geometry.attributes.position.array;
-    let n = 0;
-    burstFrames(g).forEach((e) => {
-      const age = F - e;
-      if (age < 0 || age > BURST.life) return;
-      const fe = ghostFluddAt(d, e * QF_PER_FRAME);
-      if (!fe) return;
-      const se = ghostSampleAt(d, e * QF_PER_FRAME);
-      const pw0 = fe.power || 35, cp = Math.cos(fe.pitch);
-      const dir = [Math.sin(fe.yaw) * cp, Math.sin(fe.pitch), Math.cos(fe.yaw) * cp];
-      const p0 = [se.x + fe.offset[0], se.y + fe.offset[1], se.z + fe.offset[2]];
-      for (let k = 0; k < BURST.n && n < 1600; k++) {
-        const r = [sprayRand(e, k * 5) - 0.5, sprayRand(e, k * 5 + 1) - 0.5, sprayRand(e, k * 5 + 2) - 0.5];
-        const ux = dir[0] + r[0] * 2 * BURST.dir, uy = dir[1] + r[1] * 2 * BURST.dir + 0.25, uz = dir[2] + r[2] * 2 * BURST.dir;
-        const ul = Math.hypot(ux, uy, uz) || 1;
-        const pw = pw0 * (0.45 + 0.55 * sprayRand(e, k * 5 + 3)) + (sprayRand(e, k * 5 + 4) - 0.5) * BURST.pow;
-        const a = age;
-        const x = p0[0] + ux / ul * pw * a, y = p0[1] + uy / ul * pw * a - 0.5 * BURST.g * 4 * a * a, z = p0[2] + uz / ul * pw * a;
-        pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z; n++;
+
+  // Builds the water quads in view space for this frame's camera (TModelWaterManager::calcDrawVtx,
+  // TSplashManager::makeDL), then draws them over a copy of the finished scene.
+  const _wv = new THREE.Vector3(), _wd = new THREE.Vector3();
+  const SPLASH_UV = [0, 0, 1, 0, 1, 1, 0, 1];
+  function drawWater() {
+    let any = false;
+    camera.updateMatrixWorld();
+    const V = camera.matrixWorldInverse;
+    ghosts.forEach((g) => {
+      const fx = g.water;
+      if (!fx || !fx.visible) return;
+      any = true;
+      const L = fx.userData.list, dm = fx.userData.drops, sm = fx.userData.splash;
+      const P = dm.geometry.attributes.position.array, U = dm.geometry.attributes.uv.array;
+      let n = 0;
+      for (const p of L.drops) {
+        if (n >= WATER_DROPS) break;
+        _wv.set(p.x, p.y, p.z).applyMatrix4(V);
+        if (_wv.z > 0 || _wv.z < -WM.far) continue;
+        _wd.set(p.vx, p.vy, p.vz).transformDirection(V).multiplyScalar(Math.hypot(p.vx, p.vy, p.vz) * p.ext);
+        const lsq = _wd.x * _wd.x + _wd.y * _wd.y, sz = 1.414 * 0.5 * p.size, o = n * 12;
+        if (lsq > 1) {
+          const sc = sz / Math.sqrt(lsq), nx = _wd.x * sc, ny = _wd.y * sc, ex = _wd.x * WM.stretch, ey = _wd.y * WM.stretch;
+          P[o] = _wv.x + nx + ex; P[o + 1] = _wv.y + ny + ey;
+          P[o + 3] = _wv.x + ny; P[o + 4] = _wv.y - nx;
+          P[o + 6] = _wv.x - nx - ex; P[o + 7] = _wv.y - ny - ey;
+          P[o + 9] = _wv.x - ny; P[o + 10] = _wv.y + nx;
+        } else {
+          P[o] = _wv.x - sz; P[o + 1] = _wv.y + sz; P[o + 3] = _wv.x + sz; P[o + 4] = _wv.y + sz;
+          P[o + 6] = _wv.x + sz; P[o + 7] = _wv.y - sz; P[o + 9] = _wv.x - sz; P[o + 10] = _wv.y - sz;
+        }
+        P[o + 2] = P[o + 5] = P[o + 8] = P[o + 11] = _wv.z;
+        U.set(SPLASH_UV, n * 8);
+        n++;
       }
+      dm.geometry.setDrawRange(0, n * 6);
+      dm.geometry.attributes.position.needsUpdate = true;
+      dm.geometry.attributes.uv.needsUpdate = true;
+      const SP = sm.geometry.attributes.position.array, SU = sm.geometry.attributes.uv.array, SA = sm.geometry.attributes.alpha.array;
+      let m = 0;
+      for (const s of L.splashes) {
+        if (m >= WATER_SPLASHES) break;
+        const b = s.b, rem = SPLASH.life - Math.floor(b);
+        _wv.set(s.p[0], s.p[1] + SPLASH.v0 * b + SPLASH.g * b * (b + 1) / 2, s.p[2]).applyMatrix4(V);
+        if (_wv.z < -SPLASH.far || _wv.z > -SPLASH.near) continue;
+        const h = (SPLASH.life - rem) / SPLASH.life * SPLASH.size1 + SPLASH.size0, o = m * 12;
+        SP[o] = _wv.x - h; SP[o + 1] = _wv.y + h; SP[o + 3] = _wv.x + h; SP[o + 4] = _wv.y + h;
+        SP[o + 6] = _wv.x + h; SP[o + 7] = _wv.y - h; SP[o + 9] = _wv.x - h; SP[o + 10] = _wv.y - h;
+        SP[o + 2] = SP[o + 5] = SP[o + 8] = SP[o + 11] = _wv.z;
+        const rot = Math.floor(Math.abs(s.key) * 4) & 3;   // each splash slot turns the texture a quarter
+        for (let j = 0; j < 4; j++) { SU[m * 8 + j * 2] = SPLASH_UV[((rot + j) & 3) * 2]; SU[m * 8 + j * 2 + 1] = SPLASH_UV[((rot + j) & 3) * 2 + 1]; SA[m * 4 + j] = rem / SPLASH.life; }
+        m++;
+      }
+      sm.geometry.setDrawRange(0, m * 6);
+      sm.geometry.attributes.position.needsUpdate = true;
+      sm.geometry.attributes.uv.needsUpdate = true;
+      sm.geometry.attributes.alpha.needsUpdate = true;
     });
-    w.geometry.setDrawRange(0, n);
-    w.geometry.attributes.position.needsUpdate = true;
-    w.material.opacity = 0.9;
-    w.visible = n > 0;
+    if (!any) return;
+    renderer.getDrawingBufferSize(_wsz);
+    if (!waterScreen || waterScreen.image.width !== _wsz.x || waterScreen.image.height !== _wsz.y) {
+      if (waterScreen) waterScreen.dispose();
+      waterScreen = new THREE.DataTexture(null, _wsz.x, _wsz.y, THREE.RGBFormat);
+      waterScreen.minFilter = waterScreen.magFilter = THREE.LinearFilter;
+      waterScreen.generateMipmaps = false;
+      dropMat.uniforms.tScreen.value = waterScreen;
+    }
+    renderer.copyFramebufferToTexture(_wz0, waterScreen);
+    dropMat.uniforms.uView.value.copy(_wsz);
+    renderer.autoClear = false;
+    renderer.render(waterScene, camera);
+    renderer.autoClear = true;
   }
+  const _wz0 = new THREE.Vector2(0, 0);
 
   // Applies FLUDD state to a ghost's model and water stream. Returns the state for the readout.
   // Ghosts before Moonshine V6 don't record FLUDD. The game takes it away in secret stages whose
@@ -3317,7 +3626,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       });
     }
     const fluddOn = f ? f.present : inferFludd(g, t);
-    if (!g.visible || s.gap || !fluddOn) { g.water.visible = false; g.burst.visible = false; return f; }   // no FLUDD, no spray
+    if (!g.visible || s.gap || !fluddOn) { g.water.visible = false; g.puddles.visible = false; return f; }   // no FLUDD, no spray
     updateSpray(g, s);
     return f;
   }
@@ -3345,8 +3654,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     catch (err) { showNotice(`${fileName}: ${err.message}`); return null; }
     const color = GHOST_COLORS[ghosts.length % GHOST_COLORS.length];
     const g = { data, fileName, color, visible: true, isSample, marker: makeMarker(color), path: makePath(data, color),
-      secondary: buildSecondaryTimeline(data), selected: buildSelectedTimeline(data), water: makeWaterStream(), burst: makeWaterStream(30, 1600) };
-    scene.add(g.marker, g.path, g.water, g.burst);
+      secondary: buildSecondaryTimeline(data), selected: buildSelectedTimeline(data), water: makeWaterFx(), puddles: makeWetSpots() };
+    scene.add(g.marker, g.path, g.puddles);
+    waterScene.add(g.water);
     g.path.visible = $('optPath').checked;
     ghosts.push(g);
     refreshDuration();
@@ -3362,7 +3672,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
 
   function removeGhost(g) {
-    scene.remove(g.marker, g.path, g.water, g.burst);
+    scene.remove(g.marker, g.path, g.puddles);
+    waterScene.remove(g.water);
     if (g.appear) scene.remove(g.appear);
     ghosts.splice(ghosts.indexOf(g), 1);
     refreshDuration();
@@ -3697,6 +4008,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     controls.update();
     if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
     renderer.render(scene, camera);
+    drawWater();
     requestAnimationFrame(loop);
   }
 
