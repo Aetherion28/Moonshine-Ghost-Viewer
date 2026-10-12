@@ -54,6 +54,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 
 .stage { grid-area: stage; position: relative; min-height: 0; background: var(--scene-bg); }
 .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.sgOverlay { position: absolute; inset: 0; pointer-events: none; }
+.sgOverlay[hidden] { display: none; }
 .hud { position: absolute; left: 12px; top: 12px; display: grid; gap: 2px; font-family: var(--mono); font-size: 12px;
   background: color-mix(in srgb, var(--panel) 82%, transparent); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
   pointer-events: none; font-variant-numeric: tabular-nums; }
@@ -317,6 +319,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 <script src="mario_anims.js"></script>
 <script src="mario_rig.js"></script>
 <script src="water_tex.js"></script>
+<script src="shine_get.js"></script>
 <script>
 (() => {
   const QF_PER_FRAME = 4;
@@ -2609,6 +2612,209 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return list;
   }
 
+  // ---------------------------------------------------------------- Shine get
+  // Touching a Shine (TMario::receiveMessage, ACTOR_TYPE_SHINE) puts Mario on its x / z, facing its
+  // placed angle, with no speed across the ground; TMario::winDemo lets him fall (jumpProcess: a
+  // quarter of his speed per QF, gravity 1 per QF, at most 75) while the Shine plays shine_float.
+  // On landing TMarDirector::fireGetStar starts camera_demo_shine_get_outside (or _inside),
+  // around Mario and turned by the Shine's angle, the Shine takes itself to Mario
+  // (TShine::receiveMessage: his position and angle, shine_demo_shine_get) and he plays
+  // demo_shine_get. All three animations run at 2 frames a game frame. The director then shows
+  // "SHINE GET!" (TConsoleStr: 180 ticks of 0.5 later) and fades to D2D2D2 (TShineFader: after
+  // 640 ticks, over 120); those count 120 a second, as QF do.
+  const SG = { len: 840, fadeAt: 640, fadeLen: 120, textAt: 360, bindY: 71.4, fade: '#d2d2d2' };
+  function shineDemo(g) {
+    if (!g || typeof SHINE_BCK === 'undefined') return null;
+    const C = activeCol(), key = objectsKey + '|' + (C ? 1 : 0);
+    g.sgDemo = g.sgDemo || new Map();
+    if (g.sgDemo.has(key)) return g.sgDemo.get(key);
+    const times = g.pickups && g.pickups.get(objectsKey);
+    if (!times) return null;
+    const d = g.data, base = d.header.startQf;
+    // The Shine touched last, if the segment ends with it (the shine get ends the stage).
+    let i = -1;
+    objList.forEach((it, k) => { if (/^shine/.test(it[12]) && times[k] !== Infinity && (i < 0 || times[k] > times[i])) i = k; });
+    let demo = null;
+    if (i >= 0) {
+      const q = times[i];
+      const si = d.segments.findIndex((sg) => q >= sg.startQf - base && q <= sg.endQf - base);
+      const seg = d.segments[si];
+      if (seg && seg.endQf - base - q <= 3 * QF_PER_SECOND) {
+        const it = objList[i], x = it[3], z = it[5], yawDeg = it[7];
+        const s0 = ghostSampleAt(d, q), s1 = ghostSampleAt(d, q - QF_PER_FRAME);
+        let y = s0.y, v = s0.y - s1.y + 1.5;   // TMario::mVel.y: a frame moves 0.25 v four times as v drops by 1 each
+        const ys = [y];
+        if (C) {
+          for (let k = 1; k < 1200; k++) {
+            const gy = colGround(C, x, y + 1, z), ny = y + 0.25 * v;
+            if (ny <= gy) { y = gy; break; }
+            y = ny; v = Math.max(v - 1, -75);
+            ys.push(y);
+            if (gy === -Infinity && y < (C.y0 || -1e5) - 2000) break;
+          }
+        }
+        const a0 = ghostAnimAt(d, q), next = d.segments[si + 1];
+        const land = q + ys.length;
+        demo = { i, q, land, x, z, y, ys, yaw: yawDeg * Math.PI / 180, yoshi: !!a0.yoshi, a0,
+          end: land + SG.len, until: next ? Math.min(land + SG.len, next.startQf - base) : land + SG.len,
+          last: !next, inside: !!(it[17] && it[17].inside) };
+      }
+    }
+    g.sgDemo.set(key, demo);
+    if (demo && demo.last && demo.end > duration) { duration = demo.end; $('scrub').max = String(Math.round(duration)); }
+    return demo;
+  }
+  function shineDemoAt(g, time) {
+    const dm = shineDemo(g);
+    return dm && time >= dm.q && time < dm.until ? dm : null;
+  }
+  const _sgM = new THREE.Matrix4(), _sgN = new THREE.Matrix4(), _sgE = new THREE.Euler(0, 0, 0, 'ZYX'), _sgQ = new THREE.Quaternion();
+  const _sgV = new THREE.Vector3(), _sgS = new THREE.Vector3(), _sgP = new THREE.Vector3();
+  function bckJoint(j, f, out) {   // a BCK joint's local matrix at frame f (scale, ZYX rotation, translation)
+    _sgE.set(bckSample(j[3], f), bckSample(j[4], f), bckSample(j[5], f), 'ZYX');
+    _sgQ.setFromEuler(_sgE);
+    return out.compose(_sgP.set(bckSample(j[6], f), bckSample(j[7], f), bckSample(j[8], f)), _sgQ,
+      _sgS.set(bckSample(j[0], f), bckSample(j[1], f), bckSample(j[2], f)));
+  }
+  // Mario during the demo: where he is and what he plays.
+  function poseShineDemo(g, dm, time) {
+    const rig = g.marker.userData.rig;
+    g.marker.visible = g.visible;
+    g.marker.rotation.y = dm.yaw;
+    if (time < dm.land) {
+      g.marker.position.set(dm.x, dm.ys[Math.min(dm.ys.length - 1, Math.floor(time - dm.q))], dm.z);
+      if (rig) {   // still in whatever he was doing, his animation running on
+        const b = MarioRig.bckFor(dm.a0.id, dm.a0.yoshi), n = b && b.data ? b.data.d : 1;
+        MarioRig.pose(rig, dm.a0.id, dm.a0.yoshi, (dm.a0.phase + (time - dm.q) / QF_PER_FRAME * 2 / n * 4096) % 4096);
+      }
+    } else {
+      g.marker.position.set(dm.x, dm.y, dm.z);
+      if (rig) {
+        const id = dm.yoshi ? 0xc4 : 0xcd, b = MarioRig.bckFor(id, dm.yoshi), n = b && b.data ? b.data.d : 419;
+        const f = Math.min(n - 1, (time - dm.land) / QF_PER_FRAME * 2);
+        MarioRig.pose(rig, id, dm.yoshi, f / n * 4096);
+      }
+    }
+    g.pumpFrame = null;
+  }
+  // The Shine during the demo: its own animation on its joints (shine, starglow, body).
+  function placeShineDemo(node, dm, time) {
+    const getting = time >= dm.land;
+    const A = SHINE_BCK[getting ? (dm.yoshi ? 'get_yo' : 'get') : 'float'];
+    const f = Math.min(A.d - 1, (time - (getting ? dm.land : dm.q)) / QF_PER_FRAME * 2);
+    const b = node.userData.base;
+    if (getting) _sgN.compose(_sgV.set(dm.x, dm.y, dm.z), _sgQ.setFromEuler(_sgE.set(0, dm.yaw, 0)), _sgS.set(1, 1, 1));
+    else {
+      const spin = (time / QF_PER_SECOND) * Math.PI * 1.5;   // still turning as it was
+      _sgN.compose(_sgV.set(b.p[0], b.p[1], b.p[2]), _sgQ.setFromEuler(_sgE.set(b.r[0], (node.userData.baseRotY || 0) + spin, b.r[2], 'ZYX')), _sgS.set(b.s[0], b.s[1], b.s[2]));
+    }
+    node.matrixAutoUpdate = false;
+    node.matrix.multiplyMatrices(_sgN, bckJoint(A.j[0], f, _sgM));
+    node.matrixWorldNeedsUpdate = true;
+    node.updateMatrixWorld(true);
+    const glow = node.userData.glow || [];
+    const unbind = new THREE.Matrix4().makeTranslation(0, -SG.bindY, 0);
+    const body = bckJoint(A.j[2], f, new THREE.Matrix4()).multiply(unbind);
+    const star = bckJoint(A.j[1], f, new THREE.Matrix4());
+    node.traverse((o) => {
+      if (!o.isMesh) return;
+      if (!o.userData.sgSave) o.userData.sgSave = [o.position.clone(), o.quaternion.clone(), o.scale.clone()];
+      o.matrixAutoUpdate = false;
+      if (!glow.includes(o)) { o.matrix.copy(body); return; }
+      // the glow card on its joint, turned to face the camera
+      const w = new THREE.Matrix4().multiplyMatrices(node.matrixWorld, star);
+      const p = new THREE.Vector3().setFromMatrixPosition(w), sc = new THREE.Vector3().setFromMatrixScale(w);
+      const face = new THREE.Matrix4().compose(p, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(camera.position.x - p.x, camera.position.z - p.z)), sc).multiply(unbind);
+      o.matrix.copy(new THREE.Matrix4().copy(o.parent.matrixWorld).invert().multiply(face));
+    });
+    node.visible = true;
+    node.userData.sgPlaced = true;
+  }
+  function unplaceShineDemo(node) {
+    if (!node.userData.sgPlaced) return;
+    node.userData.sgPlaced = false;
+    node.matrixAutoUpdate = true;
+    const b = node.userData.base;
+    placeFree(node, b.p, b.r, b.s);
+    node.traverse((o) => {
+      if (!o.userData.sgSave) return;
+      o.matrixAutoUpdate = true;
+      o.position.copy(o.userData.sgSave[0]); o.quaternion.copy(o.userData.sgSave[1]); o.scale.copy(o.userData.sgSave[2]);
+    });
+  }
+  // TCameraBck::updateDemo: cam_interest is the look point and cam_position (its child) the
+  // camera, the position joint's y scale the field of view; offset by Mario's position and
+  // turned about him by the Shine's angle (CPolarSubCamera::updateDemoCamera_).
+  function shineDemoCam(dm, time) {
+    if (time < dm.land) return null;
+    const A = CAM_BCK[dm.inside ? 'inside' : 'outside'];
+    const f = Math.min(A.d - 1, (time - dm.land) / QF_PER_FRAME * 2);
+    const I = A.j[0], P = A.j[1];
+    const at = [bckSample(I[6], f), bckSample(I[7], f), bckSample(I[8], f)];
+    const sI = [bckSample(I[0], f), bckSample(I[1], f), bckSample(I[2], f)];
+    const pos = [0, 1, 2].map((k) => at[k] + sI[k] * bckSample(P[6 + k], f));
+    const c = Math.cos(dm.yaw), s = Math.sin(dm.yaw);
+    const turn = (v) => [dm.x + v[0] * c + v[2] * s, dm.y + v[1], dm.z - v[0] * s + v[2] * c];
+    return { pos: turn(pos), at: turn(at), fov: bckSample(P[1], f) };
+  }
+  // "SHINE GET!" and the fade, drawn over the stage in the game's 600 x 480 2D layout.
+  const sgCanvas = document.createElement('canvas');
+  sgCanvas.className = 'sgOverlay';
+  $('stage').insertBefore(sgCanvas, $('hud'));
+  const sgLetters = (typeof SG_LETTERS === 'undefined' ? [] : SG_LETTERS).map((l) => {
+    const img = new Image();
+    const L = { ...l, img, ready: false, cv: null };
+    img.onload = () => {   // J2DPicture: the texture times its corner colours (top pair, bottom pair)
+      const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+      const cx = cv.getContext('2d');
+      cx.drawImage(img, 0, 0);
+      const gr = cx.createLinearGradient(0, 0, 0, img.height);
+      gr.addColorStop(0, `rgb(${l.c[0][0]},${l.c[0][1]},${l.c[0][2]})`); gr.addColorStop(1, `rgb(${l.c[2][0]},${l.c[2][1]},${l.c[2][2]})`);
+      cx.globalCompositeOperation = 'multiply'; cx.fillStyle = gr; cx.fillRect(0, 0, img.width, img.height);
+      cx.globalCompositeOperation = 'destination-in'; cx.drawImage(img, 0, 0);
+      L.cv = cv; L.ready = true;
+    };
+    img.src = l.tex;
+    return L;
+  });
+  function bez(t, a, b, c) { const u = 1 - t; return [a[0] * u * u + b[0] * 2 * u * t + c[0] * t * t, a[1] * u * u + b[1] * 2 * u * t + c[1] * t * t]; }
+  // TConsoleStr::processShineGet: letter i comes in at tick 6i from (150, -50) over 40 ticks,
+  // overshoots and settles over 20, and at 6i + 200 leaves towards (-200, 65) over 40, fading.
+  function sgLetterAt(i, p) {
+    const s = 6 * i;
+    if (p < s || p > s + 280) return null;
+    let o, alpha = 1;
+    if (p < s + 40) o = bez(Math.min(1, (p - s) / 40), [150, -50], [-21, 7], [-21, 7]);
+    else if (p < s + 60) o = bez(Math.min(1, (p - s - 40) / 20), [-21, 7], [-21, 7], [0, 0]);
+    else if (p < s + 200) o = [0, 0];
+    else { o = bez(Math.min(1, (p - s - 200) / 40), [0, 0], [0, 0], [-200, 65]); alpha = Math.max(0, 1 - (p - s - 200) * 7 / 255); }
+    return { o, alpha };
+  }
+  function drawShineOverlay(dm, time) {
+    const r = sgCanvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+    if (sgCanvas.width !== W || sgCanvas.height !== H) { sgCanvas.width = W; sgCanvas.height = H; }
+    const cx = sgCanvas.getContext('2d');
+    cx.clearRect(0, 0, W, H);
+    if (!dm || time < dm.land) { sgCanvas.hidden = true; return; }
+    sgCanvas.hidden = false;
+    const k = time - dm.land;
+    const sc = H / 480, ox = (W - 600 * sc) / 2;
+    const p = k - SG.textAt;
+    sgLetters.forEach((L, i) => {
+      const st = L.ready && sgLetterAt(i, p);
+      if (!st) return;
+      cx.globalAlpha = st.alpha;
+      cx.drawImage(L.cv, ox + (L.x + st.o[0]) * sc, (L.y + st.o[1]) * sc, L.w * sc, L.h * sc);
+    });
+    cx.globalAlpha = 1;
+    if (k > SG.fadeAt) {
+      cx.globalAlpha = Math.min(1, (k - SG.fadeAt) / SG.fadeLen);
+      cx.fillStyle = SG.fade; cx.fillRect(0, 0, W, H);
+      cx.globalAlpha = 1;
+    }
+  }
+
   // Show or hide pickups for the leading ghost at time t, spin coins, move carried and thrown
   // actors, and count what it has.
   function updateObjects() {
@@ -2682,6 +2888,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         return;
       }
       if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
+      const sgd = g ? shineDemoAt(g, t) : null;
+      if (sgd && i === sgd.i) { placeShineDemo(node, sgd, t); counts.shine++; return; }
+      unplaceShineDemo(node);
       const got = times && t >= times[i];
       node.visible = !got;
       if (gate && pick === 'coin_red' && !(t >= gate[i])) node.visible = false;
@@ -2895,7 +3104,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (on && st === null) st = inp.qf[i];
       if (!on && st !== null) { runs.push([st, inp.qf[i]]); st = null; }
     }
-    if (st !== null) runs.push([st, Infinity]);
+    if (st !== null) runs.push([st, inp.qf[inp.count - 1] + QF_PER_FRAME]);   // the run ends with the recording
     return (g.sprayRuns = runs);
   }
   function fluddState(g, time, nozzle, power, pump = null) {
@@ -3284,7 +3493,9 @@ void main() {
         }
       } else if (pt.splash && a - pt.hit < SPLASH.life) L.splashes.push({ p: pt.splashAt, b: a - pt.hit, key });
     };
+    const sgd = shineDemo(g);   // TMario::winDemo: FLUDD stops with the Shine get
     for (let e = Math.max(0, f0 - 300); e <= f0; e++) {
+      if (sgd && e * QF_PER_FRAME >= sgd.q && e * QF_PER_FRAME < sgd.until) continue;
       const fe = ghostFluddAt(d, e * QF_PER_FRAME);
       if (!fe || !fe.present) continue;
       const ems = [];
@@ -3683,7 +3894,7 @@ void main() {
   }
 
   function refreshDuration() {
-    duration = ghosts.reduce((m, g) => Math.max(m, g.data.qf[g.data.qf.length - 1]), 0);
+    duration = ghosts.reduce((m, g) => { const dm = shineDemo(g); return Math.max(m, g.data.qf[g.data.qf.length - 1], dm && dm.last ? dm.end : 0); }, 0);
     t = Math.min(t, duration);
     update();
   }
@@ -3843,6 +4054,8 @@ void main() {
       g.marker.visible = g.visible && !s.gap;
       const rig = g.marker.userData.rig;
       if (rig) { const a = ghostAnimAt(g.data, t); MarioRig.pose(rig, a.id, a.yoshi, a.phase); g.pumpFrame = poseUpper(g, rig, a, t); }
+      const sgd = shineDemoAt(g, t);
+      if (sgd) poseShineDemo(g, sgd, t);
       const fludd = applyFludd(g, s);
       updateAppear(g);
       if (!hud && g.visible) {
@@ -3993,7 +4206,16 @@ void main() {
     // With no ghost loaded the stage still lives: its walkers run on their own clock.
     if (!ghosts.length && objectsGroup) { idleClock += dt * QF_PER_SECOND; updateWalkers(); }
     updateSleeper();
-    if (isFollow()) {
+    // The Shine get demo camera takes over the game's follow camera (not Fixed, not a drag).
+    const sgLead = ghosts.find((x) => x.visible), sgDm = sgLead ? shineDemoAt(sgLead, t) : null;
+    const sgCam = sgDm && cameraMode === 'follow' && !(userCamUntil > now || camDragging) ? shineDemoCam(sgDm, t) : null;
+    if (sgCam) {
+      camera.position.set(sgCam.pos[0], sgCam.pos[1], sgCam.pos[2]);
+      controls.target.set(sgCam.at[0], sgCam.at[1], sgCam.at[2]);
+      if (camera.fov !== sgCam.fov) { camera.fov = sgCam.fov; camera.updateProjectionMatrix(); }
+      gameCam.at = null;
+    } else if (camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
+    if (isFollow() && !sgCam) {
       const p = leadPosition();
       if (p && (cameraMode === 'fixed' || userCamUntil > now || camDragging)) {
         // Fixed follow (or the user is moving it): keep their orbit angle and distance and carry
@@ -4009,6 +4231,7 @@ void main() {
     if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
     renderer.render(scene, camera);
     drawWater();
+    drawShineOverlay(sgDm, t);
     requestAnimationFrame(loop);
   }
 

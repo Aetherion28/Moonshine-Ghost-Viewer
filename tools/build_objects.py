@@ -951,6 +951,10 @@ def main(argv):
                         mode, q = _lstr(o["payload"], actor_tail(o["payload"]))
                         ev = struct.unpack_from(">i", o["payload"], q)[0]
                         extra = {**(extra or {}), "shine": mode.decode("ascii", "replace"), "ev": ev}
+                        # its third value: 0 makes unk190 1, the indoor Shine get camera
+                        # (TMarDirector::fireGetStar: camera_demo_shine_get_inside)
+                        if len(o["payload"]) >= q + 8 and struct.unpack_from(">i", o["payload"], q + 4)[0] == 0:
+                            extra["inside"] = 1
                         if "１００枚" in o.get("name", ""):   # appears once 100 gold coins are collected
                             extra["coin100"] = 1
                     except (struct.error, ValueError):
