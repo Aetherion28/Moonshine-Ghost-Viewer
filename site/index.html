@@ -2731,7 +2731,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const ck = activeCol() ? 1 : 0;
     if (sleepMario.userData.at !== objSpawn || sleepMario.userData.col !== ck) {   // light set from the floor, once collision is in
       sleepMario.userData.at = objSpawn; sleepMario.userData.col = ck;
-      sleepMario.position.set(x, y, z);
+      // Some stages start Mario in the air (he drops in): asleep he lies on the floor below.
+      const gy = ck ? groundY(x, y + 100, z) : -Infinity;
+      sleepMario.position.set(x, gy > -Infinity ? gy : y, z);
       sleepMario.rotation.set(0, yaw * Math.PI / 180, 0);
       gxApply(sleepMario, gxSet('player', lightSetAt(x, y, z)));
     }
