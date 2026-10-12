@@ -2560,10 +2560,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         hide: 0, hidden: false, recycle: 0, rc: 180, vis: true, tick: 0, frames: [], g, stageStart };
       if (!N.length) st.stop = true;   // a ride cloud with no rail
       else {
+        // TRailMapObj::initGraphTracer: the nearest node is the first target (0 steps away), its
+        // 0x80 holds the lift until Mario rides it. The first move arrives there
+        // (TNormalLift::control): readRailFlag's 0x800 pause, then the next node's speed.
         st.cur = nearestNode(N, st.pos);
-        st.cur = nextNode(st);
         if (N[st.cur][7] & 0x80) st.stop = true;
-        st.steps = Math.trunc(st.pos.distanceTo(nodeV(N[st.cur])) / st.spd);
+        st.steps = Math.trunc(st.pos.distanceTo(nodeV(N[st.cur])) / st.spd);   // resetStep: 0 when placed on it
       }
       st.frames.push({ p: st.pos.toArray(), vis: true, fade: 1 });
       visits.set(stageStart, st);
