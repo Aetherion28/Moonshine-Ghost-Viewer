@@ -326,6 +326,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 <script src="mario_rig.js"></script>
 <script src="water_tex.js"></script>
 <script src="shine_get.js"></script>
+<script src="jpa_data.js"></script>
+<script src="jpa.js"></script>
 <script>
 (() => {
   const QF_PER_FRAME = 4;
@@ -1408,7 +1410,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const st = waterStageSegment(p, q);
     if (o && (!st || o.f < st.f)) {
       const ty = o.ty || 0;
-      return { f: o.f, n: o.n, ground: o.n[1] > 0.2, roof: o.n[1] < -0.2, water: WATER_SURFACE.has(ty), slip: WATER_SLIP.has(ty) };
+      return { f: o.f, n: o.n, ground: o.n[1] > 0.2, roof: o.n[1] < -0.2, water: WATER_SURFACE.has(ty), slip: WATER_SLIP.has(ty), ty };
     }
     return st;
   }
@@ -1445,7 +1447,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (best === null) return null;
     const ty = C.types ? C.types[bk] : 0;
     // TBGCheckData::setVertex: floor above 0.2, roof below -0.2, wall between.
-    return { f: best, n: bn, ground: bn[1] > 0.2, roof: bn[1] < -0.2, water: WATER_SURFACE.has(ty), slip: WATER_SLIP.has(ty) };
+    return { f: best, n: bn, ground: bn[1] > 0.2, roof: bn[1] < -0.2, water: WATER_SURFACE.has(ty), slip: WATER_SLIP.has(ty), ty };
   }
   async function loadCollision(entry) {
     if (!entry.col) return;
@@ -3960,18 +3962,20 @@ void main() {
     return fr;
   }
 
-  function applyFludd(g, s) {
-    const f = ghostFluddAt(g.data, t);
+  // Poses FLUDD (tank tilt, which nozzle is out, its animation) for the ghost at `time`.
+  function poseFluddAt(g, time, pump) {
+    const f = ghostFluddAt(g.data, time);
+    let nm = null, hasFludd = false;
     const rig = g.marker.userData.rig;
     if (rig) {
       let secondary = 4;
       if (g.secondary && g.data.inputs.count) {
         const inp = g.data.inputs;
         let lo = 0, hi = inp.count - 1;
-        while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
+        while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= time) lo = mid; else hi = mid - 1; }
         secondary = g.secondary[lo];
       }
-      const hasFludd = f ? f.present : inferFludd(g, t);
+      hasFludd = f ? f.present : inferFludd(g, time);
       if (rig.parts.fludd_body) {
         rig.parts.fludd_body.visible = hasFludd;
         // Retail backpack tilt (TWaterGun::setBaseTRMtx, as Moonshine reproduces it).
@@ -3985,24 +3989,232 @@ void main() {
         if (g.selected) {
           const inp = g.data.inputs;
           let lo = 0, hi = inp.count - 1;
-          while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
+          while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= time) lo = mid; else hi = mid - 1; }
           sel = g.selected[lo];
         }
         active = sel ? secondary : 0;
       }
       if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === 0 || active === 2);
       if (hasFludd) {
-        const nm = active === 0 || active === 2 ? 'normal_wg' : (NOZZLE_PARTS[active] || 'nozzle_normal_wg').replace(/^nozzle_/, '');
-        poseFludd(rig, fluddState(g, t, nm, f && f.present ? (f.power || 0) / 255 : 0, g.pumpFrame));
+        nm = active === 0 || active === 2 ? 'normal_wg' : (NOZZLE_PARTS[active] || 'nozzle_normal_wg').replace(/^nozzle_/, '');
+        poseFludd(rig, fluddState(g, time, nm, f && f.present ? (f.power || 0) / 255 : 0, pump));
       }
       Object.entries(NOZZLE_PARTS).forEach(([n, part]) => {
         if (rig.parts[part]) rig.parts[part].visible = hasFludd && Number(n) === active;
       });
     }
+    return { f, nm, hasFludd };
+  }
+  function applyFludd(g, s) {
+    const { f } = poseFluddAt(g, t, g.pumpFrame);
     const fluddOn = f ? f.present : inferFludd(g, t);
     if (!g.visible || s.gap || !fluddOn) { g.water.visible = false; g.puddles.visible = false; return f; }   // no FLUDD, no spray
     updateSpray(g, s);
     return f;
+  }
+
+  // ---------------------------------------------------------------- Mario's particles (jpa.js)
+  // TMarioParticleManager: an effect asked for again each frame keeps its emitter, bound to a
+  // joint's matrix; a frame without the request lets that emitter stop making particles and die
+  // out, and the next request starts a new one (perform, emitTry). Emitters calc twice a game
+  // frame (SMSGetAnmFrameRate: 60 / 30 fps) and draw once.
+  //  - FLUDD's nozzle mist (ms_nozzlesmoke, 0x10D): every frame the nozzle puts out water
+  //    (TWaterGun mEmittedWaterCount), at each emitter of Rocket / Hover / Turbo
+  //    (TNozzleTrigger::animation) or at Spray's one (TNozzleDeform::animation), bound to the
+  //    nozzle's emit joint. Underwater (TNozzleBase) has none.
+  //  - Sliding (TMario::frontSlipEffect, called by slippingBasic while on the ground): on wet
+  //    ground ms_m_watslide_a / b / c on Mario's centre joint; elsewhere ms_m_slipsmoke on joint 0
+  //    (on sand ms_m_slidesand: TODO).
+  const JPA_SIM_FRAMES = 40;   // simulated before the shown frame: longer than any effect's particles live
+  const SLIDE_ANIMS = new Set([0x88, 0x89, 0x91]);   // catching (sldct), slipBack (slpbk), slipFore (slip)
+  const WET_GROUND = new Set([0x4, 0x4004, 0x8004, 0xc004]);   // TBGCheckData::isWetGround
+  const SAND_GROUND = new Set([0x701, 0x4701, 0x8701, 0xc701]);   // isSand
+  const NOZZLE_EMIT_JOINT = { normal_wg: 0, rocket_wg: 1, hover_wg: 0, back_wg: 0 };   // nozzleBmdData
+  // Poses the ghost's Mario (and FLUDD) at `time` the way update() does.
+  function poseGhostAt(g, time) {
+    const rig = g.marker.userData.rig, s = ghostSampleAt(g.data, time);
+    g.marker.position.set(s.x, s.y, s.z);
+    g.marker.rotation.y = (s.yaw / 32768) * Math.PI;
+    let pump = null;
+    if (rig) { const a = ghostAnimAt(g.data, time); MarioRig.pose(rig, a.id, a.yoshi, a.phase); pump = poseUpper(g, rig, a, time); }
+    const sgd = shineDemoAt(g, time);
+    if (sgd) poseShineDemo(g, sgd, time);
+    const fl = poseFluddAt(g, time, pump);
+    g.marker.updateMatrixWorld(true);
+    return { rig, fl };
+  }
+  // World matrices of the joints Mario's effects bind to at game frame e: joint 0 (mdl1),
+  // the centre joint, and the out nozzle's emit joint.
+  function jpaJoints(g, e) {
+    const C = g.jpaPose || (g.jpaPose = new Map());
+    if (C.has(e)) return C.get(e);
+    if (C.size > 3000) C.clear();
+    const { rig, fl } = poseGhostAt(g, e * QF_PER_FRAME);
+    const out = { mdl1: null, center: null, noz: null };
+    if (rig) {
+      if (rig.bones[0]) out.mdl1 = rig.bones[0].matrixWorld.elements.slice();
+      if (rig.bones[1]) out.center = rig.bones[1].matrixWorld.elements.slice();
+      const bones = fl.hasFludd && rig.fludd && fl.nm ? rig.fludd.noz[fl.nm] : null, b = bones && bones[NOZZLE_EMIT_JOINT[fl.nm]];
+      if (b) out.noz = b.matrixWorld.elements.slice();
+    }
+    C.set(e, out);
+    return out;
+  }
+  // 'wet' / 'dry' while Mario slides on the ground at frame e, else null.
+  function jpaSlide(g, e) {
+    const C = g.jpaSlide || (g.jpaSlide = new Map()), key = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
+    if (C.mapId !== key) { C.clear(); C.mapId = key; }
+    if (C.has(e)) return C.get(e);
+    const d = g.data, s = ghostSampleAt(d, e * QF_PER_FRAME);
+    let k = null;
+    if (!s.gap && !d.yoshi[s.i] && SLIDE_ANIMS.has(d.anim[s.i])) {
+      // His ground plane, under his feet: water surfaces aren't ground (a stream's wet bed is under
+      // its surface), and with water over him the dust is left out (mPosition.y < mFloorPosition.z).
+      let top = s.y + 30, wet = false, under = false;
+      for (let tries = 0; tries < 4; tries++) {
+        const h = waterSegment([s.x, top, s.z], [s.x, s.y - 40, s.z]);
+        if (!h) break;
+        const hy = top + (s.y - 40 - top) * h.f;
+        if (h.water) { if (hy > s.y) under = true; top = hy - 0.5; continue; }
+        if (h.ground) { wet = WET_GROUND.has(h.ty); k = wet ? 'wet' : SAND_GROUND.has(h.ty) || under ? null : 'dry'; }
+        break;
+      }
+    }
+    C.set(e, k);
+    return k;
+  }
+  // The nozzle emitters putting out water at frame e: [[x, y, z], dir] each, or null.
+  function jpaJets(g, e) {
+    const C = g.jpaJets || (g.jpaJets = new Map());
+    if (C.has(e)) return C.get(e);
+    if (C.size > 20000) C.clear();
+    const d = g.data, q = e * QF_PER_FRAME, fe = ghostFluddAt(d, q), sgd = shineDemo(g);
+    let out = null;
+    if (fe && fe.present && fe.nozzle !== 2 && !(sgd && q >= sgd.q && q < sgd.until)) {
+      const bursts = burstFrames(g);
+      let n = 0, jets = [0];
+      if (bursts.includes(e)) n = BOMB.num;
+      else if (fe.spraying && fe.power && !bursts.some((b) => e > b && e <= b + 2)) {
+        const K = nozzleEmit(fe.nozzle, fe.power);
+        n = Math.floor((e + 1) * K.num + 1e-6) - Math.floor(e * K.num + 1e-6);
+        jets = K.jets;
+      }
+      if (n > 0) {
+        const se = ghostSampleAt(d, q), cp = Math.cos(fe.pitch);
+        const dir = [Math.sin(fe.yaw) * cp, Math.sin(fe.pitch), Math.cos(fe.yaw) * cp], side = [Math.cos(fe.yaw), 0, -Math.sin(fe.yaw)];
+        out = jets.map((off) => [[se.x + fe.offset[0] + side[0] * off, se.y + fe.offset[1], se.z + fe.offset[2] + side[2] * off], dir]);
+      }
+    }
+    C.set(e, out);
+    return out;
+  }
+  // A nozzle emitter's matrix: x along the water (getEmitPosDirSpeed), y the emit joint's own,
+  // made square to it, at the emitter's point.
+  function jetMatrix(jet, noz) {
+    const [p, x] = jet;
+    let y = noz ? [noz[4], noz[5], noz[6]] : [0, 1, 0];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let k = dot(y, x);
+    y = [y[0] - x[0] * k, y[1] - x[1] * k, y[2] - x[2] * k];
+    let l = Math.hypot(y[0], y[1], y[2]);
+    if (l < 1e-4) { y = Math.abs(x[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]; k = dot(y, x); y = [y[0] - x[0] * k, y[1] - x[1] * k, y[2] - x[2] * k]; l = Math.hypot(y[0], y[1], y[2]); }
+    y = [y[0] / l, y[1] / l, y[2] / l];
+    const z = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    return [x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, p[0], p[1], p[2], 1];
+  }
+  const JPA_SLOTS = [
+    { res: 'nozzlesmoke', on: (g, e) => { const j = jpaJets(g, e); return !!(j && j[0]); }, mat: (g, e) => { const j = jpaJets(g, e); return j && j[0] ? jetMatrix(j[0], jpaJoints(g, e).noz) : null; } },
+    { res: 'nozzlesmoke', on: (g, e) => { const j = jpaJets(g, e); return !!(j && j[1]); }, mat: (g, e) => { const j = jpaJets(g, e); return j && j[1] ? jetMatrix(j[1], jpaJoints(g, e).noz) : null; } },
+    { res: 'watslide_a', on: (g, e) => jpaSlide(g, e) === 'wet', mat: (g, e) => jpaJoints(g, e).center },
+    { res: 'watslide_b', on: (g, e) => jpaSlide(g, e) === 'wet', mat: (g, e) => jpaJoints(g, e).center },
+    { res: 'watslide_c', on: (g, e) => jpaSlide(g, e) === 'wet', mat: (g, e) => jpaJoints(g, e).center },
+    { res: 'slipsmoke', on: (g, e) => jpaSlide(g, e) === 'dry', mat: (g, e) => jpaJoints(g, e).mdl1 },
+  ];
+  // Rebuilds the ghost's live emitters for the shown frame from the frames before it, the same
+  // every time (jpa.js reseeds its randoms per emitter and calc).
+  function updateJpa(g) {
+    if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined') return;
+    const f0 = Math.floor(t / QF_PER_FRAME), key = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
+    if (!g.visible) { g.jpa = []; g.jpaAt = null; return; }
+    if (g.jpaAt === f0 && g.jpaKey === key) return;
+    g.jpaAt = f0; g.jpaKey = key;
+    const S = Math.max(0, f0 - JPA_SIM_FRAMES), all = [];
+    JPA_SLOTS.forEach((slot, si) => {
+      const res = JPA_RES[slot.res];
+      if (!res) return;
+      const seed = (c) => Math.imul(si + 1, 0x9e3779b1) ^ Math.imul(c + 1, 0x85ebca6b);
+      let em = null, prev = false, last = null;
+      const dying = [];
+      // An emitter already running at S (its run started at c): its frame count and spawn timer.
+      if (S > 0 && slot.on(g, S - 1)) {
+        let c = S - 1;
+        while (c > 0 && S - c < 900 && slot.on(g, c - 1)) c--;
+        em = JPA.makeEmitter(res, seed(c));
+        JPA.advanceTo(em, 2 * (S - c));
+        prev = true;
+      }
+      for (let e = S; e <= f0; e++) {
+        const cur = slot.on(g, e);
+        if (cur && !em) em = JPA.makeEmitter(res, seed(e));
+        if (!em && !dying.length) { prev = cur; continue; }
+        const M = slot.mat(g, e) || last;
+        if (!M) { prev = cur; continue; }
+        last = M;
+        for (let k = 0; k < 2; k++) {
+          if (em && !JPA.calc(em, M)) em = null;
+          for (let i = dying.length - 1; i >= 0; i--) if (!JPA.calc(dying[i], M)) dying.splice(i, 1);
+        }
+        if (prev && !cur && em) { JPA.invalidate(em); dying.push(em); em = null; }
+        prev = cur;
+        if (em) JPA.drawStep(em);
+        dying.forEach(JPA.drawStep);
+      }
+      all.push(...dying);
+      if (em) all.push(em);
+    });
+    g.jpa = all;
+  }
+  // Draws the ghosts' particles over the frame: groups 0 / 1 as they are, then group 3 (the
+  // water slide's wake, ms_m_watslide_a) refracting a copy of the screen (gpScreenTexture).
+  let jpaBatches = null, jpaScene1 = null, jpaScene3 = null, jpaScreen = null;
+  const JPA_GROUP3 = new Set(['watslide_a']);
+  function drawJpa() {
+    if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined') return;
+    const list = [];
+    ghosts.forEach((g) => { if (g.visible && g.jpa && g.jpa.length) list.push(...g.jpa); });
+    if (!list.length && !jpaBatches) return;
+    if (!jpaBatches) {
+      jpaScreen = new THREE.DataTexture(new Uint8Array(3), 1, 1, THREE.RGBFormat);
+      jpaScene1 = new THREE.Scene(); jpaScene3 = new THREE.Scene();
+      jpaBatches = new Map();
+      Object.keys(JPA_RES).forEach((k) => {
+        const b = new JPA.Batch(JPA_RES[k], 6000, jpaScreen);
+        jpaBatches.set(JPA_RES[k], b);
+        (JPA_GROUP3.has(k) ? jpaScene3 : jpaScene1).add(b.mesh);
+      });
+    }
+    camera.updateMatrixWorld();
+    const V = camera.matrixWorldInverse.elements;
+    jpaBatches.forEach((b) => b.begin());
+    list.forEach((e) => { const b = jpaBatches.get(e.res); if (b) b.add(e, V); });
+    let any1 = false, any3 = false;
+    jpaBatches.forEach((b, res) => { b.end(); if (b.ni) { if (jpaScene3.children.includes(b.mesh)) any3 = true; else any1 = true; } });
+    if (!any1 && !any3) return;
+    renderer.autoClear = false;
+    if (any1) renderer.render(jpaScene1, camera);
+    if (any3) {
+      renderer.getDrawingBufferSize(_wsz);
+      if (jpaScreen.image.width !== _wsz.x || jpaScreen.image.height !== _wsz.y) {
+        jpaScreen.dispose();
+        jpaScreen = new THREE.DataTexture(null, _wsz.x, _wsz.y, THREE.RGBFormat);
+        jpaScreen.minFilter = jpaScreen.magFilter = THREE.LinearFilter;
+        jpaScreen.generateMipmaps = false;
+      }
+      renderer.copyFramebufferToTexture(_wz0, jpaScreen);
+      jpaScene3.children.forEach((m) => { m.material.uniforms.tMain.value = jpaScreen; m.material.uniforms.uView.value.copy(_wsz); });
+      renderer.render(jpaScene3, camera);
+    }
+    renderer.autoClear = true;
   }
 
   function makePath(data, color) {
@@ -4233,6 +4445,7 @@ void main() {
     let hud = null;
     ghosts.forEach((g) => { if (g.visible || ghosts.length === 1) ensureSims(g); });
     ghosts.forEach((g) => {
+      updateJpa(g);   // poses Mario at earlier frames: before this frame's pose
       const s = ghostSampleAt(g.data, t);
       g.marker.position.set(s.x, s.y, s.z);
       gxApply(g.marker, gxSet('player', lightSetAt(s.x, s.y, s.z)));
@@ -4417,6 +4630,7 @@ void main() {
     if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
     renderer.render(scene, camera);
     drawWater();
+    drawJpa();
     drawShineOverlay(sgDm, t);
     requestAnimationFrame(loop);
   }

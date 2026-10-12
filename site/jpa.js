@@ -479,12 +479,18 @@ const JPA = (() => {
       vertexShader: `
         attribute vec4 c0; attribute vec3 c1;
         varying vec2 vUv; varying vec4 vC0; varying vec3 vC1;
-        void main() { vUv = uv; vC0 = c0; vC1 = c1; gl_Position = projectionMatrix * vec4(position, 1.0); }`,
+        #include <common>
+        #include <logdepthbuf_pars_vertex>
+        void main() { vUv = uv; vC0 = c0; vC1 = c1; gl_Position = projectionMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+        }`,
       fragmentShader: `
         uniform sampler2D tMain, tInd, tSecond; uniform vec2 uView;
         ${ind ? 'uniform vec3 uIndM0, uIndM1;' : ''}
         varying vec2 vUv; varying vec4 vC0; varying vec3 vC1;
+        #include <logdepthbuf_pars_fragment>
         void main() {
+          #include <logdepthbuf_fragment>
           ${prj ? `vec2 tc = gl_FragCoord.xy / uView;` : 'vec2 tc = vUv;'}
           ${ind ? `
           vec4 it = texture2D(tInd, vUv);
