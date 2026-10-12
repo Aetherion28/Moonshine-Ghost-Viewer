@@ -2727,17 +2727,43 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const fluddLen = (name) => (FLUDD_BCK[name] ? FLUDD_BCK[name].d : 1);
   // state: { spray: frames since spraying began, or null; since: frames since it stopped (null:
   // never sprayed); power 0..1; nozzle: 'normal_wg' | 'hover_wg' | ... } (animation frames).
+  // st.h: how far FLUDD is "housed" (TWaterGun unk1CEC): 0 awake, nozzle up over Mario's head,
+  // 1 asleep, the spray nozzle resting down on the tank. Both poses are wg_house / normal_wg_house
+  // at that fraction of their length; the shoot animations take over once fully awake.
   function poseFludd(rig, st) {
     if (!rig || !rig.fludd) return;
-    if (st.spray !== null) fluddPlay(rig.fludd.body, 'wg_pump', st.power * (fluddLen('wg_pump') - 1), true);
-    else fluddPlay(rig.fludd.body, 'wg_house', fluddLen('wg_house'), true);
+    if (st.h > 0) fluddPlay(rig.fludd.body, 'wg_house', st.h * fluddLen('wg_house'), true);
+    else if (st.spray !== null) fluddPlay(rig.fludd.body, 'wg_pump', st.power * (fluddLen('wg_pump') - 1), true);
+    else fluddPlay(rig.fludd.body, 'wg_house', 0, true);
     const n = st.nozzle, bones = rig.fludd.noz[n];
     if (!bones) return;
+    if (n === 'normal_wg' && st.h > 0) { fluddPlay(bones, 'normal_wg_house', st.h * fluddLen('normal_wg_house'), true); return; }
     const s0 = n + '_shoot_start', s1 = n + '_shooting', s2 = n + '_shoot_end';
     if (st.spray !== null) {
       if (st.spray < fluddLen(s0)) fluddPlay(bones, s0, st.spray, true);
       else fluddPlay(bones, s1, (st.spray - fluddLen(s0)) % fluddLen(s1), false);
     } else fluddPlay(bones, s2, st.since === null ? fluddLen(s2) : st.since, true);
+  }
+  // unk1CEC over time (game frames): 1 when the stage starts; pumping takes it down 0.1 a frame;
+  // 360 frames (unk1CF8) after the last pump it rises 0.005 a frame (unk1CF4) back to 1.
+  function fluddHousing(runs, time) {
+    const fr = (q) => q / QF_PER_FRAME;
+    let h = 1, last = null;   // last: when pumping last stopped (QF), null if never
+    const idle = (from, to) => {   // h after idling from QF `from` (pump stopped at `last`) to `to`
+      if (last === null) return h;
+      const start = fr(last) + 360, a = Math.max(fr(from), start), b = fr(to);
+      return b > a ? Math.min(1, h + (b - a) * 0.005) : h;
+    };
+    let cur = 0;
+    for (const [s0, s1] of runs) {
+      if (s0 > time) break;
+      h = idle(cur, s0);
+      const end = Math.min(s1, time);
+      h = Math.max(0, h - (fr(end) - fr(s0)) * 0.1);
+      if (s1 > time) return h;
+      last = s1; cur = s1;
+    }
+    return idle(cur, time);
   }
   // Spraying runs of a ghost (FLUDD mode bit 0x10), as [start, end) QF.
   function sprayRuns(g) {
@@ -2756,8 +2782,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const runs = sprayRuns(g), af = (q) => (q / QF_PER_FRAME) * 2;   // 60 fps animations at 30 fps
     let lo = 0, hi = runs.length - 1, k = -1;
     while (lo <= hi) { const m = (lo + hi) >> 1; if (runs[m][0] <= time) { k = m; lo = m + 1; } else hi = m - 1; }
-    if (k >= 0 && time < runs[k][1]) return { spray: af(time - runs[k][0]), since: null, power, nozzle };
-    return { spray: null, since: k >= 0 ? af(time - runs[k][1]) : null, power, nozzle };
+    const h = fluddHousing(runs, time);
+    if (k >= 0 && time < runs[k][1]) return { spray: af(time - runs[k][0]), since: null, power, nozzle, h };
+    return { spray: null, since: k >= 0 ? af(time - runs[k][1]) : null, power, nozzle, h };
   }
   let sleepMario = null;
   const MARIO_EYE_TEX = new Map();
@@ -2802,7 +2829,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (parts.nozzle_normal_wg) parts.nozzle_normal_wg.visible = true;
     Object.values(NOZZLE_PARTS).forEach((k) => { if (parts[k]) parts[k].visible = false; });
     if (parts.fludd_body) parts.fludd_body.visible = true;
-    poseFludd(sleepMario.userData.rig, { spray: null, since: null, power: 0, nozzle: 'normal_wg' });
+    poseFludd(sleepMario.userData.rig, { spray: null, since: null, power: 0, nozzle: 'normal_wg', h: 1 });   // asleep
   }
 
   function setMarkerBody(group) {
