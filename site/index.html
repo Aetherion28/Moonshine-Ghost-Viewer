@@ -2580,7 +2580,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     else node.matrix.copy(node.userData.baseMatrix);
     node.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(node);
-    mv.box = { x0: box.min.x - b.p[0], x1: box.max.x - b.p[0], z0: box.min.z - b.p[2], z1: box.max.z - b.p[2], top: box.max.y - b.p[1] };
+    mv.box = { x0: box.min.x - b.p[0], x1: box.max.x - b.p[0], z0: box.min.z - b.p[2], z1: box.max.z - b.p[2], top: box.max.y - b.p[1], bot: box.min.y - b.p[1] };
   }
   function nearestNode(N, pos) {
     let cur = 0, best = Infinity;
@@ -2595,8 +2595,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const s = ghostSampleAt(d, tq), seg = d.segments[d.segIndex[s.i]];
     if (s.gap || `${seg.route.area}:${seg.route.episode}` !== objectsKey.split('|').pop()) return false;
     const B = mv.box, p = st.pos, m = 20;
+    // A lift: on its top, or a rounded block's upper slope. A rolling rail block (the cog-like
+    // blocks): any part of it he stands on is his ground (checkMarioRiding: the ground plane's
+    // actor), so anywhere over its footprint from its bottom up.
+    const lo = mv.rail ? B.bot - 10 : Math.min(B.top * 0.5, B.top - 30);
     const on = s.x >= p.x + B.x0 - m && s.x <= p.x + B.x1 + m && s.z >= p.z + B.z0 - m && s.z <= p.z + B.z1 + m
-      && s.y > p.y + st.cy + Math.min(B.top * 0.5, B.top - 30) && s.y < p.y + st.cy + B.top + 50;   // on top, or on a rounded block's upper slope
+      && s.y > p.y + st.cy + lo && s.y < p.y + st.cy + B.top + 50;
     if (!on) return 0;
     // TRailMapObj::checkMarioRiding also wants a standing status (MARIO_STATUS_FLAG 0x200: wait,
     // squat, the landing ends), so a stopped lift only sets off once Mario has come to rest on it.
