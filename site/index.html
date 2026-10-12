@@ -274,6 +274,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Red coins that a red switch brings out stay hidden until the ghost presses it. Tick to show every shine and red coin in the level."><input type="checkbox" id="optShines"> Show all shines and red coins</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
+      <label title="Follow camera. Off: it trails Mario the way the game's camera does, and swings back after you drag it. On: it keeps the angle and distance you set and just carries them along with Mario."><input type="checkbox" id="optFixedFollow"> Fixed follow camera</label>
       <label title="An on-screen stick that flies the camera around the stage, with buttons to raise and lower it. On by default on touch screens."><input type="checkbox" id="optJoy"> Movement joystick</label>
       <label><input type="checkbox" id="optWire"> Wireframe stage</label>
     </div>
@@ -3326,6 +3327,36 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const followOffset = new THREE.Vector3(0, 420, -760);
   const tmp = new THREE.Vector3();
 
+  // The game's follow camera (CameraKindFollow, params/camera/kindfollow.prm): it looks at a point
+  // 160 above Mario that chases him (XZ 0.1, Y 0.03 a frame), and sits mSLDist behind that point
+  // at a pitch between mSLXAngleMin and Max, chasing its spot (XZ 0.05, Y 0.08 a frame). Its yaw
+  // is wherever it was dragged, so it trails behind Mario as he runs and swings round when he
+  // turns. After the user drags or zooms it, it waits 2 s and then takes over again.
+  const GAME_CAM = { atY: 160, atXZ: 0.1, atYr: 0.03, posXZ: 0.05, posY: 0.08, pitch: 22 * Math.PI / 180 };
+  const gameCam = { at: null, dist: 1200 };
+  let userCamUntil = 0, camDragging = false;
+  function gameCamStep(lead, dt) {
+    const k = Math.min(4, dt * 30);   // game frames this step
+    const chase = (r) => 1 - Math.pow(1 - r, k);
+    const mario = lead.clone().add(tmp.set(0, GAME_CAM.atY - 100, 0));
+    if (!gameCam.at || gameCam.at.distanceTo(mario) > 3000) {   // first frame, or a jump in time: start behind
+      gameCam.at = mario.clone();
+      gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target) || 1200));
+    }
+    const at = gameCam.at;
+    at.x += (mario.x - at.x) * chase(GAME_CAM.atXZ);
+    at.z += (mario.z - at.z) * chase(GAME_CAM.atXZ);
+    at.y += (mario.y - at.y) * chase(GAME_CAM.atYr);
+    // Where the camera should be: along its current direction from the look point, at the set
+    // distance and the game's pitch.
+    const dx = camera.position.x - at.x, dz = camera.position.z - at.z, h = Math.hypot(dx, dz) || 1;
+    const D = gameCam.dist, want = new THREE.Vector3(at.x + dx / h * D * Math.cos(GAME_CAM.pitch), at.y + D * Math.sin(GAME_CAM.pitch), at.z + dz / h * D * Math.cos(GAME_CAM.pitch));
+    camera.position.x += (want.x - camera.position.x) * chase(GAME_CAM.posXZ * 4);
+    camera.position.z += (want.z - camera.position.z) * chase(GAME_CAM.posXZ * 4);
+    camera.position.y += (want.y - camera.position.y) * chase(GAME_CAM.posY);
+    controls.target.copy(at);
+  }
+
   function setCameraMode(mode) {
     cameraMode = mode;
     ['Follow', 'Free', 'Top'].forEach((m) => $('cam' + m).setAttribute('aria-pressed', String(mode === m.toLowerCase())));
@@ -3527,12 +3558,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     updateSleeper();
     if (cameraMode === 'follow') {
       const p = leadPosition();
-      if (p) {
-        // Keep the user's orbit angle and distance, but carry the camera along with the ghost.
+      if (p && ($('optFixedFollow').checked || userCamUntil > now || camDragging)) {
+        // Fixed follow (or the user is moving it): keep their orbit angle and distance and carry
+        // the camera along with the ghost.
         const delta = p.clone().sub(controls.target);
         controls.target.add(delta);
         camera.position.add(delta);
-      }
+        gameCam.at = null;
+      } else if (p) gameCamStep(p, dt);
     }
     moveCamera(dt);
     controls.update();
@@ -3857,6 +3890,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     else if (e.key === 'f' || e.key === 'F') setCameraMode('follow');
   });
   controls.addEventListener('start', () => { if (cameraMode === 'top') setCameraMode('free'); });
+  // A drag or zoom in follow mode: the user has the camera, and the game's camera takes it back
+  // 2 s after they let go (at the distance they zoomed to).
+  controls.addEventListener('start', () => { camDragging = true; });
+  controls.addEventListener('end', () => {
+    camDragging = false; userCamUntil = performance.now() + 2000;
+    gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target)));
+  });
+  renderer.domElement.addEventListener('wheel', () => {
+    userCamUntil = performance.now() + 2000;
+    setTimeout(() => { gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target))); }, 50);
+  }, { passive: true });
 
   // ---------------------------------------------------------------- boot
   async function boot() {
