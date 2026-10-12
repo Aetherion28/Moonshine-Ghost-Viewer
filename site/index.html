@@ -2661,7 +2661,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const anims = fetch('models/mario_bck.json').then((r) => r.json());
     fetchBinary('models/mario.glb.b64.txt').then((buf) => new Promise((resolve, reject) => new THREE.GLTFLoader().parse(buf, '', (g) => resolve(rawTextures(g)), reject)))
       .then(async (gltf) => {
-        MarioRig.setData(await anims);
+        const animJson = await anims;
+        MarioRig.setData(animJson);
+        FLUDD_BCK = animJson.fludd || {};
         marioModel = gltf.scene;
         // Toon ramps referenced by Mario's materials (extras.toon.tex), loaded before first compile.
         const toonIdx = new Set();
@@ -2706,6 +2708,57 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       sp.material.opacity = Math.min(1, u * 5) * Math.min(1, (1 - u) * 3);
     });
   }
+  // FLUDD's animations (TWaterGun::calcAnimation, TNozzleBase::animation): the tank rests on
+  // wg_house's last frame and works its pump (wg_pump) while spraying; the out nozzle plays
+  // shoot_start then loops shooting while water comes out, and shoot_end when it stops.
+  let FLUDD_BCK = {};
+  function fluddBones(rig, body) {
+    const byName = {};
+    body.traverse((o) => { if (o.name) byName[o.name] = byName[o.name] || o; });
+    const bones = (prefix) => { const out = []; for (let i = 0; byName[prefix + '_j' + i]; i++) out.push(byName[prefix + '_j' + i]); return out; };
+    rig.fludd = { body: bones('fludd_body'), noz: {} };
+    ['normal_wg', 'hover_wg', 'rocket_wg', 'back_wg'].forEach((n) => { rig.fludd.noz[n] = bones('nozzle_' + n); });
+  }
+  function fluddPlay(bones, name, frame, clampEnd) {
+    const a = FLUDD_BCK[name];
+    if (!a || !bones || !bones.length) return;
+    poseBck(bones, a, clampEnd ? Math.min(frame, a.d - 0.001) : frame);
+  }
+  const fluddLen = (name) => (FLUDD_BCK[name] ? FLUDD_BCK[name].d : 1);
+  // state: { spray: frames since spraying began, or null; since: frames since it stopped (null:
+  // never sprayed); power 0..1; nozzle: 'normal_wg' | 'hover_wg' | ... } (animation frames).
+  function poseFludd(rig, st) {
+    if (!rig || !rig.fludd) return;
+    if (st.spray !== null) fluddPlay(rig.fludd.body, 'wg_pump', st.power * (fluddLen('wg_pump') - 1), true);
+    else fluddPlay(rig.fludd.body, 'wg_house', fluddLen('wg_house'), true);
+    const n = st.nozzle, bones = rig.fludd.noz[n];
+    if (!bones) return;
+    const s0 = n + '_shoot_start', s1 = n + '_shooting', s2 = n + '_shoot_end';
+    if (st.spray !== null) {
+      if (st.spray < fluddLen(s0)) fluddPlay(bones, s0, st.spray, true);
+      else fluddPlay(bones, s1, (st.spray - fluddLen(s0)) % fluddLen(s1), false);
+    } else fluddPlay(bones, s2, st.since === null ? fluddLen(s2) : st.since, true);
+  }
+  // Spraying runs of a ghost (FLUDD mode bit 0x10), as [start, end) QF.
+  function sprayRuns(g) {
+    if (g.sprayRuns) return g.sprayRuns;
+    const inp = g.data.inputs, runs = [];
+    let st = null;
+    for (let i = 0; inp && i < inp.count; i++) {
+      const on = !!(inp.fluddMode[i] & 0x10);
+      if (on && st === null) st = inp.qf[i];
+      if (!on && st !== null) { runs.push([st, inp.qf[i]]); st = null; }
+    }
+    if (st !== null) runs.push([st, Infinity]);
+    return (g.sprayRuns = runs);
+  }
+  function fluddState(g, time, nozzle, power) {
+    const runs = sprayRuns(g), af = (q) => (q / QF_PER_FRAME) * 2;   // 60 fps animations at 30 fps
+    let lo = 0, hi = runs.length - 1, k = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (runs[m][0] <= time) { k = m; lo = m + 1; } else hi = m - 1; }
+    if (k >= 0 && time < runs[k][1]) return { spray: af(time - runs[k][0]), since: null, power, nozzle };
+    return { spray: null, since: k >= 0 ? af(time - runs[k][1]) : null, power, nozzle };
+  }
   let sleepMario = null;
   const MARIO_EYE_TEX = new Map();
   function updateSleeper() {
@@ -2724,6 +2777,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         });
       });
       sleepMario.userData.rig = MarioRig.attach(body);
+      fluddBones(sleepMario.userData.rig, body);
       sleepMario.add(body);
       scene.add(sleepMario);
     }
@@ -2748,6 +2802,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (parts.nozzle_normal_wg) parts.nozzle_normal_wg.visible = true;
     Object.values(NOZZLE_PARTS).forEach((k) => { if (parts[k]) parts[k].visible = false; });
     if (parts.fludd_body) parts.fludd_body.visible = true;
+    poseFludd(sleepMario.userData.rig, { spray: null, since: null, power: 0, nozzle: 'normal_wg' });
   }
 
   function setMarkerBody(group) {
@@ -2758,6 +2813,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       body = THREE.SkeletonUtils.clone(marioModel);
       body.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone(); });   // own light set per ghost
       group.userData.rig = MarioRig.attach(body);
+      fluddBones(group.userData.rig, body);
     } else {
       body = new THREE.Group();
       const mat = new THREE.MeshLambertMaterial({ color: group.userData.color, transparent: true, opacity: 0.85 });
@@ -3044,6 +3100,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         active = sel ? secondary : 0;
       }
       if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === 0 || active === 2);
+      if (hasFludd) {
+        const nm = active === 0 || active === 2 ? 'normal_wg' : (NOZZLE_PARTS[active] || 'nozzle_normal_wg').replace(/^nozzle_/, '');
+        poseFludd(rig, fluddState(g, t, nm, f && f.present ? (f.power || 0) / 255 : 0));
+      }
       Object.entries(NOZZLE_PARTS).forEach(([n, part]) => {
         if (rig.parts[part]) rig.parts[part].visible = hasFludd && Number(n) === active;
       });

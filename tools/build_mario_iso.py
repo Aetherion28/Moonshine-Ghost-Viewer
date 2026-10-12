@@ -322,6 +322,54 @@ def add_static_part(w, model, name, parent_node, matrix=None, skip_tex=()):
     return hi
 
 
+def add_skinned_part(w, model, name, parent_node, root_mtx, skip_tex=()):
+    """A parts model with its own skeleton (FLUDD, its nozzles) under a joint node: joint nodes
+    "<name>_j<i>" from the model's bind TRS, meshes skinned to them. root_mtx is where the model's
+    origin sits in Mario's bind space, so vertices and inverse binds are in that (scene root) space,
+    as the loader binds skinned meshes with an identity bind matrix. Returns joint node indices."""
+    holder = add_node(w, {"name": name, "children": []})
+    w.gltf["nodes"][parent_node].setdefault("children", []).append(holder)
+    jn = []
+    for i in range(len(model.joint_names)):
+        sc, rot, tr = model.joint_trs[i]
+        q = quat_from_matrix(bmd.euler_matrix(*rot))
+        jn.append(add_node(w, {"name": f"{name}_j{i}", "translation": [float(x) for x in tr],
+                               "rotation": [float(x) for x in q], "scale": [float(x) for x in sc]}))
+    for i, par in enumerate(model.joint_parent):
+        (w.gltf["nodes"][jn[par]] if par >= 0 else w.gltf["nodes"][holder]).setdefault("children", []).append(jn[i])
+    world = [root_mtx @ m for m in model.joints_world]
+    ibm = np.stack([np.linalg.inv(m).T.reshape(-1) for m in world]).astype(np.float32)
+    w.gltf.setdefault("skins", []).append({"joints": jn, "skeleton": jn[0], "inverseBindMatrices": w.accessor(ibm, "MAT4", 5126, None)})
+    skin = len(w.gltf["skins"]) - 1
+    R, T = root_mtx[:3, :3], root_mtx[:3, 3]
+    for mesh in model.meshes:
+        mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
+        if mat is not None and pick_base(model, mat) is not None and model.textures[pick_base(model, mat)[0]][0].lower() in skip_tex:
+            continue
+        mi, entry = material_for(w, model, mat, name)
+        uv = uv_for(mesh, entry) if entry is not None else None
+        color = mesh.get("color") if mat is not None and mat.use_vertex_color else None
+        n = len(mesh["pos"])
+        joints = np.zeros((n, 4), np.uint16)
+        weights = np.zeros((n, 4), np.float32)
+        for vi, d in enumerate(mesh["drw"]):
+            for k, (j, wt) in enumerate(model.draw_weights[d][:4]):
+                joints[vi, k] = j
+                weights[vi, k] = wt
+        weights /= np.maximum(weights.sum(1, keepdims=True), 1e-6)
+        pos = np.asarray(mesh["pos"], np.float64) @ R.T + T
+        nrm = mesh.get("nrm")
+        if nrm is not None:
+            nrm = np.asarray(nrm, np.float64) @ np.linalg.inv(R)
+            nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-9)
+        _add_mesh(w, f"{name}_s{mesh['shape']}", pos, mesh["tris"], mi, uv, color, joints, weights, normal=nrm)
+        node = w.gltf["nodes"].pop()
+        w.gltf["scenes"][0]["nodes"].pop()
+        node["skin"] = skin
+        w.gltf["nodes"][holder]["children"].append(add_node(w, node))
+    return jn
+
+
 def _add_mesh(w, name, pos, tris, mat, uv=None, color=None, joints=None, weights=None, normal=None):
     w.add_arrays(name, pos, tris, mat, uv, color, normal)
     if joints is not None:
@@ -389,18 +437,16 @@ def build_glb(arc, out: Path):
     fludd = bmd.parse(arc["watergun2/body/wg_mdl1.bmd"])
     # TWaterGun::init: nozzles' placeholder texture becomes FLUDD's own texture 1 (SMS_ChangeTextureAll).
     SUBSTITUTE["H_watergun_main_dummy"] = fludd.textures[1]
-    fludd_holder = add_static_part(w, fludd, "fludd_body", jidx["jnt_chest"], skip_tex=("h_watergun_mask_i4",))
-    mount = fludd.joints_world[fludd.joint_names.index("nozzle_center")]
+    # Skinned, so its BCKs (wg_house resting, wg_pump while pumping) and the nozzles' (shoot
+    # start / shooting / shoot end) can play; nozzles hang on FLUDD's nozzle_center joint.
+    chest = body.joints_world[body.joint_names.index("jnt_chest")]
+    fj = add_skinned_part(w, fludd, "fludd_body", jidx["jnt_chest"], chest, skip_tex=("h_watergun_mask_i4",))
+    nci = fludd.joint_names.index("nozzle_center")
+    mount = chest @ fludd.joints_world[nci]
     for noz in ("normal_wg", "hover_wg", "rocket_wg", "back_wg"):
         key = f"watergun2/{noz}/{noz}.bmd"
         if key in arc:
-            # Resting pose: the end of the nozzle's shoot_end animation (WaterGun.cpp idle).
-            rest = arc.get(f"watergun2/{noz}/{noz}_shoot_end.bck")
-            pose = None
-            if rest:
-                anim = parse_bck(rest)
-                pose = bck_pose(anim, anim["d"])
-            add_static_part(w, bmd.parse(arc[key], pose=pose), f"nozzle_{noz}", fludd_holder, mount)
+            add_skinned_part(w, bmd.parse(arc[key]), f"nozzle_{noz}", fj[nci], mount)
     return w.write(out), body.joint_names
 
 
@@ -481,7 +527,13 @@ def main(argv):
         m = re.match(r"bck/ma_(.+)\.bck$", k)
         if m:
             anims[m.group(1)] = parse_bck(v)
-    js = json.dumps({"joints": names, "anims": anims}, separators=(",", ":"))
+    # FLUDD's own animations (watergun2/body, watergun2/<nozzle>), by file name.
+    fludd = {}
+    for k, v in arc.items():
+        m = re.match(r"watergun2/(?:body|normal_wg|hover_wg|rocket_wg|back_wg)/(.+)\.bck$", k)
+        if m:
+            fludd[m.group(1)] = parse_bck(v)
+    js = json.dumps({"joints": names, "anims": anims, "fludd": fludd}, separators=(",", ":"))
     (out / "mario_bck.json").write_text(js)
     if "--b64" in argv:
         (out / "mario.glb.b64.txt").write_text(base64.b64encode(glb).decode())
