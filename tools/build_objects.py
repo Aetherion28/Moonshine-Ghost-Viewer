@@ -183,7 +183,32 @@ DEFAULT_SPEED = {"AnimalBird": 5.0, "AnimalMew": 10.0, "Butterfly": 2.0, "Butter
                  "FishoidA": 2.0, "FishoidB": 2.0, "FishoidC": 2.0, "FishoidD": 2.0}
 
 
+# TNpcSave: each NPC type's parameter file (sSaveFileName, in NPC_ORDER order).
+NPC_PRM = ["MonteM"] * 5 + ["MonteME", "MonteMF", "MonteMG", "MonteMH"] + ["MonteW"] * 3 + ["MonteWC", "MareM",
+           "MareMA", "MareMB", "MareMC", "MareMD", "MareW", "MareWA", "MareWB", "Kinopio", "Kinojii", "Peach",
+           "RaccoonDog", "SunflowerL", "SunflowerS"]
+
+
+def npc_prm(typ: str) -> dict:
+    if typ not in NPC_ORDER:
+        return {}
+    return global_params(f"npc/npc{NPC_PRM[NPC_ORDER.index(typ)].lower()}.prm")
+
+
+def walk_anim_rate(typ: str) -> float:
+    """BCK frames per game frame while walking: SMSGetAnmFrameRate (2: 60 fps animations at 30 fps
+    logic), times an NPC's mSLMaxWalkAnmRate at full walking speed (TBaseNPC, NpcAnm.cpp)."""
+    if typ in NPC_ORDER:
+        p = npc_prm(typ)
+        r = p.get("mSLMaxWalkAnmRate")
+        return round(2.0 * (r if isinstance(r, float) and r > 0 else 1.5), 3)
+    return 2.0
+
+
 def walk_speed(arc: dict, typ: str) -> float:
+    if typ in NPC_ORDER:   # TBaseNPC::walk: up to mMaxMarchSpeed (TNpcSaveIndividual default 3)
+        v = npc_prm(typ).get("mMaxMarchSpeed")
+        return round(v if isinstance(v, float) and v > 0 else 3.0, 3)
     names = [typ.lower(), TYPE_FOLDERS.get(typ, "").lower()]
     for n in names:
         if not n:
@@ -211,7 +236,7 @@ def walk_extra(typ: str, payload: bytes, rails: dict, arc: dict):
     name = name.decode("ascii", "replace")
     if name not in rails or len(rails[name]) < 2:
         return None
-    return {"walk": name, "v": walk_speed(arc, typ)}
+    return {"walk": name, "v": walk_speed(arc, typ), "ar": walk_anim_rate(typ)}
 
 
 def move_extra(typ: str, payload: bytes, rails: dict):

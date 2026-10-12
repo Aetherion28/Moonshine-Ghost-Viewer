@@ -1145,7 +1145,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         node.userData.baseMatrix = node.matrix.clone();
         node.userData.carry = it[16] || '';
         const ex = it[17] || {};
-        if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), seed: objNodes.length + 1 };
+        if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), ar: ex.ar || 2, seed: objNodes.length + 1 };
         if (node.userData.walk && node.userData.skin !== undefined) {   // its bones and walking animation
           const nm = 'm' + node.userData.skin, bones = [];
           node.traverse((o) => { const m = o.isBone || o.name ? new RegExp('^' + nm + '_j(\\d+)$').exec(o.name) : null; if (m) bones[+m[1]] = o; });
@@ -2070,7 +2070,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const yaw = Math.hypot(dx, dz) > 1e-3 ? Math.atan2(dx, dz) : b.r[1];
     placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s);
     node.visible = true;
-    if (wk.bones && wk.anim && camera.position.distanceToSquared(node.position) < 9000 * 9000) poseBck(wk.bones, wk.anim, f);
+    if (wk.bones && wk.anim && camera.position.distanceToSquared(node.position) < 9000 * 9000) poseBck(wk.bones, wk.anim, f * wk.ar);
   }
   // A BCK pose at frame f (looped): per joint scale, ZYX rotation and translation, Hermite keys.
   const _bckEuler = new THREE.Euler(0, 0, 0, 'ZYX');
