@@ -2644,9 +2644,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const s0 = ghostSampleAt(d, q), s1 = ghostSampleAt(d, q - QF_PER_FRAME);
         let y = s0.y, v = s0.y - s1.y + 1.5;   // TMario::mVel.y: a frame moves 0.25 v four times as v drops by 1 each
         const ys = [y];
+        // Floors from map objects (the windmill's top, a moving platform) aren't in the stage's
+        // collision, so the last place the ghost stood near the Shine in the few seconds before
+        // also counts as floor: still for three frames, no higher than where it touched.
+        let stood = -Infinity;
+        for (let k = s0.i; k > 2 && d.qf[k] > q - 4 * QF_PER_SECOND; k--) {
+          const px = d.pos[k * 3], py = d.pos[k * 3 + 1], pz = d.pos[k * 3 + 2];
+          if (Math.hypot(px - x, pz - z) > 600 || py > s0.y + 50) continue;
+          if (Math.abs(d.pos[(k - 1) * 3 + 1] - py) < 0.5 && Math.abs(d.pos[(k - 2) * 3 + 1] - py) < 0.5) { stood = py; break; }
+        }
         if (C) {
           for (let k = 1; k < 1200; k++) {
-            const gy = colGround(C, x, y + 1, z), ny = y + 0.25 * v;
+            const gy = Math.max(colGround(C, x, y + 1, z), stood <= y + 1 ? stood : -Infinity), ny = y + 0.25 * v;
             if (ny <= gy) { y = gy; break; }
             y = ny; v = Math.max(v - 1, -75);
             ys.push(y);
