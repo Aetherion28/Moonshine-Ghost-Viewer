@@ -2522,14 +2522,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const r0 = b.r.map((x) => x / DEG);
       st = { N, pos, cur, prev: -1, spd: 2, steps: 0, rot: r0.slice(), tgt: r0.slice(), d: [0, 0, 0],
         acc: new THREE.Quaternion(), frames: [], g, stageStart, stop: false, ride: false, cy: 0, waits: mv.waits };
-      // TRailMapObj::initGraphTracer: the nearest node is the first target, reached at once, so its
-      // 0x80 / 0x100 flag stops the block where it was placed.
-      // 0x80 holds it as placed (initGraphTracer); 0x100 is read on arriving there at once, which also
-      // resets its roll (TRailBlock::control).
-      if (N[cur][7] & 0x100) railStop(st);
-      else if (N[cur][7] & 0x80) st.stop = true;
-      st.cur = nextNode(st);
-      st.steps = Math.trunc(st.pos.distanceTo(nodeV(st.N[st.cur])) / st.spd);
+      // TRailMapObj::initGraphTracer: the nearest node is the first target (0 steps away). 0x80 there
+      // holds the block as placed until Mario rides it. The first move then arrives at that node
+      // (TRailBlock::control): its 0x100 stops it, otherwise it banks its placed rotation and starts
+      // rolling towards the next node's angles, so it rolls from the very first leg.
+      if (N[cur][7] & 0x80) st.stop = true;
+      st.steps = 0;
       pushRail(st);
       if (mv.waits) visits.set(stageStart, st); else mv.state = st;
     }
