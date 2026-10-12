@@ -3169,6 +3169,68 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     return g.fluddUse.get(si);
   }
+  // Starting an episode (TMario::warpOut, demo_gate_out_appear, animation 302): droplets of
+  // each part's colours (ms_marioap_*.jpa, their mizutama texture) gather onto Mario's body,
+  // head, cap, hands, legs, feet and FLUDD. Secrets start without it (their ghosts never play 302).
+  const AP_TEX = new THREE.TextureLoader().load('data:image/png;base64,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');   // brightened: it tints the part colours
+  const AP_PARTS = [['center', ['ff573f', '7386ff', 'ffd500', 'ffffe7']], ['M_head', ['f38c69', '884c4c', '271e13']],
+    ['M_head', ['ff573f', 'e7e7d8', 'b71800']], ['jnt_hand_R', ['ffffff', 'cfe7e7']], ['jnt_hand_L', ['ffffff', 'cfe7e7']],
+    ['chn_foot_R', ['7386ff', '1c00a2']], ['jnt_foot_R', ['b76f57', '7e3d02']], ['chn_foot_L', ['7386ff', '1c00a2']],
+    ['jnt_foot_L', ['b76f57', '7e3d02']], ['center', ['b7b7ff', '484887', 'ffa500', 'ffffcf'], 'fludd']];
+  const AP_N = 30, AP_PRE = 30, AP_POST = 4, AP_R = 320;   // game frames: gather, then pop
+  // When Mario pops in at each episode start: the end of a stretch where the ghost holds
+  // demo_gate_out_appear before its frame 59 (his centre still scaled to nothing).
+  function appearTimes(g) {
+    if (g.appearTimes) return g.appearTimes;
+    const d = g.data, out = [], hid = (i) => d.anim[i] === 302 && !d.yoshi[i] && d.phase[i] < (59 / 89) * 4096;
+    for (let i = 1; i < d.anim.length; i++) if (hid(i - 1) && !hid(i)) out.push(d.qf[i]);
+    return (g.appearTimes = out);
+  }
+  const _apv = new THREE.Vector3(), _apd = new THREE.Vector3();
+  function updateAppear(g) {
+    // As in the game video: a cloud of droplets swirls in from all round, packs onto him and he
+    // appears as it lands.
+    let f = Infinity;
+    for (const q of appearTimes(g)) { const k = (t - q) / QF_PER_FRAME; if (k >= -AP_PRE && k < AP_POST) f = k; }
+    const on = f !== Infinity && g.visible;
+    if (!on) { if (g.appear) g.appear.visible = false; return; }
+    const rig = g.marker.userData.rig;
+    if (!rig) return;
+    if (!g.appear) {
+      g.appear = new THREE.Group();
+      let seed = 7;
+      const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+      g.appear.userData.sprites = AP_PARTS.map(([, cols]) => Array.from({ length: AP_N }, (_, j) => {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: AP_TEX, color: new THREE.Color(parseInt(cols[j % cols.length], 16)), transparent: true, depthWrite: false, fog: false }));
+        const y = rnd() * 2 - 1, r = Math.sqrt(1 - y * y), a = rnd() * Math.PI * 2;
+        sp.userData.dir = new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r).multiplyScalar(0.35 + 0.65 * rnd());
+        sp.userData.late = rnd() * 0.35;   // when it starts in (fraction of the gather)
+        sp.userData.spin = (rnd() < 0.5 ? -1 : 1) * (1.5 + rnd() * 2);
+        g.appear.add(sp);
+        return sp;
+      }));
+      scene.add(g.appear);
+    }
+    g.appear.visible = true;
+    g.marker.updateMatrixWorld(true);
+    const U = (f + AP_PRE) / AP_PRE;   // 0 .. 1 while gathering, > 1 just after he appears
+    AP_PARTS.forEach(([joint, , kind], pi) => {
+      const bone = rig.root.getObjectByName(joint);
+      const show = bone && (kind !== 'fludd' || (rig.parts.fludd_body && rig.parts.fludd_body.visible));
+      if (show) bone.getWorldPosition(_apv);
+      g.appear.userData.sprites[pi].forEach((sp) => {
+        const u = Math.min(1, (U - sp.userData.late) / (1 - sp.userData.late));
+        sp.visible = !!show && u >= 0 && U < 1 + AP_POST / AP_PRE;
+        if (!sp.visible) return;
+        const k = Math.pow(1 - u, 1.4) * AP_R, ang = (1 - u) * sp.userData.spin;
+        _apd.copy(sp.userData.dir).applyAxisAngle(THREE.Object3D.DefaultUp, ang);
+        sp.position.copy(_apv).addScaledVector(_apd, k);
+        sp.scale.set(13, 13, 1);
+        sp.material.opacity = Math.min(1, u * 5) * (U > 1 ? Math.max(0, 1 - (U - 1) * AP_PRE / AP_POST) : 1);
+      });
+    });
+  }
+
   function applyFludd(g, s) {
     const f = ghostFluddAt(g.data, t);
     const rig = g.marker.userData.rig;
@@ -3255,6 +3317,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 
   function removeGhost(g) {
     scene.remove(g.marker, g.path, g.water, g.burst);
+    if (g.appear) scene.remove(g.appear);
     ghosts.splice(ghosts.indexOf(g), 1);
     refreshDuration();
     renderGhostList();
@@ -3424,6 +3487,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const rig = g.marker.userData.rig;
       if (rig) { const a = ghostAnimAt(g.data, t); MarioRig.pose(rig, a.id, a.yoshi, a.phase); }
       const fludd = applyFludd(g, s);
+      updateAppear(g);
       if (!hud && g.visible) {
         // Horizontal speed in units per frame over the surrounding sample pair.
         const d = g.data, i = Math.min(s.i, d.qf.length - 2);
