@@ -1192,6 +1192,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           node.add(mole);
           node.userData.mole = mole;
         }
+        if (ex.bw) {   // the Chain Chomp's stake and leash (TBWPicket, TBWLeash), links strung from stake to head
+          const inv = node.matrix.clone().invert();
+          const P = new THREE.Vector3(...ex.bw.p), H = new THREE.Vector3(px, py, pz);
+          if (protos[ex.bw.pk]) { const pk = protos[ex.bw.pk].clone(true); pk.matrixAutoUpdate = false; pk.matrix.copy(inv).multiply(new THREE.Matrix4().makeTranslation(P.x, P.y, P.z)); node.add(pk); }
+          if (protos[ex.bw.ch]) {
+            const n = ex.bw.n, dir = H.clone().sub(P), yaw = Math.atan2(dir.x, dir.z), pitch = -Math.atan2(dir.y, Math.hypot(dir.x, dir.z));
+            for (let k = 0; k < n; k++) {
+              const at = P.clone().lerp(H, (k + 0.5) / n);
+              at.y += 60 - 40 * Math.sin(Math.PI * (k + 0.5) / n);   // slack between the stake top and the head
+              const link = protos[ex.bw.ch].clone(true);
+              link.matrixAutoUpdate = false;
+              link.matrix.copy(inv).multiply(new THREE.Matrix4().compose(at, new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, yaw, k & 1 ? Math.PI / 2 : 0, 'YXZ')), new THREE.Vector3(1, 1, 1)));
+              node.add(link);
+            }
+          }
+        }
         node.userData.pick = pick;
         node.userData.spin = /^(coin|shine)/.test(pick);
         node.userData.faceCam = /^shine/.test(pick);   // shines: the glow card faces the camera

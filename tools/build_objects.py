@@ -1071,7 +1071,7 @@ def main(argv):
                             bind = bmd.parse(arc[mpath], bmt=bmt, bmt_tex_only=tex_only)
                             anim = walk_anim(arc, mpath, bind, words) if len(bind.joint_names) > 1 else None
                             if anim:
-                                sidx = len(lib)
+                                sidx = len(lib) - 1   # lib[skey] already holds its slot
                                 idle = walk_anim(arc, mpath, bind, IDLE_ANIM_WORDS[:4]) if wk else None
                                 add_skinned(w, bind, f"m{sidx}", anim, idle)
                                 lib[skey] = sidx
@@ -1103,6 +1103,14 @@ def main(argv):
                 if bs is not None:
                     scaled[typ] = ((sx, sy, sz), bs)
                     sx = sy = sz = bs
+                if typ == "BossWanwan":
+                    # TBossWanwan::init ignores the placed position: the head starts at BW_HEAD_START,
+                    # staked by a TBWPicket at BW_PICKET_START with a TBWLeash of 15 links (bosswanwan.cpp
+                    # .bss, set in __sinit_bosswanwan_cpp).
+                    pk = lib_add(w, lib, "bwpicket", lambda: [bmd.parse(arc["bwanwan/bwanwan_picket.bmd"])] if "bwanwan/bwanwan_picket.bmd" in arc else None)
+                    ch = lib_add(w, lib, "bwchain", lambda: [bmd.parse(arc["bwanwan/bwanwan_chain.bmd"])] if "bwanwan/bwanwan_chain.bmd" in arc else None)
+                    extra = {**(extra or {}), "bw": {"pk": pk, "ch": ch, "p": [6012.84, 0.0, 7323.15], "n": 15}}
+                    px, py, pz = 5741.72, -100.0, 6311.62
                 if mi < 0 and not pick:
                     continue
                 instances.append([mi, typ, key or "", round(px, 2), round(py, 2), round(pz, 2),
