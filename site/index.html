@@ -2141,6 +2141,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (!seg || seg.endQf - d.header.startQf - q > 3 * QF_PER_SECOND) { out[i] = Infinity; spawn[i] = lastRed; return; }
       spawn[i] = lastRed <= q ? lastRed : q - QF_PER_SECOND;
     });
+    // A stage visit ends with one shine: when the ghost passes through several (one that isn't
+    // really there yet, a shine it only grazes), only the last it touches is collected.
+    const lastShine = new Map();   // segment -> shine index
+    idx.forEach((i) => {
+      if (!/^shine/.test(objList[i][12] || '') || out[i] === Infinity) return;
+      const k = d.segments.findIndex((sg) => sg.route.area === a && sg.route.episode === e
+        && out[i] >= sg.startQf - d.header.startQf && out[i] <= sg.endQf - d.header.startQf);
+      const j = lastShine.get(k);
+      if (j === undefined || out[i] > out[j]) { if (j !== undefined) out[j] = Infinity; lastShine.set(k, i); }
+      else out[i] = Infinity;
+    });
     g.shineSpawn = g.shineSpawn || new Map();
     g.shineSpawn.set(objectsKey, spawn);
     g.pickups.set(objectsKey, out);
