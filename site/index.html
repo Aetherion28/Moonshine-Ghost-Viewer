@@ -198,7 +198,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     </div>
     <div class="spacer"></div>
     <div class="seg" role="group" aria-label="Camera">
-      <button id="camFollow" aria-pressed="true">Follow</button>
+      <button id="camFollow" aria-pressed="true" title="Follow Mario like the game's camera (drag to look around; it takes over again shortly after)">Follow</button>
+      <button id="camFixed" aria-pressed="false" title="Follow Mario at the angle and distance you set">Fixed</button>
       <button id="camFree" aria-pressed="false">Free</button>
       <button id="camTop" aria-pressed="false">Top</button>
     </div>
@@ -274,7 +275,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Red coins that a red switch brings out stay hidden until the ghost presses it. Tick to show every shine and red coin in the level."><input type="checkbox" id="optShines"> Show all shines and red coins</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
-      <label title="Follow camera. Off: it trails Mario the way the game's camera does, and swings back after you drag it. On: it keeps the angle and distance you set and just carries them along with Mario."><input type="checkbox" id="optFixedFollow"> Fixed follow camera</label>
       <label title="An on-screen stick that flies the camera around the stage, with buttons to raise and lower it. On by default on touch screens."><input type="checkbox" id="optJoy"> Movement joystick</label>
       <label><input type="checkbox" id="optWire"> Wireframe stage</label>
     </div>
@@ -915,7 +915,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       updateMapNotice();
       if (ghosts.length) update();   // thrown-object simulations need this stage's geometry
       loadCollision(entry);
-      if (cameraMode !== 'follow' || !ghosts.length) frameView();
+      if (!isFollow() || !ghosts.length) frameView();
     } catch (err) {
       if (request === mapRequest) showNotice(err.message);
     }
@@ -1117,7 +1117,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       setStageLights(data.lights);
       objNoFludd = !!data.noFludd;
       objSpawn = data.spawn || null;
-      if (cameraMode !== 'follow' || !ghosts.length) frameView();
+      if (!isFollow() || !ghosts.length) frameView();
       const items = Array.isArray(data) ? data : data.o;
       const protos = {};
       libScene.children.forEach((c) => { if (/^m\d+(_s\d+)?$/.test(c.name)) protos[c.name.slice(1)] = c; });
@@ -3324,6 +3324,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 
   // ---------------------------------------------------------------- camera
   let cameraMode = 'follow';
+  const isFollow = () => cameraMode === 'follow' || cameraMode === 'fixed';
   const followOffset = new THREE.Vector3(0, 420, -760);
   const tmp = new THREE.Vector3();
 
@@ -3359,14 +3360,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 
   function setCameraMode(mode) {
     cameraMode = mode;
-    ['Follow', 'Free', 'Top'].forEach((m) => $('cam' + m).setAttribute('aria-pressed', String(mode === m.toLowerCase())));
+    ['Follow', 'Fixed', 'Free', 'Top'].forEach((m) => $('cam' + m).setAttribute('aria-pressed', String(mode === m.toLowerCase())));
     if (mode === 'top') {
       const c = leadPosition() || (mapBounds ? mapBounds.getCenter(new THREE.Vector3()) : new THREE.Vector3());
       const size = mapBounds ? mapBounds.getSize(new THREE.Vector3()) : new THREE.Vector3(8000, 0, 8000);
       camera.position.set(c.x, c.y + Math.max(size.x, size.z) * 0.9 + 2000, c.z + 1);
       controls.target.copy(c);
     }
-    if (mode === 'follow') {
+    if (mode === 'follow' || mode === 'fixed') {
       const p = leadPosition();
       if (p) { controls.target.copy(p); camera.position.copy(p).add(followOffset); }
     }
@@ -3556,9 +3557,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // With no ghost loaded the stage still lives: its walkers run on their own clock.
     if (!ghosts.length && objectsGroup) { idleClock += dt * QF_PER_SECOND; updateWalkers(); }
     updateSleeper();
-    if (cameraMode === 'follow') {
+    if (isFollow()) {
       const p = leadPosition();
-      if (p && ($('optFixedFollow').checked || userCamUntil > now || camDragging)) {
+      if (p && (cameraMode === 'fixed' || userCamUntil > now || camDragging)) {
         // Fixed follow (or the user is moving it): keep their orbit angle and distance and carry
         // the camera along with the ghost.
         const delta = p.clone().sub(controls.target);
@@ -3596,6 +3597,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (r) loadMap(r.map, r.key);
   };
   $('camFollow').onclick = () => setCameraMode('follow');
+  $('camFixed').onclick = () => setCameraMode('fixed');
   $('camFree').onclick = () => setCameraMode('free');
   $('camTop').onclick = () => setCameraMode('top');
   $('optPath').onchange = (e) => ghosts.forEach((g) => { g.path.visible = e.target.checked && g.visible; });
@@ -3762,7 +3764,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     fastMove = e.shiftKey;
     if (MOVE_KEYS[e.code] && !typingIn(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) {
       heldKeys.add(e.code); e.preventDefault();
-      if (cameraMode === 'follow') setCameraMode('free');
+      if (isFollow()) setCameraMode('free');
     }
   });
   // OrbitControls cancels the pointerdown, so a click on the scene would leave focus in the last menu
@@ -3813,7 +3815,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     pad.addEventListener('pointerdown', (e) => {
       if (id !== null) return;
       id = e.pointerId; pad.setPointerCapture(id); e.preventDefault(); set(e);
-      if (cameraMode === 'follow') setCameraMode('free');
+      if (isFollow()) setCameraMode('free');
     });
     pad.addEventListener('pointermove', (e) => { if (e.pointerId === id) set(e); });
     pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
@@ -3821,7 +3823,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const el = $(b);
       const off = () => { if (joy.y === dir) joy.y = 0; el.classList.remove('on'); };
       el.addEventListener('pointerdown', (e) => { e.preventDefault(); el.setPointerCapture(e.pointerId); joy.y = dir; el.classList.add('on');
-        if (cameraMode === 'follow') setCameraMode('free'); });
+        if (isFollow()) setCameraMode('free'); });
       el.addEventListener('pointerup', off); el.addEventListener('pointercancel', off);
       el.addEventListener('contextmenu', (e) => e.preventDefault());
     });
