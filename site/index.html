@@ -3339,8 +3339,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const gameCam = { at: null, dist: 1200 };
   let userCamUntil = 0, camDragging = false;
   function gameCamStep(lead, dt) {
-    // Game frames this step: playback runs faster or slower than real time at other speeds.
-    const k = Math.min(8, dt * 30 * (playing ? playbackSpeed() : 1));
+    // Game frames since the last step, from the playback clock: the camera moves when the shown
+    // frame does, so Mario (who steps a whole game frame at a time) doesn't judder against it.
+    const dq = gameCam.lastT === undefined ? 0 : t - gameCam.lastT;
+    gameCam.lastT = t;
+    if (dq < 0 || dq > QF_PER_FRAME * 30) gameCam.at = null;   // scrubbed: start over behind him
+    const k = Math.max(0, Math.min(8, dq / QF_PER_FRAME));
     const chase = (r) => 1 - Math.pow(1 - r, k);
     const mario = lead.clone().add(tmp.set(0, GAME_CAM.atY - 100, 0));
     if (!gameCam.at || gameCam.at.distanceTo(mario) > 3000) {   // first frame, or a jump in time: start behind
