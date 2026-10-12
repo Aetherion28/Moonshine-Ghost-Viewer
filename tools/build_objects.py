@@ -679,7 +679,7 @@ def walk_anim(arc: dict, model_path: str, model: bmd.Model, words=None):
     return None
 
 
-def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict) -> None:
+def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict, idle: dict | None = None) -> None:
     """A skinned library model (bind pose, joints "<name>_j<i>") with its walking animation in
     the scene's extras (anims[name]: BCK tracks, as the viewer's Mario rig uses them)."""
     holder = {"name": name, "children": []}
@@ -724,7 +724,10 @@ def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict) -> None:
         node["skin"] = skin
         w.gltf["nodes"].append(node)
         holder["children"].append(len(w.gltf["nodes"]) - 1)
-    w.gltf["scenes"][0].setdefault("extras", {}).setdefault("anims", {})[name] = anim
+    anims = w.gltf["scenes"][0].setdefault("extras", {}).setdefault("anims", {})
+    anims[name] = anim
+    if idle is not None:   # a walker's idle, for when it waits (birds on their perch)
+        anims[name + "~idle"] = idle
 
 
 def add_models(w: GlbWriter, models, name: str) -> None:
@@ -979,7 +982,8 @@ def main(argv):
                             anim = walk_anim(arc, mpath, bind, words) if len(bind.joint_names) > 1 else None
                             if anim:
                                 sidx = len(lib)
-                                add_skinned(w, bind, f"m{sidx}", anim)
+                                idle = walk_anim(arc, mpath, bind, IDLE_ANIM_WORDS[:4]) if wk else None
+                                add_skinned(w, bind, f"m{sidx}", anim, idle)
                                 lib[skey] = sidx
                         except Exception as exc:
                             print("  skip skinned", mpath, exc)

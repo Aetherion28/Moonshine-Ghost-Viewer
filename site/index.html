@@ -1148,12 +1148,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), ar: ex.ar || 2, seed: objNodes.length + 1,
           // On foot: kept on the floor under the graph (gravity and ground collision in the game);
           // flyers, swimmers, Boos, boats and hanging things follow the graph's own heights.
+          // Birds take off one by one: each sits on its perch for its own 0-12 s first.
+          delay: it[1] === 'AnimalBird' ? ((objNodes.length * 2654435761) >>> 0) % 360 : 0,
           ground: !/^(Animal|Butterfly|Fishoid|Telesa|LoopTelesa|BoxTelesa|SeeTelesa|MarioModokiTelesa|FruitsBoat|TabePuku|Boss|Kumokun|RiccoHook)/.test(it[1]) };
         if (node.userData.skin !== undefined) {   // its bones and animation (walking, or idle)
           const nm = 'm' + node.userData.skin, bones = [];
           node.traverse((o) => { const m = o.name ? new RegExp('^' + nm + '_j(\\d+)$').exec(o.name) : null; if (m) bones[+m[1]] = o; });
           const anims = (libScene.userData && libScene.userData.anims) || {};
-          if (anims[nm]) node.userData.rig = { bones, anim: anims[nm], ar: ex.ar || 2, phase: (objNodes.length * 37) % anims[nm].d };
+          if (anims[nm]) node.userData.rig = { bones, anim: anims[nm], idle: anims[nm + '~idle'] || null, ar: ex.ar || 2, phase: (objNodes.length * 37) % anims[nm].d };
         }
         if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]), cloud: !!ex.cloud };
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
@@ -2063,6 +2065,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function placeWalker(node, f) {
     const wk = node.userData.walk, b = node.userData.base;
+    if (wk.delay && f < wk.delay) {   // still waiting where it was placed
+      placeFree(node, b.p, b.r, b.s); node.visible = true;
+      const rg = node.userData.rig;
+      if (rg && camera.position.distanceToSquared(node.position) < 9000 * 9000) poseBck(rg.bones, rg.idle || rg.anim, Math.max(0, f) * rg.ar + rg.phase);
+      return;
+    }
+    f -= wk.delay || 0;
     const segs = walkSegs(wk, b, Math.max(0, f));
     let lo = 0, hi = segs.length - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (segs[m].t0 <= f) lo = m; else hi = m - 1; }
