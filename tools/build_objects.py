@@ -287,6 +287,8 @@ def move_extra(typ: str, payload: bytes, rails: dict, name: str = "", spin_rates
         if typ in RAIL_TYPES or typ in LIFT_TYPES:
             name, _ = _lstr(payload, actor_tail(payload))
             name = name.decode("ascii", "replace")
+            if typ == "NormalLift" and name.startswith("S_") and name in rails:
+                return star_spin(rails[name])
             if typ == "RideCloud" and (name not in rails or name.startswith("S_")):
                 return {"lift": [], "cloud": 1}   # a cloud that stays put (still sinks when ridden)
             if name in rails and not name.startswith("S_"):
@@ -297,6 +299,22 @@ def move_extra(typ: str, payload: bytes, rails: dict, name: str = "", spin_rates
     except (struct.error, ValueError):
         pass
     return None
+
+
+def star_spin(nodes) -> dict | None:
+    """A lift on a small closed spline loop (Bianco 3 Secret's stars, S_block*): TRailMapObj
+    traces the spline at the node's yaw / 100 a step and turns with it; shown as a turn in place,
+    one revolution per loop (its chords at that speed), the way the loop goes round."""
+    if len(nodes) < 3 or any(len(n[8]) != 2 for n in nodes):
+        return None
+    cx = sum(n[0] for n in nodes) / len(nodes)
+    cz = sum(n[2] for n in nodes) / len(nodes)
+    loop = sum(math.hypot(nodes[(k + 1) % len(nodes)][0] - n[0], nodes[(k + 1) % len(nodes)][2] - n[2]) for k, n in enumerate(nodes))
+    spd = (nodes[0][4] if nodes[0][4] != 0xFFFF else 100) * 0.01
+    a, b = nodes[0], nodes[1]
+    turn = (a[2] - cz) * (b[0] - cx) - (a[0] - cx) * (b[2] - cz)
+    rate = 360.0 * spd / loop if loop else 0.0
+    return {"spin": {"ax": 1, "rate": round(rate if turn > 0 else -rate, 5)}} if rate else None
 
 
 def watermill_vertical_rate(payload: bytes) -> float:
