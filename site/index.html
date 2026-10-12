@@ -2038,7 +2038,19 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return wk.segs;
   }
   let idleClock = 0;
-  const walkClock = (stageClock) => (ghosts.length ? stageClock : idleClock);
+  // With a ghost: QF since the ghost entered this stage, so walkers start from where they were
+  // placed when the stage loads (no phase offset, unlike moving platforms).
+  function walkClock(g, time) {
+    if (!ghosts.length) return idleClock;
+    if (!g) return 0;
+    const d = g.data, base = d.header.startQf, here = objectsKey.split('|').pop();
+    let s0 = null;
+    d.segments.forEach((seg) => {
+      const k = `${seg.route.area}:${seg.route.episode}`, a = seg.startQf - base;
+      if (k === here && a <= time && (s0 === null || a > s0)) s0 = a;
+    });
+    return s0 === null ? 0 : time - s0;
+  }
   function updateWalkers() {
     objNodes.forEach((node) => { if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME); });
   }
@@ -2521,7 +2533,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
-      if (node.userData.walk) { placeWalker(node, walkClock(stageClock) / QF_PER_FRAME); return; }
+      if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
       const pick = node.userData.pick;
       const gate = g && g.shineSpawn && !$('optShines').checked ? g.shineSpawn.get(objectsKey) : null;
