@@ -36,7 +36,7 @@ import npc_payload  # noqa: E402
 import scene_bin  # noqa: E402
 import btk  # noqa: E402
 import build_stage  # noqa: E402
-from build_mario_iso import SUBSTITUTE, bck_pose, gx_tev_uvs, material_for, parse_bck  # noqa: E402
+from build_mario_iso import SUBSTITUTE, _add_mesh, bck_pose, gx_tev_uvs, material_for, parse_bck, quat_from_matrix  # noqa: E402
 from build_stage import uv_for  # noqa: E402
 from convert_map import rarc_files, yaz0_decompress  # noqa: E402
 from dae_to_glb import GlbWriter  # noqa: E402
@@ -316,12 +316,13 @@ def npc_extra(w, lib, arc, typ, payload, body_model):
         idx = f["c1"][part["slot"]] if part["slot"] < 3 else None
         pc = [c for c in (npc_colour(cc, idx) for cc in part["colors"]) if c]
         if part["joint"] == "__ROOT_JOINT__" or part["joint"] not in body_model.joint_names:
-            mtx = np.eye(4)
+            mtx, ji = np.eye(4), 0
         else:
-            mtx = body_model.joints_world[body_model.joint_names.index(part["joint"])]
+            ji = body_model.joint_names.index(part["joint"])
+            mtx = body_model.joints_world[ji]
         pi = lib_add(w, lib, "part:" + hashlib.sha1(arc[path]).hexdigest(), lambda path=path: [bmd.parse(arc[path])])
         if pi >= 0:
-            parts.append([pi, [round(float(v), 4) for v in mtx.T.reshape(-1)], pc])
+            parts.append([pi, [round(float(v), 4) for v in mtx.T.reshape(-1)], pc, ji])
     if not mats and not parts and not k0:
         return None
     out = {"mats": mats, "parts": parts}
@@ -611,6 +612,76 @@ def idle_pose(arc: dict, model_path: str, model: bmd.Model):
     return None
 
 
+# The animation a walker plays (first match by name in its model's folder): walking for those on
+# foot, flying or swimming for animals, any other movement otherwise, else its idle (Boos float).
+WALK_ANIM_WORDS = ("walk", "fly", "swim", "run", "move", "march", "swing", "wait")
+
+
+def walk_anim(arc: dict, model_path: str, model: bmd.Model):
+    folder = model_path.rsplit("/", 1)[0]
+    # NPCs keep their animations in the family's shared folder (montema -> montemcommon).
+    folders = [folder, folder + "anm", folder + "common", folder[:-1] + "common", folder[:-2] + "common"]
+    cands = [k for f in folders for k in sorted(arc) if k.startswith(f + "/") and k.count("/") == 1 and k.endswith(".bck")]
+    for word in WALK_ANIM_WORDS:
+        for k in cands:
+            if word in k.rsplit("/", 1)[1].lower():
+                try:
+                    anim = parse_bck(arc[k])
+                except Exception:
+                    continue
+                if len(anim["j"]) == len(model.joint_names):
+                    return anim
+    return None
+
+
+def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict) -> None:
+    """A skinned library model (bind pose, joints "<name>_j<i>") with its walking animation in
+    the scene's extras (anims[name]: BCK tracks, as the viewer's Mario rig uses them)."""
+    holder = {"name": name, "children": []}
+    w.gltf["nodes"].append(holder)
+    hi = len(w.gltf["nodes"]) - 1
+    w.gltf["scenes"][0]["nodes"].append(hi)
+    joint_nodes = []
+    for i in range(len(model.joint_names)):
+        sc, rot, tr = model.joint_trs[i]
+        q = quat_from_matrix(bmd.euler_matrix(*rot))
+        w.gltf["nodes"].append({"name": f"{name}_j{i}", "translation": [float(x) for x in tr],
+                                "rotation": [float(x) for x in q], "scale": [float(x) for x in sc]})
+        joint_nodes.append(len(w.gltf["nodes"]) - 1)
+    for i, par in enumerate(model.joint_parent):
+        if par >= 0:
+            w.gltf["nodes"][joint_nodes[par]].setdefault("children", []).append(joint_nodes[i])
+        else:
+            holder["children"].append(joint_nodes[i])
+    ibm = np.stack([np.linalg.inv(m).T.reshape(-1) for m in model.joints_world]).astype(np.float32)
+    w.gltf.setdefault("skins", []).append({"joints": joint_nodes, "skeleton": joint_nodes[0],
+                                            "inverseBindMatrices": w.accessor(ibm, "MAT4", 5126, None)})
+    skin = len(w.gltf["skins"]) - 1
+    for mesh in model.meshes:
+        mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
+        mi, entry = material_for(w, model, mat, name, gx=True)
+        uv = uv_for(mesh, entry) if entry is not None else None
+        color = mesh.get("color") if mat is not None and (mat.use_vertex_color or any(c and (c[1] == 1 or c[5] == 1) for c in (mat.gx or {}).get("chans") or [])) else None
+        n = len(mesh["pos"])
+        joints = np.zeros((n, 4), np.uint16)
+        weights = np.zeros((n, 4), np.float32)
+        for vi, d in enumerate(mesh["drw"]):
+            for k, (j, wt) in enumerate(model.draw_weights[d][:4]):
+                joints[vi, k] = j
+                weights[vi, k] = wt
+        weights /= np.maximum(weights.sum(1, keepdims=True), 1e-6)
+        _add_mesh(w, f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, joints, weights, normal=mesh.get("nrm"))
+        prim = w.gltf["meshes"][-1]["primitives"][0]
+        for k, v in (gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else {}).items():
+            prim["attributes"][k] = w.accessor(np.ascontiguousarray(v, np.float32), "VEC2", 5126, 34962)
+        node = w.gltf["nodes"].pop()
+        w.gltf["scenes"][0]["nodes"].pop()
+        node["skin"] = skin
+        w.gltf["nodes"].append(node)
+        holder["children"].append(len(w.gltf["nodes"]) - 1)
+    w.gltf["scenes"][0].setdefault("extras", {}).setdefault("anims", {})[name] = anim
+
+
 def add_models(w: GlbWriter, models, name: str) -> None:
     holder = {"name": name, "children": []}
     w.gltf["nodes"].append(holder)
@@ -851,6 +922,22 @@ def main(argv):
                     if wk:
                         extra = {**(extra or {}), **wk}
                         used_graphs.add(wk["walk"])
+                        # The walking animation, on a skinned copy of the model.
+                        bmt, tex_only = mat_table(arc, keys, objtable)
+                        skey = "skin:" + hashlib.sha1(arc[mpath] + (bmt or b"") + (b"T" if tex_only else b"")).hexdigest()
+                        if skey not in lib:
+                            lib[skey] = -1
+                            try:
+                                bind = bmd.parse(arc[mpath], bmt=bmt, bmt_tex_only=tex_only)
+                                anim = walk_anim(arc, mpath, bind) if len(bind.joint_names) > 1 else None
+                                if anim:
+                                    sidx = len(lib)
+                                    add_skinned(w, bind, f"m{sidx}", anim)
+                                    lib[skey] = sidx
+                            except Exception as exc:
+                                print("  skip skinned", mpath, exc)
+                        if lib[skey] >= 0:
+                            extra["skin"] = lib[skey]
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
                 pick = PICKUP_TYPES.get(typ, "")
                 if hidden and pick:

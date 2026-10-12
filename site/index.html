@@ -1131,6 +1131,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           node = new THREE.Group();
           node.userData.variants = [];
           for (let k = 0; protos[mi + '_s' + k]; k++) { const v = protos[mi + '_s' + k].clone(true); v.visible = k === 0; node.add(v); node.userData.variants.push(v); }
+        } else if (it[17] && it[17].walk && it[17].skin !== undefined && protos[it[17].skin]) {
+          node = THREE.SkeletonUtils.clone(protos[it[17].skin]);   // a walker: its skinned copy
+          node.userData.skin = it[17].skin;
         } else if (mi >= 0 && protos[mi]) node = protos[mi].clone(true);
         else { node = new THREE.Mesh(new THREE.SphereGeometry(30, 10, 8), fallback); node.position.y = 40; node = new THREE.Group().add(node); }
         node.position.set(px, py, pz);
@@ -1143,16 +1146,24 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         node.userData.carry = it[16] || '';
         const ex = it[17] || {};
         if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), seed: objNodes.length + 1 };
+        if (node.userData.walk && node.userData.skin !== undefined) {   // its bones and walking animation
+          const nm = 'm' + node.userData.skin, bones = [];
+          node.traverse((o) => { const m = o.isBone || o.name ? new RegExp('^' + nm + '_j(\\d+)$').exec(o.name) : null; if (m) bones[+m[1]] = o; });
+          const anims = (libScene.userData && libScene.userData.anims) || {};
+          if (anims[nm]) { node.userData.walk.bones = bones; node.userData.walk.anim = anims[nm]; }
+        }
         if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]), cloud: !!ex.cloud };
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
-          ex.npc.parts.forEach(([pi, m, specs]) => {
+          ex.npc.parts.forEach(([pi, m, specs, ji]) => {
             if (!protos[pi]) return;
             const part = protos[pi].clone(true);
             part.matrixAutoUpdate = false;
+            const bone = node.userData.walk && node.userData.walk.bones ? node.userData.walk.bones[ji || 0] : null;
             part.matrix.fromArray(m);
+            if (bone) part.matrix.identity();   // on its joint, which the walk animation moves
             part.userData.npcColors = specs;
             part.userData.npcPart = true;
-            node.add(part);
+            (bone || node).add(part);
           });
           node.userData.npcColors = ex.npc.mats;
           if (ex.npc.k0) node.userData.npcK0 = ex.npc.k0;
@@ -2042,6 +2053,33 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const yaw = Math.hypot(dx, dz) > 1e-3 ? Math.atan2(dx, dz) : b.r[1];
     placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s);
     node.visible = true;
+    if (wk.bones && wk.anim && camera.position.distanceToSquared(node.position) < 9000 * 9000) poseBck(wk.bones, wk.anim, f);
+  }
+  // A BCK pose at frame f (looped): per joint scale, ZYX rotation and translation, Hermite keys.
+  const _bckEuler = new THREE.Euler(0, 0, 0, 'ZYX');
+  function bckSample(tr, f) {
+    if (typeof tr === 'number') return tr;
+    const n = tr.length >> 2;
+    if (f < tr[0]) return tr[1];
+    for (let i = 1; i < n; i++) {
+      const t1 = tr[i * 4];
+      if (f < t1) {
+        const b = (i - 1) * 4, t0 = tr[b], len = t1 - t0, u = (f - t0) / len, u2 = u * u, u3 = u2 * u;
+        return (2 * u3 - 3 * u2 + 1) * tr[b + 1] + (u3 - 2 * u2 + u) * tr[b + 3] * len + (-2 * u3 + 3 * u2) * tr[i * 4 + 1] + (u3 - u2) * tr[i * 4 + 2] * len;
+      }
+    }
+    return tr[(n - 1) * 4 + 1];
+  }
+  function poseBck(bones, anim, f) {
+    const fr = ((f % anim.d) + anim.d) % anim.d;
+    for (let i = 0; i < bones.length && i < anim.j.length; i++) {
+      const bn = bones[i], j = anim.j[i];
+      if (!bn) continue;
+      bn.scale.set(bckSample(j[0], fr), bckSample(j[1], fr), bckSample(j[2], fr));
+      _bckEuler.set(bckSample(j[3], fr), bckSample(j[4], fr), bckSample(j[5], fr), 'ZYX');
+      bn.quaternion.setFromEuler(_bckEuler);
+      bn.position.set(bckSample(j[6], fr), bckSample(j[7], fr), bckSample(j[8], fr));
+    }
   }
   function placeFree(node, pos, r, s) {
     node.matrixAutoUpdate = true;
