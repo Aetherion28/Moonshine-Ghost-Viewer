@@ -3074,7 +3074,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const g = leadGhost();
     if (!g) return;
     const s = ghostSampleAt(g.data, t);
-    const seg = g.data.segments[g.data.segIndex[s.i]];
+    // In the gap between two segments Mario has touched the load zone and the game is loading:
+    // load the next area then, rather than waiting for him to appear in it.
+    const k = s.gap ? Math.min(s.i + 1, g.data.segIndex.length - 1) : s.i;
+    const seg = g.data.segments[g.data.segIndex[k]];
     if (!seg) return;
     const key = seg.route.area + ':' + seg.route.episode;
     if (key === autoStageRoute) return;
