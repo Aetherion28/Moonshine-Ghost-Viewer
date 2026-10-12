@@ -4059,9 +4059,10 @@ void main() {
     const C = g.jpaSlide || (g.jpaSlide = new Map()), key = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
     if (C.mapId !== key) { C.clear(); C.mapId = key; }
     if (C.has(e)) return C.get(e);
-    const d = g.data, s = ghostSampleAt(d, e * QF_PER_FRAME);
+    const d = g.data, q = e * QF_PER_FRAME, s = ghostSampleAt(d, q), sgd = shineDemo(g);
     let k = null;
-    if (!s.gap && !d.yoshi[s.i] && SLIDE_ANIMS.has(d.anim[s.i])) {
+    // In the Shine get demo Mario poses (TMario::winDemo) whatever the ghost recorded.
+    if (!s.gap && !d.yoshi[s.i] && SLIDE_ANIMS.has(d.anim[s.i]) && !(sgd && q >= sgd.q && q < sgd.until)) {
       // His ground plane, under his feet: water surfaces aren't ground (a stream's wet bed is under
       // its surface), and with water over him the dust is left out (mPosition.y < mFloorPosition.z).
       let top = s.y + 30, wet = false, under = false;
@@ -4872,10 +4873,11 @@ void main() {
     });
     const opt = $('optJoy');
     if (window.matchMedia && matchMedia('(pointer: coarse)').matches) opt.checked = true;
-    // With the stick on, a one-finger drag turns the camera where it stands (looking around)
+    // With the stick on, a one-finger drag in the free camera turns it where it stands (looking around)
     // instead of orbiting it around a point; two fingers still pinch to zoom. Only the fingers
     // on the stage count (targetTouches): a finger on the stick or the up/down buttons is not
     // half of a pinch, so the other finger still turns the camera while the stick moves it.
+    // Following a ghost, a drag orbits as usual and the follow camera takes over again after.
     let look = null;
     const el = renderer.domElement;
     const held = () => id !== null || joy.y !== 0;
@@ -4884,7 +4886,7 @@ void main() {
     el.parentElement.addEventListener('touchstart', (e) => {
       if (e.target !== el) return;
       if (held()) controls.enabled = false;
-      look = opt.checked && e.targetTouches.length === 1 ? { x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY } : null;
+      look = opt.checked && !isFollow() && e.targetTouches.length === 1 ? { x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY } : null;
     }, { passive: true, capture: true });
     el.addEventListener('touchmove', (e) => {
       if (!look || e.targetTouches.length !== 1) { look = null; return; }
