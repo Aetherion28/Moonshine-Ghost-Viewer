@@ -93,6 +93,17 @@ RAIL_TYPES = {"EXRollCube", "RailBlock", "RailBlockR", "RailBlockY", "RailBlockB
 LIFT_TYPES = {"NormalLift", "EXKickBoard", "Kamaboko", "Uirou", "Castella", "Hikidashi", "WoodBlock", "YoshiBlock", "RideCloud"}
 
 
+def is_spine(payload: bytes) -> bool:
+    """A TSpineEnemy (enemy, NPC, animal): its manager is a ...マネージャー / 管理 object."""
+    try:
+        _, p = _lstr(payload, 36)
+        mgr, _ = _lstr(payload, p + 4)
+    except (struct.error, ValueError):
+        return False
+    mgr = mgr.decode("shift_jis", "replace")
+    return "マネージャー" in mgr or "管理" in mgr
+
+
 def _lstr(b: bytes, p: int):
     n = struct.unpack_from(">H", b, p)[0]
     return b[p + 2:p + 2 + n], p + 2 + n
@@ -145,6 +156,62 @@ def stage_lights(scene: bytes) -> dict:
         elif o["type"] == "Light" and len(p) >= 16:
             g[LIGHT_KINDS[m.group(1)]] = {"p": [round(v, 1) for v in struct.unpack_from(">3f", p, 0)], "c": list(p[12:15])}
     return out
+
+
+_GLOBAL_PRM = {}
+PARAMS_SZS = None   # data/params.szs next to the scene folder (set by main)
+
+
+def global_params(name: str):
+    """A parameter file from params.szs (e.g. enemy/hamukuri.prm), parsed; {} if missing."""
+    if not _GLOBAL_PRM:
+        src = PARAMS_SZS
+        _GLOBAL_PRM["arc"] = rarc_files(yaz0_decompress(src.read_bytes())) if src and src.exists() else {}
+    arc = _GLOBAL_PRM["arc"]
+    if name not in _GLOBAL_PRM:
+        try:
+            _GLOBAL_PRM[name] = prm.parse(arc[name]) if name in arc else {}
+        except Exception:
+            _GLOBAL_PRM[name] = {}
+    return _GLOBAL_PRM[name]
+
+
+# Walking speed (units per frame) by parameter, in order of preference: NPCs' top march speed,
+# small enemies' march speed range, the rest's own names.
+SPEED_KEYS = ("mMaxMarchSpeed", "mSLMaxMarchSpeed", "mMarchSpeed", "mSLMoveSpeed", "mSLWalkSpeed")
+DEFAULT_SPEED = {"AnimalBird": 5.0, "AnimalMew": 10.0, "Butterfly": 2.0, "ButterflyB": 2.0, "ButterflyC": 2.0,
+                 "FishoidA": 2.0, "FishoidB": 2.0, "FishoidC": 2.0, "FishoidD": 2.0}
+
+
+def walk_speed(arc: dict, typ: str) -> float:
+    names = [typ.lower(), TYPE_FOLDERS.get(typ, "").lower()]
+    for n in names:
+        if not n:
+            continue
+        for path in (f"npc/{n}.prm", f"enemy/{n}.prm", f"animal/{n}.prm"):
+            p = enemy_params(arc, typ) if path.startswith("enemy/") else None
+            p = p or global_params(path)
+            if not p:
+                continue
+            if "mSLMarchSpeedLow" in p and "mSLMarchSpeedHigh" in p:
+                return round((p["mSLMarchSpeedLow"] + p["mSLMarchSpeedHigh"]) / 2, 3)
+            for k in SPEED_KEYS:
+                if isinstance(p.get(k), float) and p[k] >= 0.3:
+                    return round(p[k], 3)
+    return DEFAULT_SPEED.get(typ, 1.5)
+
+
+def walk_extra(typ: str, payload: bytes, rails: dict, arc: dict):
+    """TSpineEnemy::load: [TActor][manager name][graph name]. Enemies, NPCs and animals with a graph
+    walk it (TGraphTracer, node to node; TGraphWeb::getRandomNextIndex picks the next node)."""
+    try:
+        name, _ = _lstr(payload, actor_tail(payload))
+    except (struct.error, ValueError):
+        return None
+    name = name.decode("ascii", "replace")
+    if name not in rails or len(rails[name]) < 2:
+        return None
+    return {"walk": name, "v": walk_speed(arc, typ)}
 
 
 def move_extra(typ: str, payload: bytes, rails: dict):
@@ -623,7 +690,9 @@ def lib_add(w: GlbWriter, lib: dict, key: str, build) -> int:
 
 
 def main(argv):
+    global PARAMS_SZS
     scene_dir, table = Path(argv[0]), json.load(open(argv[1]))
+    PARAMS_SZS = scene_dir.parent / "params.szs"
     objtable, site = json.load(open(argv[2])), Path(argv[3])
     max_tex = int(argv[argv.index("--max-tex") + 1]) if "--max-tex" in argv else 128
     index_path = site / "maps" / "index.json"
@@ -667,6 +736,7 @@ def main(argv):
                     except Exception:
                         pass
             instances = []
+            used_graphs = set()
             rails = parse_rails(arc["map/scene.ral"]) if "map/scene.ral" in arc else {}
             scene_objs = scene_bin.parse(arc["map/scene.bin"])
             scene_objs += bridge_boards(scene, scene_objs)
@@ -776,6 +846,11 @@ def main(argv):
                     mv = move_extra(typ, o["payload"], rails)
                     if mv:
                         extra = {**(extra or {}), **mv}
+                elif mpath and is_spine(o["payload"]):
+                    wk = walk_extra(typ, o["payload"], rails, arc)
+                    if wk:
+                        extra = {**(extra or {}), **wk}
+                        used_graphs.add(wk["walk"])
                 info = objtable.get((key[len("invisible_"):] if hidden else key) or "", {})
                 pick = PICKUP_TYPES.get(typ, "")
                 if hidden and pick:
@@ -806,7 +881,8 @@ def main(argv):
                         lib[digest] = -1
                 if lib[digest] >= 0:
                     instances.append([lib[digest], "Pollution", pname, 0, 0, 0, 0, 0, 0, 1, 1, 1, "", 0, 0, 0, ""])
-            data = {"o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
+            data = {"g": {k: [n[:3] + [n[7], n[8]] for n in rails[k]] for k in sorted(used_graphs)},
+                    "o": instances, "w": wires(arc), "lights": stage_lights(arc["map/scene.bin"])}
             ropes = bridge_ropes(arc, scene, scene_objs)
             if ropes:
                 data["ropes"] = ropes

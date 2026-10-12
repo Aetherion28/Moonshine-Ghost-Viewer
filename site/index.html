@@ -1142,6 +1142,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         node.userData.baseMatrix = node.matrix.clone();
         node.userData.carry = it[16] || '';
         const ex = it[17] || {};
+        if (ex.walk && data.g && data.g[ex.walk]) node.userData.walk = { g: data.g[ex.walk], v: Math.max(0.3, ex.v || 1.5), seed: objNodes.length + 1 };
         if (ex.roll !== undefined || ex.rail || ex.lift) node.userData.move = ex.roll !== undefined ? { roll: ex.roll } : ex.rail ? { rail: ex.rail } : { lift: ex.lift, wood: /^(WoodBlock|YoshiBlock)$/.test(it[1]), cloud: !!ex.cloud };
         if (ex.npc) {   // NPC parts (hats, shells...) on their joints; colours applied after the material clone below
           ex.npc.parts.forEach(([pi, m, specs]) => {
@@ -1992,6 +1993,56 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     node.matrixWorldNeedsUpdate = true;
     node.visible = true;
   }
+  // Enemies, NPCs and animals on a graph (TGraphTracer): from where they were placed to the
+  // nearest node, then node to node at their walking speed, the next node as
+  // TGraphWeb::getRandomNextIndex picks it (never straight back unless it's a dead end; a fixed
+  // seed per object, so the same frame always shows the same place). Facing the way they go.
+  function walkSegs(wk, b, upTo) {
+    if (!wk.segs) {
+      let s = wk.seed >>> 0;
+      wk.rnd = () => { s = (s + 0x6D2B79F5) >>> 0; let x = Math.imul(s ^ (s >>> 15), 1 | s); x ^= x + Math.imul(x ^ (x >>> 7), 61 | x); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+      let best = 0, bd = Infinity;
+      wk.g.forEach((n, k) => { const d = (n[0] - b.p[0]) ** 2 + (n[1] - b.p[1]) ** 2 + (n[2] - b.p[2]) ** 2; if (d < bd) { bd = d; best = k; } });
+      wk.segs = []; wk.end = 0; wk.pos = b.p.slice(); wk.cur = best; wk.prev = -1; wk.done = false;
+    }
+    const G = wk.g;
+    while (!wk.done && wk.end <= upTo && wk.segs.length < 20000) {
+      const n = G[wk.cur], to = [n[0], n[1], n[2]];
+      const d = Math.hypot(to[0] - wk.pos[0], to[1] - wk.pos[1], to[2] - wk.pos[2]);
+      const dur = Math.max(1, d / wk.v);
+      wk.segs.push({ t0: wk.end, t1: wk.end + dur, a: wk.pos, b: to });
+      wk.end += dur; wk.pos = to;
+      const con = (n[4] || []).filter((k) => k < G.length), num = con.length;
+      let next;
+      if (num === 0) next = wk.cur;
+      else if (num === 1) next = con[0];
+      else if (num === 2 && wk.prev >= 0) next = con[0] !== wk.prev ? con[0] : con[1];
+      else {
+        const r = Math.min(num - 1, Math.floor(wk.rnd() * num));
+        next = con[con[r] === wk.prev ? (r === num - 1 ? 0 : num - 1) : r];
+      }
+      if (next === wk.cur) wk.done = true;
+      wk.prev = wk.cur; wk.cur = next;
+    }
+    return wk.segs;
+  }
+  function placeWalker(node, f) {
+    const wk = node.userData.walk, b = node.userData.base;
+    const segs = walkSegs(wk, b, Math.max(0, f));
+    let lo = 0, hi = segs.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (segs[m].t0 <= f) lo = m; else hi = m - 1; }
+    const sg = segs[lo];
+    if (!sg || f < 0) { placeFree(node, b.p, b.r, b.s); node.visible = true; return; }
+    const u = Math.min(1, Math.max(0, (f - sg.t0) / (sg.t1 - sg.t0)));
+    const p = [sg.a[0] + (sg.b[0] - sg.a[0]) * u, sg.a[1] + (sg.b[1] - sg.a[1]) * u, sg.a[2] + (sg.b[2] - sg.a[2]) * u];
+    // Facing: this segment's direction (the last moving one when standing at a dead end).
+    let k = lo;
+    while (k > 0 && Math.hypot(segs[k].b[0] - segs[k].a[0], segs[k].b[2] - segs[k].a[2]) < 1e-3) k--;
+    const s = segs[k], dx = s.b[0] - s.a[0], dz = s.b[2] - s.a[2];
+    const yaw = Math.hypot(dx, dz) > 1e-3 ? Math.atan2(dx, dz) : b.r[1];
+    placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s);
+    node.visible = true;
+  }
   function placeFree(node, pos, r, s) {
     node.matrixAutoUpdate = true;
     node.position.set(pos[0], pos[1], pos[2]);
@@ -2427,6 +2478,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
+      if (node.userData.walk) { placeWalker(node, stageClock / QF_PER_FRAME); return; }
       if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
       const pick = node.userData.pick;
       const gate = g && g.shineSpawn && !$('optShines').checked ? g.shineSpawn.get(objectsKey) : null;
