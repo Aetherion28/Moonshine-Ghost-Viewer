@@ -2353,8 +2353,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k = `${seg.route.area}:${seg.route.episode}`, s0 = seg.startQf - base;
       if (k === objectsKey.split('|').pop() && s0 <= time && (seg0 === null || s0 > seg0.s0)) seg0 = { s0, s1: seg.endQf - base };
     });
-    return seg0 === null ? time : time - seg0.s0 + stageOffset(g, seg0.s0, seg0.s1);
+    return seg0 === null ? time : time - seg0.s0 + stageOffset(g, seg0.s0, seg0.s1) - (STAGE_DELAY_QF[objectsKey.split('|').pop()] || 0);
   }
+  // Stages whose moving objects start later than the ghost's segment, matched by eye against
+  // runs' videos (QF; 120 a second): Bianco 3 Secret's lifts and blocks run a second behind.
+  const STAGE_DELAY_QF = { '47:0': 120 };
 
   // How far into its cycle the stage already was when the ghost's segment began, found from the
   // ghost: try each offset and keep the one where Mario's standing samples (that aren't on fixed
