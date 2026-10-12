@@ -2146,8 +2146,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const lastShine = new Map();   // segment -> shine index
     idx.forEach((i) => {
       if (!/^shine/.test(objList[i][12] || '') || out[i] === Infinity) return;
-      const k = d.segments.findIndex((sg) => sg.route.area === a && sg.route.episode === e
-        && out[i] >= sg.startQf - d.header.startQf && out[i] <= sg.endQf - d.header.startQf);
+      const k = 0;   // over the whole ghost, not per visit: only the last shine it collects stays
       const j = lastShine.get(k);
       if (j === undefined || out[i] > out[j]) { if (j !== undefined) out[j] = Infinity; lastShine.set(k, i); }
       else out[i] = Infinity;
