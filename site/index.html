@@ -2439,11 +2439,31 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           bathNode: (G || []).reduce((b, n, k) => (b < 0 || Math.hypot(n[0] - BW_BATH[0], n[2] - BW_BATH[2]) < Math.hypot(G[b][0] - BW_BATH[0], G[b][2] - BW_BATH[2]) ? k : b), -1) } };
     }
     const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 1, 60 * 60 * 30);
+    // Until Mario first takes the picket, the chomp strains at the end of its chain the way it
+    // hauls him once he has it (from the stake toward where he is dragged in the next second).
+    if (st.strain === undefined) {
+      st.strain = null;
+      for (let k = 0; mario && k < 30 * 60 * 10; k++) {
+        const m0 = mario(k);
+        if (!m0) { if (k > 30 * 60) break; continue; }
+        if (!m0.hold) continue;
+        const m1 = mario(k + 30) || m0;
+        let dx = m1.x - P[0], dz = m1.z - P[2], dl = Math.hypot(dx, dz);
+        if (dl < 1) { dx = bw.start[0] - P[0]; dz = bw.start[2] - P[2]; dl = Math.hypot(dx, dz) || 1; }
+        st.strain = { until: k, x: P[0] + dx / dl * R, z: P[2] + dz / dl * R, yaw: Math.atan2(dx, dz) };
+        break;
+      }
+    }
     const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
     while (S.x.length < N) {
       const k = S.x.length - 1;
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
       const m = mario ? mario(k) : null;
+      if (st.strain && k < st.strain.until) {
+        const u = Math.min(1, k / 60), sx = bw.start[0] + (st.strain.x - bw.start[0]) * u, sz = bw.start[2] + (st.strain.z - bw.start[2]) * u;
+        S.x.push(sx); S.z.push(sz); S.yaw.push(st.strain.yaw); S.heat.push(st.heat); S.bark.push(0); S.px.push(st.px); S.pz.push(st.pz); S.held.push(0); S.bath.push(0);
+        continue;
+      }
       // In the bath (TNerveBWJumpToBath): it hops from where it was to the bath and stays there.
       // TNerveBWJumpToBath / TNerveBWDie: it leaps to the bath, then cools off completely there.
       if (st.bath) {
