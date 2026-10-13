@@ -2400,46 +2400,96 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     node.visible = true;
     poseRig(node, f);
   }
-  // The Chain Chomp (TBossWanwan, TNerveBWGraphWander): marches along its graph at mSLMarchSpeed,
-  // held by a leash of n links of mSLLeashNodeLen from its stake; a node out of reach makes it
-  // strain at the end of the chain and turn back. The ball (radius 500) rolls on the floor.
+  // The Chain Chomp (TBossWanwan, TNerveBWGraphWander, from the decompiled bosswanwan.cpp): it rides
+  // the "bwanwan" graph, pulled back onto the line between the node it came from and the one it
+  // heads for by up to 10 units a frame, at 6 x heat + 0.2 units a frame, turning 1 degree a frame.
+  // Within 100 of a node: a plain stretch (2 links) goes straight on; at a junction it takes, of the
+  // links within 100 degrees of where it faces, the one leading farthest from Mario (none: it turns
+  // round). Heat (0-255, starts full): each water hit takes 1 off, while warm it gains 1 every 20
+  // frames, and once cold it barks after 40 s and is hot again 280 frames into the bark.
+  // The leash (n links of mSLLeashNodeLen) holds it to its stake. Water hits are taken as one per
+  // frame while Mario sprays at it (within 1200 units and 30 degrees of his facing); picket
+  // dragging and the bath aren't followed yet.
   const BW_RADIUS = 500, _bwM = new THREE.Matrix4(), _bwQ = new THREE.Quaternion(), _bwE = new THREE.Euler(0, 0, 0, 'YXZ'), _bwS = new THREE.Vector3(1, 1, 1), _bwP = new THREE.Vector3();
-  function chompSim(bw, f) {
+  const BW = { node: 100, pull: 10, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 40 * 30, bark: 280,
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180 };
+  function chompSim(bw, f, mario, key) {
     const G = bw.graph, R = bw.n * bw.len, P = bw.p;
-    if (!bw.sim) {
-      let cur = -1, best = Infinity;
-      (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; cur = k; } });
-      bw.sim = { x: [bw.start[0]], z: [bw.start[2]], yaw: [bw.ry], st: { cur, prev: -1, stuck: 0, seed: 12345 } };
+    if (!bw.sim || bw.simKey !== key) {
+      bw.simKey = key;
+      let to = -1, best = Infinity;
+      (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; to = k; } });
+      const from = to >= 0 && G[to][4] && G[to][4].length ? G[to][4][0] : to;
+      bw.sim = { x: [bw.start[0]], z: [bw.start[2]], yaw: [bw.ry], heat: [BW.heatMax], bark: [0],
+        st: { from, to, heat: BW.heatMax, warm: 0, cold: 0, bark: 0 } };
     }
     const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 1, 60 * 60 * 30);
+    const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
     while (S.x.length < N) {
       const k = S.x.length - 1;
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
-      if (G && st.cur >= 0) {
-        const tn = G[st.cur], dx = tn[0] - x, dz = tn[2] - z, d = Math.hypot(dx, dz);
-        if (d <= bw.v || st.stuck > 60) {   // at the node (or held back from it): on to a neighbour
-          const nb = (tn[4] || []).filter((j) => j >= 0 && j < G.length);
-          const near = nb.filter((j) => j !== st.prev && Math.hypot(G[j][0] - P[0], G[j][2] - P[2]) <= R);
-          const pool = near.length ? near : nb.length ? nb : [st.prev];
-          st.seed = (st.seed * 1103515245 + 12345) >>> 0;
-          const nx = pool[(st.seed >>> 8) % pool.length];
-          st.prev = st.cur; st.cur = nx; st.stuck = 0;
-        } else {
-          const tyaw = Math.atan2(dx, dz);
-          let dy = tyaw - yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-          yaw += Math.max(-0.08, Math.min(0.08, dy));
-          x += Math.sin(yaw) * bw.v; z += Math.cos(yaw) * bw.v;
-          const ox = x - P[0], oz = z - P[2], r = Math.hypot(ox, oz);
-          if (r > R) { x = P[0] + ox / r * R; z = P[2] + oz / r * R; st.stuck++; }
-        }
+      const m = mario ? mario(k) : null;
+      // Heat
+      if (m && m.spray && st.heat > 0) {
+        const dx = x - m.x, dz = z - m.z, d = Math.hypot(dx, dz);
+        if (d < BW.sprayR + BW_RADIUS && Math.abs(wrap(Math.atan2(dx, dz) - m.yaw)) < BW.sprayCone) st.heat = Math.max(0, st.heat - 1);
       }
-      S.x.push(x); S.z.push(z); S.yaw.push(yaw);
+      if (st.bark) { if (++st.bark >= BW.bark) { st.bark = 0; st.heat = BW.heatMax; st.cold = 0; } }
+      else if (st.heat <= 0) { if (++st.cold >= BW.coldBark) st.bark = 1; }
+      else if (st.heat < BW.heatMax && ++st.warm >= BW.reheat) { st.warm = 0; st.heat++; }
+      // Movement along the graph
+      if (G && st.to >= 0 && !st.bark) {
+        const tn = G[st.to];
+        if (Math.hypot(tn[0] - x, tn[2] - z) < BW.node) {   // at the node: pick the next link
+          const nb = (tn[4] || []).filter((j) => j >= 0 && j < G.length);
+          let next;
+          if (nb.length === 2) next = nb[0] === st.from ? nb[1] : nb[0];
+          else {
+            const ok = nb.filter((j) => j !== st.to && Math.abs(wrap(Math.atan2(G[j][0] - tn[0], G[j][2] - tn[2]) - yaw)) <= BW.cone);
+            if (!ok.length) next = st.from;
+            else if (m) next = ok.reduce((b, j) => (Math.hypot(G[j][0] - m.x, G[j][2] - m.z) > Math.hypot(G[b][0] - m.x, G[b][2] - m.z) ? j : b));
+            else next = ok[0];
+          }
+          if (next === undefined || next < 0) next = st.from;
+          st.from = st.to; st.to = next;
+        }
+        const t2 = G[st.to], a = G[st.from] || t2;
+        let dy = wrap(Math.atan2(t2[0] - x, t2[2] - z) - yaw);
+        yaw = wrap(yaw + Math.max(-BW.turn, Math.min(BW.turn, dy)));
+        const v = 6 * st.heat / BW.heatMax + 0.2;
+        x += Math.sin(yaw) * v; z += Math.cos(yaw) * v;
+        // Back onto the rail between the two nodes, by up to 10 a frame.
+        const lx = t2[0] - a[0], lz = t2[2] - a[2], L2 = lx * lx + lz * lz;
+        if (L2 > 1e-6) {
+          const u = Math.max(0, Math.min(1, ((x - a[0]) * lx + (z - a[2]) * lz) / L2));
+          const px = a[0] + lx * u - x, pz = a[2] + lz * u - z, pd = Math.hypot(px, pz);
+          if (pd > 1e-6) { const s2 = Math.min(1, BW.pull / pd); x += px * s2; z += pz * s2; }
+        }
+        const ox = x - P[0], oz = z - P[2], r = Math.hypot(ox, oz);
+        if (r > R) { x = P[0] + ox / r * R; z = P[2] + oz / r * R; }
+      }
+      S.x.push(x); S.z.push(z); S.yaw.push(yaw); S.heat.push(st.heat); S.bark.push(st.bark);
     }
     const k = Math.min(S.x.length - 1, Math.max(0, Math.floor(f)));
-    return [S.x[k], S.z[k], S.yaw[k]];
+    return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k]];
   }
-  function placeChomp(node, f) {
-    const bw = node.userData.bw, [x, z, yaw] = chompSim(bw, f);
+  function placeChomp(node, f, g, base) {
+    // Mario at the chomp's frame k of this visit (the ghost's time base + k frames), while he's here.
+    let mario = null, key = 'idle';
+    if (g && base !== undefined) {
+      const here = objectsKey.split('|').pop(), d = g.data;
+      key = (g.fileName || '') + '|' + base + '|' + here;
+      mario = (k) => {
+        const q = base + k * QF_PER_FRAME, s = ghostSampleAt(d, q);
+        if (s.gap) return null;
+        const seg = d.segments[d.segIndex[s.i]];
+        if (!seg || `${seg.route.area}:${seg.route.episode}` !== here) return null;
+        const fe = ghostFluddAt(d, q);
+        return { x: s.x, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray: !!(fe && fe.present && fe.spraying && fe.power) };
+      };
+    }
+    const bw = node.userData.bw, [x, z, yaw, heat, bark] = chompSim(bw, f, mario, key);
+    node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const gy = groundY(x, bw.start[1] + 2000, z), y = (gy > -Infinity ? gy : bw.start[1]) + BW_RADIUS;
     placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
     node.visible = true;
@@ -3177,7 +3227,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
-      if (node.userData.bw) { placeChomp(node, walkClock(g, t) / QF_PER_FRAME); return; }
+      if (node.userData.bw) { const wc = walkClock(g, t); placeChomp(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc); return; }
       if (node.userData.walk && node.userData.walk.bird && ghosts.length) { placeBird(node, g, t); return; }
       if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.rig) { poseRig(node, walkClock(g, t) / QF_PER_FRAME); return; }
