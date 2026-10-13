@@ -109,6 +109,17 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .splitLbl::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--panel); }
 .splitLbl span { position: absolute; bottom: 10px; font: 600 12px var(--mono); padding: 3px 8px; border-radius: 6px;
   background: color-mix(in srgb, var(--panel) 80%, transparent); border-left: 4px solid var(--c, var(--accent)); }
+/* Full screen comparison: each view's slider sits along the bottom of that view. */
+.tl.ov { position: absolute; z-index: 3; box-sizing: border-box; bottom: 8px; left: 12px; width: calc(50% - 24px); padding: 4px 10px; border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent); }
+.tl.ov#rowB { left: calc(50% + 12px); }
+.tl.ov.tall { width: calc(100% - 24px); }
+.tl.ov.tall#rowA { bottom: calc(50% + 8px); }
+.tl.ov.tall#rowB { left: 12px; }
+body.tlOverlay .splitLbl span { bottom: 56px; }
+body.tlOverlay .splitLbl.tall #lblA { bottom: calc(50% + 56px); }
+body.tlOverlay .inputsStage { bottom: 56px; }
+body.tlOverlay .inputsStage.splitTop { bottom: calc(50% + 56px); }
 .splitLbl #lblA { left: 12px; } .splitLbl #lblB { left: calc(50% + 12px); }
 .splitLbl.tall::after { left: 0; right: 0; top: 50%; bottom: auto; width: auto; height: 2px; margin: -1px 0 0; }
 .splitLbl.tall #lblA { bottom: calc(50% + 10px); } .splitLbl.tall #lblB { left: 12px; }
@@ -150,7 +161,7 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
     grid-template-areas: "top" "stage" "transport" "side"; height: 100%; height: 100dvh; }
   .stage { min-height: 0; }
   /* Two stacked views need the room: the sidebar gives up some height. */
-  body.splitTall .app { grid-template-rows: auto minmax(0, 1fr) auto minmax(110px, 22%); }
+  body.splitTall .app:not(.full) { grid-template-rows: auto minmax(0, 1fr) auto minmax(110px, 22%); }
   aside { border-left: 0; border-top: 1px solid var(--line); overflow-y: auto; overscroll-behavior: contain;
     padding: 10px 16px 16px; gap: 12px; }
   .transport { grid-template-columns: 1fr auto; padding-top: 8px; padding-bottom: 8px; }
@@ -252,7 +263,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <button id="clipBtn" class="tool" title="Record a clip of the view; click again to stop and save it">Record</button>
     </div>
     <div class="timeline">
-      <div class="tl"><span class="tlTag" id="tagA" hidden></span><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"></div>
+      <div class="tl" id="rowA"><span class="tlTag" id="tagA" hidden></span><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"><span class="tlTime" id="clockA" hidden>0.000</span></div>
       <div class="tl" id="rowB" hidden><span class="tlTag" id="tagB"></span><input type="range" id="scrubB" min="0" max="1000" step="1" value="0" aria-label="Right view position"><span class="tlTime" id="clockB">0.000</span>
         <button id="syncB" class="tool" title="Line the right view up with the left one again">Sync</button></div>
     </div>
@@ -4918,8 +4929,22 @@ void main() {
     resize();
     update();
   }
+  // Full screen with two views: move each slider row onto the bottom of its own view.
+  function placeTimelines(on) {
+    const ov = on && document.querySelector('.app').classList.contains('full'), tall = ov && splitTall();
+    const home = document.querySelector('.timeline');
+    ['rowA', 'rowB'].forEach((id) => {
+      const r = $(id), want = ov ? stageEl : home;
+      if (r.parentNode !== want) want.append(r);
+      r.classList.toggle('ov', ov); r.classList.toggle('tall', tall);
+    });
+    if (!ov && $('rowA') !== home.firstElementChild) home.prepend($('rowA'));
+    $('clockA').hidden = !ov;
+    document.body.classList.toggle('tlOverlay', ov);
+  }
   function splitUi() {
     const on = splitOn();
+    placeTimelines(on);
     $('rowB').hidden = !on; $('tagA').hidden = !on; $('splitLbl').hidden = !on;
     document.body.classList.toggle('splitTall', on && splitTall());
     $('optSplit').disabled = ghosts.length < 2;
@@ -4933,6 +4958,7 @@ void main() {
     $('scrubB').max = String(Math.max(1, Math.round(ghostEnd(split.b))));
     $('scrubB').value = String(Math.round(tb));
     $('clockB').textContent = ghostFormatTime(Math.round(tb));
+    $('clockA').textContent = ghostFormatTime(Math.round(t));
   }
   function renderSplit(dt, now) {
     // Side by side, or one above the other when the stage is taller than wide (a phone upright).
@@ -5273,6 +5299,7 @@ void main() {
     const app = document.querySelector('.app'), btn = $('fullScreen');
     const set = (on) => {
       app.classList.toggle('full', on);
+      try { splitUi(); } catch (e) { /* not set up yet */ }
       btn.setAttribute('aria-pressed', String(on));
       btn.title = btn.ariaLabel = on ? 'Exit full screen' : 'Full screen';
     };
