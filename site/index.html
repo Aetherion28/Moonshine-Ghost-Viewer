@@ -2422,8 +2422,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_PICKET_KEY = 0xE417, BW_PICKET_TYPE = 0x0800000D;
   const isPicket = (desc) => !!desc && (desc.nameKey === BW_PICKET_KEY || desc.objectId === BW_PICKET_TYPE);
   const BW_BATH = [-1000, 4.5, -6217];
+  const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, pull: 10, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpF: 120 };
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpF: 45 };
   function chompSim(bw, f, mario, key) {
     const G = bw.graph, R = bw.n * bw.len;
     let P = bw.p;
@@ -2470,14 +2471,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (st.shake) { if (++st.shake > 55) { st.shake = 0; st.staked = false; } }
       else if (st.staked && st.pulled && st.heat > 0 && !st.bark) { if (++st.stakeT > 600) { st.stakeT = 0; st.shake = 1; } }
       else st.stakeT = 0;
-      if (holding && st.heat <= 0) { st.px = m.x; st.pz = m.z; }
+      // Mario is held to the picket (TBWPicket::perform: holder->moveRequest), so it is where he is.
+      if (holding) { st.px = m.x; st.pz = m.z; }
       if (!st.staked && !holding) {
         const ox = st.px - x, oz = st.pz - z, r = Math.hypot(ox, oz);
         if (r > R) { st.px = x + ox / r * R; st.pz = z + oz / r * R; }
       }
       P = [st.px, 0, st.pz];
       // Dragged: picket out, held, and the head pulled (the chain near full length).
-      const dragging = holding && !st.staked && Math.hypot(x - st.px, z - st.pz) > R - 150;
+      // (isHeadPulled only sees a pull when the picket can move, i.e. a cold chomp.)
+      const dragging = holding && !st.staked && st.heat <= 0 && Math.hypot(x - st.px, z - st.pz) > R - 150;
       // Heat
       if (m && m.spray && st.heat > 0) {
         const dx = x - m.x, dz = z - m.z, d = Math.hypot(dx, dz);
@@ -2529,7 +2532,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         const v = st.shake ? 0 : dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : hv * 6 + 0.2;
         // Dragged, the chain pulls it toward Mario (TBossWanwan::control adds the rope's pull).
-        if (dragging) {
+        if (holding) {
           const ox = x - m.x, oz = z - m.z, r = Math.hypot(ox, oz);
           if (r > R) { x = m.x + ox / r * R; z = m.z + oz / r * R; }
         }
@@ -2540,6 +2543,24 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const u = Math.max(0, Math.min(1, ((x - a[0]) * lx + (z - a[2]) * lz) / L2));
           const px = a[0] + lx * u - x, pz = a[2] + lz * u - z, pd = Math.hypot(px, pz);
           if (pd > 1e-6) { const s2 = Math.min(1, BW.pull / pd); x += px * s2; z += pz * s2; }
+        }
+        // What the ghost shows overrides the guesswork: Mario riding on its back (standing 800-1200
+        // above the floor right over it) puts the ball under him, and while he holds the picket and
+        // is being hauled along fast, the ball is the one pulling, a chain's length ahead of him.
+        if (m) {
+          const pm = k ? mario(k - 1) : null, gm = groundY(m.x, m.y + 10, m.z), above = gm > -Infinity ? m.y - gm : 0;
+          const level = pm && Math.abs(m.y - pm.y) < 6;   // standing, not jumping past
+          if (level && above > 850 && above < 1150 && Math.hypot(m.x - x, m.z - z) < 3000) { x += (m.x - x) * 0.5; z += (m.z - z) * 0.5; st.ridden = 8; }
+          else if (st.ridden) st.ridden--;
+          if (holding && pm) {
+            const vx = m.x - pm.x, vz = m.z - pm.z, sp = Math.hypot(vx, vz);
+            if (sp > 9) {
+              const tx = m.x + vx / sp * R * 0.9, tz = m.z + vz / sp * R * 0.9;
+              x += (tx - x) * 0.3; z += (tz - z) * 0.3; yaw = Math.atan2(vx, vz);
+            }
+          }
+          // Brought to the bath (ridden or on the chain): in it goes.
+          if ((st.ridden || holding) && Math.hypot(BW_BATH[0] - x, BW_BATH[2] - z) < 900) { st.bath = 1; st.bx = x; st.bz = z; }
         }
         if (st.staked) {   // while staked it can never go further than the chain allows
           const ox = x - P[0], oz = z - P[2], r = Math.hypot(ox, oz);
@@ -2567,20 +2588,25 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const h = d.held ? d.held[s.i] : 0, desc = h && h !== 15 ? d.attachments[h - 1] : null;
         // The stick's tilt (mIntendedMag, 0-32); its direction is taken as the way Mario faces.
         const inp = d.inputs;
-        let mag = 0;
+        let mag = 0, pump = false;
         if (inp && inp.count && q >= inp.qf[0]) {
           let lo = 0, hi = inp.count - 1;
           while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= q) lo = mid; else hi = mid - 1; }
           mag = Math.min(32, Math.hypot(inp.stick[lo * 2], inp.stick[lo * 2 + 1]) / 72 * 32);
+          pump = inp.trig[lo * 2 + 1] > 30 || !!(inp.fluddMode[lo] & 0x10);   // R pressed: spraying (ghosts without FLUDD data)
         }
-        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray: !!(fe && fe.present && fe.spraying && fe.power), hold: isPicket(desc),
+        const spray = fe ? !!(fe.present && fe.spraying && fe.power) : pump && !SPRAY_BLOCK_ANIMS.has(d.anim[s.i]);
+        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray, hold: isPicket(desc),
           mag, pound: HIP_ANIMS.has(d.anim[s.i]) };
       };
     }
     const bw = node.userData.bw, [x, z, yaw, heat, bark, spx, spz, held, bath] = chompSim(bw, f, mario, key);
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
-    const gy = groundY(x, bw.start[1] + 2000, z);
+    // The floor under the ball, looked for from just above where it was (not from over the roofs).
+    const ref = bw.lastY !== undefined && Math.hypot(x - bw.lastX, z - bw.lastZ) < 600 ? bw.lastY + 300 : bw.start[1] + 900;
+    const gy = groundY(x, ref, z);
     let y = (gy > -Infinity ? gy : bw.start[1]) + BW_RADIUS;
+    bw.lastX = x; bw.lastZ = z; bw.lastY = y - BW_RADIUS;
     if (bath) {   // the leap: an arc from where it was to BW_BATH_POS, landing in the water
       const u = Math.min(1, bath / BW.jumpF), y0 = y, y1 = BW_BATH[1] + BW_RADIUS;
       y = u >= 1 ? y1 : y0 + (y1 - y0) * u + 4 * 900 * u * (1 - u);
@@ -2591,7 +2617,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // The stake: where it was left, or up in Mario's hands while he holds it out of the ground.
     const P = [spx, 0, spz], pg = groundY(P[0], 2000 + (mario ? 0 : bw.p[1]), P[2]);
     let py = (pg > -Infinity ? pg : bw.p[1]) + 90;
-    if (held && heat <= 0 && g) { const s = ghostSampleAt(g.data, base + f * QF_PER_FRAME); py = s.y + 140; }
+    if (held && g) { const s = ghostSampleAt(g.data, base + f * QF_PER_FRAME); py = s.y + 140; }
     if (bw.pkNode) { bw.pkNode.matrix.makeTranslation(P[0], py, P[2]); bw.pkNode.matrixWorldNeedsUpdate = true; bw.pkNode.visible = true; }
     // Stake top to the back of the ball, sagging with the slack and resting on the floor.
     const A = [P[0], py + 60, P[2]], B = [x - Math.sin(yaw) * BW_RADIUS * 0.9, y - BW_RADIUS * 0.55, z - Math.cos(yaw) * BW_RADIUS * 0.9];
@@ -4866,7 +4892,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)] }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
