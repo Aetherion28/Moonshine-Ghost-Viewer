@@ -2413,8 +2413,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // the chomp: the node behind becomes its goal, within 400 of it the link most toward Mario, and
   // at the bath's node it jumps in (TNerveBWJumpToBath). Approximations here: water hits are one
   // per frame of spray at it (within 1200 units and 30 degrees of Mario's facing), the rope is a
-  // length limit (n links of mSLLeashNodeLen), Mario's stick leaning is ignored, and re-staking by
-  // ground pound isn't followed.
+  // length limit (n links of mSLLeashNodeLen), and the stick's direction (mIntendedYaw, which needs
+  // the camera) is taken as the way Mario faces. A ground pound on a loose picket stakes it again;
+  // once pulled and re-staked, a hot chomp shakes it loose after 600 frames.
   const BW_RADIUS = 500, _bwM = new THREE.Matrix4(), _bwQ = new THREE.Quaternion(), _bwE = new THREE.Euler(0, 0, 0, 'YXZ'), _bwS = new THREE.Vector3(1, 1, 1), _bwP = new THREE.Vector3();
   // The stake Mario grabs: a TBWPicket named "ボスワンワンつかみ" (key code 0xE417), actor type
   // 0x0800000D (TBossWanwan::init).
@@ -2422,7 +2423,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const isPicket = (desc) => !!desc && (desc.nameKey === BW_PICKET_KEY || desc.objectId === BW_PICKET_TYPE);
   const BW_BATH = [-1000, 4.5, -6217];
   const BW = { node: 100, pull: 10, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpF: 60 };
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpF: 120 };
   function chompSim(bw, f, mario, key) {
     const G = bw.graph, R = bw.n * bw.len;
     let P = bw.p;
@@ -2443,11 +2444,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
       const m = mario ? mario(k) : null;
       // In the bath (TNerveBWJumpToBath): it hops from where it was to the bath and stays there.
+      // TNerveBWJumpToBath / TNerveBWDie: it leaps to the bath, then cools off completely there.
       if (st.bath) {
         const u = Math.min(1, st.bath / BW.jumpF);
         x = st.bx + (BW_BATH[0] - st.bx) * u; z = st.bz + (BW_BATH[2] - st.bz) * u;
+        yaw = Math.atan2(BW_BATH[0] - st.bx, BW_BATH[2] - st.bz);
+        if (u >= 1 && st.heat > 0) st.heat--;
         st.bath++;
-        S.x.push(x); S.z.push(z); S.yaw.push(yaw); S.heat.push(0); S.bark.push(0); S.px.push(st.px); S.pz.push(st.pz); S.held.push(0); S.bath.push(st.bath);
+        S.x.push(x); S.z.push(z); S.yaw.push(yaw); S.heat.push(st.heat); S.bark.push(0); S.px.push(st.px); S.pz.push(st.pz); S.held.push(0); S.bath.push(st.bath);
         continue;
       }
       // The stake: in Mario's hands it goes where he goes, unless the chomp has any heat (then it
@@ -2456,7 +2460,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // heat it won't move (moveRequest refuses), cold it goes where Mario takes it. Out of the
       // ground and let go, the chain drags it along behind the chomp.
       const holding = !!(m && m.hold);
-      if (holding) st.staked = false;
+      if (holding) { if (st.staked) st.pulled = true; st.staked = false; st.shake = 0; }
+      // A ground pound on the picket stakes it back in (TBWPicket::receiveMessage, HIP_DROP).
+      if (!holding && !st.staked && m && m.pound && Math.hypot(m.x - st.px, m.z - st.pz) < 100 + 42 ) {
+        st.staked = true; st.stakeT = 0;
+      }
+      // A hot chomp that stays staked 600 frames after the picket was once pulled shakes it loose
+      // (TNerveBWShake, bwanwan_shake: 55 frames).
+      if (st.shake) { if (++st.shake > 55) { st.shake = 0; st.staked = false; } }
+      else if (st.staked && st.pulled && st.heat > 0 && !st.bark) { if (++st.stakeT > 600) { st.stakeT = 0; st.shake = 1; } }
+      else st.stakeT = 0;
       if (holding && st.heat <= 0) { st.px = m.x; st.pz = m.z; }
       if (!st.staked && !holding) {
         const ox = st.px - x, oz = st.pz - z, r = Math.hypot(ox, oz);
@@ -2508,7 +2521,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         let dy = wrap(Math.atan2(t2[0] - x, t2[2] - z) - yaw);
         yaw = wrap(yaw + Math.max(-BW.turn, Math.min(BW.turn, dy)));
         const hv = st.heat / BW.heatMax;
-        const v = dragging ? 3 * hv * 6 : holding ? hv * 6 : hv * 6 + 0.2;
+        // Holding the picket: leaning the stick away from the chomp holds it back, toward it hurries it.
+        let rate = 1;
+        if (holding && m) {
+          const fx = x - m.x, fz = z - m.z, fl = Math.hypot(fx, fz) || 1;
+          rate = Math.max(0, Math.min(1.5, 1 - (m.mag / 32) * 0.75 * -((fx / fl) * Math.sin(m.yaw) + (fz / fl) * Math.cos(m.yaw))));
+        }
+        const v = st.shake ? 0 : dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : hv * 6 + 0.2;
         // Dragged, the chain pulls it toward Mario (TBossWanwan::control adds the rope's pull).
         if (dragging) {
           const ox = x - m.x, oz = z - m.z, r = Math.hypot(ox, oz);
@@ -2546,12 +2565,26 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (!seg || `${seg.route.area}:${seg.route.episode}` !== here) return null;
         const fe = ghostFluddAt(d, q);
         const h = d.held ? d.held[s.i] : 0, desc = h && h !== 15 ? d.attachments[h - 1] : null;
-        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray: !!(fe && fe.present && fe.spraying && fe.power), hold: isPicket(desc) };
+        // The stick's tilt (mIntendedMag, 0-32); its direction is taken as the way Mario faces.
+        const inp = d.inputs;
+        let mag = 0;
+        if (inp && inp.count && q >= inp.qf[0]) {
+          let lo = 0, hi = inp.count - 1;
+          while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= q) lo = mid; else hi = mid - 1; }
+          mag = Math.min(32, Math.hypot(inp.stick[lo * 2], inp.stick[lo * 2 + 1]) / 72 * 32);
+        }
+        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray: !!(fe && fe.present && fe.spraying && fe.power), hold: isPicket(desc),
+          mag, pound: HIP_ANIMS.has(d.anim[s.i]) };
       };
     }
     const bw = node.userData.bw, [x, z, yaw, heat, bark, spx, spz, held, bath] = chompSim(bw, f, mario, key);
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
-    const gy = groundY(x, bw.start[1] + 2000, z), y = (gy > -Infinity ? gy : bw.start[1]) + BW_RADIUS;
+    const gy = groundY(x, bw.start[1] + 2000, z);
+    let y = (gy > -Infinity ? gy : bw.start[1]) + BW_RADIUS;
+    if (bath) {   // the leap: an arc from where it was to BW_BATH_POS, landing in the water
+      const u = Math.min(1, bath / BW.jumpF), y0 = y, y1 = BW_BATH[1] + BW_RADIUS;
+      y = u >= 1 ? y1 : y0 + (y1 - y0) * u + 4 * 900 * u * (1 - u);
+    }
     placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
     node.visible = true;
     poseRig(node, f);
