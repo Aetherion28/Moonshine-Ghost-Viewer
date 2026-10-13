@@ -92,10 +92,23 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 
 .transport { grid-area: transport; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px 14px;
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); background: var(--panel); }
-.buttons { display: flex; gap: 6px; }
+.buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .buttons button { min-width: 40px; font-family: var(--mono); }
 #play { min-width: 64px; }
-.timeline { position: relative; min-width: 0; }
+.timeline { position: relative; min-width: 0; display: grid; gap: 4px; }
+.tl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tlTag { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.tlTime { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 5.5em; text-align: right; }
+.buttons .tool, .tl .tool { font-family: inherit; font-size: 12px; min-width: 0; padding: 4px 8px; }
+.buttons .tool[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+#clipBtn.rec { color: var(--danger); border-color: var(--danger); }
+.splitLbl { position: absolute; inset: 0; pointer-events: none; }
+.splitLbl::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--panel); }
+.splitLbl span { position: absolute; bottom: 10px; font: 600 12px var(--mono); padding: 3px 8px; border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent); border-left: 4px solid var(--c, var(--accent)); }
+.splitLbl #lblA { left: 12px; } .splitLbl #lblB { left: calc(50% + 12px); }
+.splitLbl.tall::after { left: 0; right: 0; top: 50%; bottom: auto; width: auto; height: 2px; margin: -1px 0 0; }
+.splitLbl.tall #lblA { bottom: calc(50% + 10px); } .splitLbl.tall #lblB { left: 12px; }
 input[type=range] { width: 100%; accent-color: var(--accent); }
 .clock { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; line-height: 1.25; }
 .clock .now { font-size: 20px; font-weight: 500; }
@@ -133,6 +146,8 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto minmax(150px, 38%);
     grid-template-areas: "top" "stage" "transport" "side"; height: 100%; height: 100dvh; }
   .stage { min-height: 0; }
+  /* Two stacked views need the room: the sidebar gives up some height. */
+  body.splitTall .app { grid-template-rows: auto minmax(0, 1fr) auto minmax(110px, 22%); }
   aside { border-left: 0; border-top: 1px solid var(--line); overflow-y: auto; overscroll-behavior: contain;
     padding: 10px 16px 16px; gap: 12px; }
   .transport { grid-template-columns: 1fr auto; padding-top: 8px; padding-bottom: 8px; }
@@ -219,6 +234,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <div class="pad" id="joyPad" role="application" aria-label="Move the camera: drag the knob"><div class="knob" id="joyKnob"></div></div>
       <div class="ud"><button id="joyUp" aria-label="Raise the camera" title="Raise the camera">&#9650;</button><button id="joyDown" aria-label="Lower the camera" title="Lower the camera">&#9660;</button></div>
     </div>
+    <div class="splitLbl" id="splitLbl" hidden><span id="lblA"></span><span id="lblB"></span></div>
     <div class="drop" id="drop" hidden>Drop .smsghost files to add them</div>
     <button class="fsBtn" id="fullScreen" title="Full screen" aria-label="Full screen" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="in" d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><path class="out" d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg></button>
   </div>
@@ -228,9 +244,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <button id="back" title="Back one frame (,)" aria-label="Back one frame">&minus;1f</button>
       <button id="play" class="primary" aria-label="Play">Play</button>
       <button id="fwd" title="Forward one frame (.)" aria-label="Forward one frame">+1f</button>
+      <button id="splitBtn" class="tool" title="Side by side: two ghosts, each in its own view" aria-pressed="false" disabled>Side by side</button>
+      <button id="shareBtn" class="tool" title="Copy a link to this view (ghost, time and camera)">Share</button>
+      <button id="clipBtn" class="tool" title="Record a clip of the view; click again to stop and save it">Record</button>
     </div>
     <div class="timeline">
-      <input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position">
+      <div class="tl"><span class="tlTag" id="tagA" hidden></span><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"></div>
+      <div class="tl" id="rowB" hidden><span class="tlTag" id="tagB"></span><input type="range" id="scrubB" min="0" max="1000" step="1" value="0" aria-label="Right view position"><span class="tlTime" id="clockB">0.000</span>
+        <button id="syncB" class="tool" title="Line the right view up with the left one again">Sync</button></div>
     </div>
     <div class="clock">
       <div class="now" id="clockNow">0.000</div>
@@ -3172,7 +3193,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // While playing, switch stages when the leading ghost moves into another area (a secret, say).
   let autoStageRoute = '';
   function followGhostStage() {
-    if (!$('optAutoStage').checked) return;
+    if (!$('optAutoStage').checked || splitNoStage) return;
     const g = leadGhost();
     if (!g) return;
     const s = ghostSampleAt(g.data, t);
@@ -4486,6 +4507,7 @@ void main() {
   function setFollow(g) { followGhost = g; gameCam.at = null; renderGhostList(); updateMapNotice(); update(); }
   const GHOST_LATEST = 6;   // newest Moonshine ghost format
   function renderGhostList() {
+    if (typeof splitUi === 'function') try { splitUi(); } catch (e) { /* before the split view is set up */ }
     const list = $('ghostList');
     list.textContent = '';
     if (!ghosts.length) {
@@ -4805,6 +4827,14 @@ void main() {
     // With no ghost loaded the stage still lives: its walkers run on their own clock.
     if (!ghosts.length && objectsGroup) { idleClock += dt * QF_PER_SECOND; updateWalkers(); }
     updateSleeper();
+    if (splitOn()) renderSplit(dt, now);
+    else viewStep(dt, now, true);
+    clipFrame();
+    requestAnimationFrame(loop);
+  }
+
+  // One view: camera (the Shine demo's, the follow camera's, or the user's), then the frame.
+  function viewStep(dt, now, interactive) {
     // The Shine get demo camera takes over the game's follow camera (not Fixed, not a drag).
     const sgLead = leadGhost(), sgDm = sgLead ? shineDemoAt(sgLead, t) : null;
     const sgCam = sgDm && cameraMode === 'follow' && !(userCamUntil > now || camDragging) ? shineDemoCam(sgDm, t) : null;
@@ -4826,7 +4856,7 @@ void main() {
       } else if (p) gameCamStep(p, dt);
     }
     moveCamera(dt);
-    controls.update();
+    if (interactive) controls.update(); else camera.lookAt(controls.target);
     if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
     updateTriggers();
     updateNames();
@@ -4834,7 +4864,183 @@ void main() {
     drawWater();
     drawJpa();
     drawShineOverlay(sgDm, t);
-    requestAnimationFrame(loop);
+  }
+
+  // ---------------------------------------------------------------- side by side
+  // Two ghosts, one per half of the stage, each with its own clock (the right one runs at an
+  // offset from the left, 0 = both from their start) and its own camera. Each half poses the
+  // world at its own time; the stage follows the left ghost.
+  let split = null, splitNoStage = false;
+  // A phone held upright stacks the views; turned on its side (or any wider screen) they sit side by side.
+  const splitTall = () => matchMedia('(orientation: portrait) and (max-width: 760px)').matches;
+  const splitOn = () => !!(split && ghosts.includes(split.a) && ghosts.includes(split.b));
+  const camSave = () => ({ p: camera.position.clone(), q: controls.target.clone(), at: gameCam.at && gameCam.at.clone(),
+    dist: gameCam.dist, lastT: gameCam.lastT, key: gameCam.key, user: userCamUntil });
+  function camLoad(c) {
+    camera.position.copy(c.p); controls.target.copy(c.q); gameCam.at = c.at && c.at.clone();
+    gameCam.dist = c.dist; gameCam.lastT = c.lastT; gameCam.key = c.key; userCamUntil = c.user;
+  }
+  const ghostEnd = (g) => g.data.qf[g.data.qf.length - 1];
+  const splitTB = () => Math.max(0, Math.min(ghostEnd(split.b), t + split.offset));
+  function setSplit(on) {
+    if (on && ghosts.length >= 2) {
+      const a = leadGhost() || ghosts[0], b = ghosts.find((x) => x !== a && x.visible) || ghosts.find((x) => x !== a);
+      const c = camSave();
+      split = { a, b, offset: 0, active: 0, cams: [c, camSave()], vis: null };
+    } else split = null;
+    $('splitBtn').setAttribute('aria-pressed', String(!!split));
+    splitUi();
+    resize();
+    update();
+  }
+  function splitUi() {
+    const on = splitOn();
+    $('rowB').hidden = !on; $('tagA').hidden = !on; $('splitLbl').hidden = !on;
+    document.body.classList.toggle('splitTall', on && splitTall());
+    $('splitBtn').disabled = ghosts.length < 2;
+    if (!on) { if (split && !splitOn()) { split = null; $('splitBtn').setAttribute('aria-pressed', 'false'); } return; }
+    const nm = (g) => g.data.header.name || g.fileName;
+    $('tagA').style.background = split.a.color; $('tagB').style.background = split.b.color;
+    $('lblA').style.setProperty('--c', split.a.color); $('lblB').style.setProperty('--c', split.b.color);
+    const tb = splitTB();
+    $('lblA').textContent = `${nm(split.a)} · ${ghostFormatTime(Math.round(t))}`;
+    $('lblB').textContent = `${nm(split.b)} · ${ghostFormatTime(Math.round(tb))}`;
+    $('scrubB').max = String(Math.max(1, Math.round(ghostEnd(split.b))));
+    $('scrubB').value = String(Math.round(tb));
+    $('clockB').textContent = ghostFormatTime(Math.round(tb));
+  }
+  function renderSplit(dt, now) {
+    // Side by side, or one above the other when the stage is taller than wide (a phone upright).
+    const W = stageEl.clientWidth, H = Math.max(1, stageEl.clientHeight), tall = splitTall();
+    const rect = (i) => tall ? [0, i ? 0 : Math.floor(H / 2), W, i ? Math.floor(H / 2) : H - Math.floor(H / 2)]
+      : [i ? Math.floor(W / 2) : 0, 0, i ? W - Math.floor(W / 2) : Math.floor(W / 2), H];
+    $('splitLbl').classList.toggle('tall', tall);
+    split.cams[split.active] = camSave();   // drags and zooms since the last frame
+    const tA = t, fg = followGhost, vis = ghosts.map((g) => [g, g.visible, g.path.visible]);
+    renderer.setScissorTest(true);
+    [1, 0].forEach((i) => {   // the left view last, so the HUD, inputs and stage follow it
+      const g = i ? split.b : split.a;
+      ghosts.forEach((x) => { x.visible = x === g; x.path.visible = x === g && $('optPath').checked; });
+      t = i ? splitTB() : tA;
+      followGhost = g;
+      camLoad(split.cams[i]);
+      splitNoStage = i === 1;
+      update();
+      splitNoStage = false;
+      const [vx, vy, vw, vh] = rect(i);   // GL's y runs up: the first view is the top one when stacked
+      camera.aspect = vw / Math.max(1, vh); camera.updateProjectionMatrix();
+      renderer.setViewport(vx, vy, vw, vh); renderer.setScissor(vx, vy, vw, vh);
+      viewStep(dt, now, i === split.active);
+      split.cams[i] = camSave();
+    });
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, W, H);
+    camera.aspect = W / H; camera.updateProjectionMatrix();
+    vis.forEach(([g, v, pv]) => { g.visible = v; g.path.visible = pv; });
+    t = tA; followGhost = fg;
+    camLoad(split.cams[split.active]);   // so the next drag moves the view it started on
+    splitUi();
+  }
+  // Which half a drag or wheel belongs to, decided before OrbitControls sees the event.
+  ['pointerdown', 'wheel'].forEach((ev) => renderer.domElement.addEventListener(ev, (e) => {
+    if (!splitOn() || camDragging) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    const k = (splitTall() ? e.clientY - r.top > r.height / 2 : e.clientX - r.left > r.width / 2) ? 1 : 0;
+    if (k !== split.active) { split.cams[split.active] = camSave(); split.active = k; camLoad(split.cams[k]); }
+  }, { capture: true, passive: true }));
+  $('splitBtn').onclick = () => setSplit(!splitOn());
+  $('scrubB').oninput = (e) => { if (splitOn()) { split.offset = Number(e.target.value) - t; splitUi(); } };
+  $('syncB').onclick = () => { if (splitOn()) { split.offset = 0; splitUi(); } };
+
+  // ---------------------------------------------------------------- clip export
+  // MediaRecorder on the stage canvas; plays while recording and saves a .webm (or .mp4) at the end.
+  let clip = null;
+  function clipMime() {
+    const c = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+    return c.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+  }
+  function clipStart() {
+    if (!window.MediaRecorder || !renderer.domElement.captureStream) { showNotice('This browser can\'t record the view.'); return; }
+    const mime = clipMime(), stream = renderer.domElement.captureStream(60);
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 12e6 } : undefined);
+    const parts = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+    rec.onstop = () => {
+      const type = rec.mimeType || mime || 'video/webm', blob = new Blob(parts, { type });
+      const a = document.createElement('a'), g = leadGhost();
+      const base = (g ? (g.data.header.name || g.fileName).replace(/\.smsghost$/i, '') : 'ghost').replace(/[^\w\- ]+/g, '_');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${base} ${ghostFormatTime(Math.round(clip.from)).replace(/:/g, '-')}.${/mp4/.test(type) ? 'mp4' : 'webm'}`;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      clip = null;
+    };
+    clip = { rec, from: t };
+    rec.start(250);
+    $('clipBtn').textContent = 'Stop'; $('clipBtn').classList.add('rec');
+    if (!playing && ghosts.length) setPlaying(true);
+  }
+  function clipStop() {
+    if (!clip || clip.stopping) return;
+    clip.stopping = true;
+    clip.rec.stop();
+    $('clipBtn').textContent = 'Record'; $('clipBtn').classList.remove('rec');
+  }
+  function clipFrame() { if (clip && !clip.stopping && !playing && clip.wasPlaying) clipStop(); if (clip) clip.wasPlaying = clip.wasPlaying || playing; }
+  $('clipBtn').onclick = () => (clip ? clipStop() : clipStart());
+
+  // ---------------------------------------------------------------- shareable links
+  // #g=<Delfino Ghosts file>,...&t=<QF>&cam=<mode>,x,y,z,tx,ty,tz[&split=<offset QF>]. Only ghosts
+  // loaded from Delfino Ghosts can go in a link; files from this computer aren't online.
+  function shareUrl() {
+    const r = (v) => Math.round(v);
+    const shared = ghosts.filter((g) => g.dgPath);
+    const q = new URLSearchParams();
+    if (shared.length) q.set('g', shared.map((g) => g.dgPath).join(','));
+    if (followGhost && followGhost.dgPath) q.set('f', String(shared.indexOf(followGhost)));
+    q.set('t', String(r(t)));
+    const c = splitOn() ? split.cams[0] : camSave();
+    q.set('cam', [cameraMode, r(c.p.x), r(c.p.y), r(c.p.z), r(c.q.x), r(c.q.y), r(c.q.z)].join(','));
+    if (splitOn() && split.a.dgPath && split.b.dgPath) q.set('split', [shared.indexOf(split.a), shared.indexOf(split.b), r(split.offset)].join(','));
+    if (!shared.length && currentMap) q.set('stage', currentMap);
+    return { url: location.origin + location.pathname + '#' + q.toString(), skipped: ghosts.length - shared.length };
+  }
+  $('shareBtn').onclick = async () => {
+    const { url, skipped } = shareUrl();
+    let ok = false;
+    try { await navigator.clipboard.writeText(url); ok = true; } catch (e) { /* no clipboard */ }
+    if (!ok) window.prompt('Copy this link:', url);
+    else showNotice(skipped ? `Link copied. ${skipped} ghost${skipped === 1 ? '' : 's'} from your computer can't be included; only Delfino Ghosts ghosts can.` : 'Link copied.');
+  };
+  async function openShared() {
+    const q = new URLSearchParams(location.hash.slice(1));
+    if (!q.has('g') && !q.has('stage')) return;
+    const paths = (q.get('g') || '').split(',').filter(Boolean);
+    const bufs = await Promise.all(paths.map((p) => fetch(dgFileUrl(p)).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null)));
+    if (!paths.length && q.get('stage')) await loadMap(q.get('stage'));
+    const added = [];
+    bufs.forEach((b, i) => { if (b) { loadBuffers([[b, paths[i].split('/').pop(), paths[i]]]); added[i] = ghosts[ghosts.length - 1]; } });
+    if (bufs.some((b) => !b)) showNotice('Some ghosts in the link couldn\'t be loaded.');
+    const f = added[Number(q.get('f'))];
+    if (f) followGhost = f;
+    const sp = (q.get('split') || '').split(',').map(Number);
+    t = Math.max(0, Math.min(duration, Number(q.get('t')) || 0));
+    update();
+    const cam = (q.get('cam') || '').split(',');
+    if (cam.length === 7) {
+      setCameraMode(cam[0]);
+      camera.position.set(+cam[1], +cam[2], +cam[3]); controls.target.set(+cam[4], +cam[5], +cam[6]);
+      gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target)));
+      userCamUntil = performance.now() + 2000;
+      controls.update();
+    }
+    if (sp.length === 3 && added[sp[0]] && added[sp[1]]) {
+      followGhost = added[sp[0]];
+      setSplit(true);
+      split.a = added[sp[0]]; split.b = added[sp[1]]; split.offset = sp[2] || 0;
+      split.cams = [camSave(), camSave()];
+      splitUi();
+    }
   }
 
   // ---------------------------------------------------------------- UI wiring
@@ -4883,8 +5089,9 @@ void main() {
   let replacedSample = false;
   function loadBuffers(list) {
     const sample = ghosts.find((g) => g.isSample);
-    list.forEach(([buf, name]) => {
+    list.forEach(([buf, name, dgPath]) => {
       const g = addGhost(buf, name);
+      if (g && dgPath) g.dgPath = dgPath;
       if (g && sample && !replacedSample) { removeGhost(sample); replacedSample = true; }
       if (g) { t = 0; update(); setCameraMode(cameraMode); }
     });
@@ -4916,7 +5123,7 @@ void main() {
       try {
         const r = await fetch(dgFileUrl(g.file_path)); if (!r.ok) throw new Error(`HTTP ${r.status}`);
         DG.loaded.add(g.id); b.textContent = 'Added';
-        loadBuffers([[await r.arrayBuffer(), g.original_filename || (g.title + '.smsghost')]]);
+        loadBuffers([[await r.arrayBuffer(), g.original_filename || (g.title + '.smsghost'), g.file_path]]);
       } catch (err) { b.disabled = false; b.textContent = 'Retry'; console.warn('[delfino]', err); }
     };
     li.append(t, m, b); return li;
@@ -5201,6 +5408,7 @@ void main() {
     loadMarioModel();
     update();
     requestAnimationFrame(loop);
+    openShared().catch((e) => console.warn('[share]', e));
   }
   boot();
 })();
