@@ -101,6 +101,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .timeline { position: relative; min-width: 0; display: grid; gap: 4px; }
 .tl { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .tlTag { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.tlTag.both { background: linear-gradient(90deg, var(--fg) 50%, var(--muted) 50%); }
+.tl .fr { font-family: var(--mono); padding: 2px 6px; }
 .tlTime { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 5.5em; text-align: right; }
 .buttons .tool, .tl .tool { font-family: inherit; font-size: 12px; min-width: 0; padding: 4px 8px; }
 .buttons .tool[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
@@ -263,8 +265,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <button id="clipBtn" class="tool" title="Record a clip of the view; click again to stop and save it">Record</button>
     </div>
     <div class="timeline">
-      <div class="tl" id="rowA"><span class="tlTag" id="tagA" hidden></span><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"><span class="tlTime" id="clockA" hidden>0.000</span></div>
-      <div class="tl" id="rowB" hidden><span class="tlTag" id="tagB"></span><input type="range" id="scrubB" min="0" max="1000" step="1" value="0" aria-label="Right view position"><span class="tlTime" id="clockB">0.000</span>
+      <div class="tl" id="rowBoth" hidden><span class="tlTag both" title="Both ghosts"></span><input type="range" id="scrubBoth" min="0" max="1000" step="1" value="0" aria-label="Move both views together"><span class="tlTime">both</span></div>
+      <div class="tl" id="rowA"><span class="tlTag" id="tagA" hidden></span><button class="tool fr" id="backA" hidden title="Left view back one frame" aria-label="Left view back one frame">&minus;1f</button><button class="tool fr" id="fwdA" hidden title="Left view forward one frame" aria-label="Left view forward one frame">+1f</button><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"><span class="tlTime" id="clockA" hidden>0.000</span></div>
+      <div class="tl" id="rowB" hidden><span class="tlTag" id="tagB"></span><button class="tool fr" id="backB" title="Right view back one frame" aria-label="Right view back one frame">&minus;1f</button><button class="tool fr" id="fwdB" title="Right view forward one frame" aria-label="Right view forward one frame">+1f</button><input type="range" id="scrubB" min="0" max="1000" step="1" value="0" aria-label="Right view position"><span class="tlTime" id="clockB">0.000</span>
         <button id="syncB" class="tool" title="Line the right view up with the left one again">Sync</button></div>
     </div>
     <div class="clock">
@@ -4938,7 +4941,8 @@ void main() {
       if (r.parentNode !== want) want.append(r);
       r.classList.toggle('ov', ov); r.classList.toggle('tall', tall);
     });
-    if (!ov && $('rowA') !== home.firstElementChild) home.prepend($('rowA'));
+    if (!ov && $('rowBoth').nextElementSibling !== $('rowA')) $('rowBoth').after($('rowA'));
+    if (!ov && $('rowA').nextElementSibling !== $('rowB')) $('rowA').after($('rowB'));
     $('clockA').hidden = !ov;
     document.body.classList.toggle('tlOverlay', ov);
   }
@@ -4946,6 +4950,7 @@ void main() {
     const on = splitOn();
     placeTimelines(on);
     $('rowB').hidden = !on; $('tagA').hidden = !on; $('splitLbl').hidden = !on;
+    $('rowBoth').hidden = !on; $('backA').hidden = $('fwdA').hidden = !on;
     document.body.classList.toggle('splitTall', on && splitTall());
     $('optSplit').disabled = ghosts.length < 2;
     if (!on) { if (split && !splitOn()) split = null; $('optSplit').checked = false; return; }
@@ -4959,6 +4964,8 @@ void main() {
     $('scrubB').value = String(Math.round(tb));
     $('clockB').textContent = ghostFormatTime(Math.round(tb));
     $('clockA').textContent = ghostFormatTime(Math.round(t));
+    $('scrubBoth').max = String(Math.max(1, Math.round(duration)));
+    $('scrubBoth').value = String(Math.round(t));
   }
   function renderSplit(dt, now) {
     // Side by side, or one above the other when the stage is taller than wide (a phone upright).
@@ -5001,6 +5008,18 @@ void main() {
   }, { capture: true, passive: true }));
   $('optSplit').onchange = (e) => setSplit(e.target.checked);
   $('scrubB').oninput = (e) => { if (splitOn()) { split.offset = Number(e.target.value) - t; splitUi(); } };
+  function stepView(i, frames) {
+    if (!splitOn()) return;
+    setPlaying(false);
+    if (i === 0) { const tb = splitTB(); step(frames); split.offset = tb - t; }
+    else {
+      const tb = Math.max(0, Math.min(ghostEnd(split.b), Math.round(splitTB() / QF_PER_FRAME + frames) * QF_PER_FRAME));
+      split.offset = tb - t;
+    }
+    splitUi();
+  }
+  $('backA').onclick = () => stepView(0, -1); $('fwdA').onclick = () => stepView(0, 1);
+  $('backB').onclick = () => stepView(1, -1); $('fwdB').onclick = () => stepView(1, 1);
   $('syncB').onclick = () => { if (splitOn()) { split.offset = 0; splitUi(); } };
 
   // ---------------------------------------------------------------- clip export
@@ -5110,7 +5129,14 @@ void main() {
   })();
   $('back').onclick = () => step(-1);
   $('fwd').onclick = () => step(1);
-  $('scrub').oninput = (e) => { t = Number(e.target.value); update(); };
+  // In the comparison view each slider moves only its own view; "both" moves the two together.
+  $('scrub').oninput = (e) => {
+    const tb = splitOn() ? splitTB() : 0;
+    t = Number(e.target.value);
+    if (splitOn()) split.offset = tb - t;
+    update();
+  };
+  $('scrubBoth').oninput = (e) => { t = Number(e.target.value); update(); };
   $('mapSelect').onchange = (e) => {   // a world: open its first episode
     const r = (worldRoutes.get(Number(e.target.value)) || [])[0];
     if (r) loadMap(r.map, r.key);
