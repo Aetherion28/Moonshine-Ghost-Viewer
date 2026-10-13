@@ -74,6 +74,9 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .app.full .fsBtn .out { display: inline; }
 .inputsStage { position: absolute; right: 12px; bottom: 12px; width: min(340px, 50%); pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
 .inputsStage[hidden] { display: none; }
+.inputsStage.splitA { right: calc(50% + 12px); width: min(300px, 40%); }
+.inputsStage.splitB { width: min(300px, 40%); }
+.inputsStage.splitTop { bottom: calc(50% + 12px); }
 .inputsBox { background: #0b0f12; border-radius: 8px; padding: 10px 10px 8px; }
 .inputsBox[hidden] { display: none; }
 .inputs { display: block; width: 100%; height: auto; --in: #ffffff; }
@@ -230,6 +233,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     <div class="hud" id="hud" aria-live="off"></div>
     <div class="notice" id="notice" hidden></div>
     <div class="inputsStage" id="inputsStage" hidden></div>
+    <div class="inputsStage" id="inputsStageB" hidden></div>
     <div class="joy" id="joy" hidden>
       <div class="pad" id="joyPad" role="application" aria-label="Move the camera: drag the knob"><div class="knob" id="joyKnob"></div></div>
       <div class="ud"><button id="joyUp" aria-label="Raise the camera" title="Raise the camera">&#9650;</button><button id="joyDown" aria-label="Lower the camera" title="Lower the camera">&#9660;</button></div>
@@ -244,7 +248,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <button id="back" title="Back one frame (,)" aria-label="Back one frame">&minus;1f</button>
       <button id="play" class="primary" aria-label="Play">Play</button>
       <button id="fwd" title="Forward one frame (.)" aria-label="Forward one frame">+1f</button>
-      <button id="splitBtn" class="tool" title="Side by side: two ghosts, each in its own view" aria-pressed="false" disabled>Side by side</button>
       <button id="shareBtn" class="tool" title="Copy a link to this view (ghost, time and camera)">Share</button>
       <button id="clipBtn" class="tool" title="Record a clip of the view; click again to stop and save it">Record</button>
     </div>
@@ -303,6 +306,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <label title="Off: playback steps one game frame at a time, as the game does. On: motion is smoothed between frames."><input type="checkbox" id="optSmooth"> Cinematic playback</label>
       <label title="An on-screen stick that flies the camera around the stage, with buttons to raise and lower it. On by default on touch screens."><input type="checkbox" id="optJoy"> Movement joystick</label>
       <label><input type="checkbox" id="optWire"> Wireframe stage</label>
+      <label title="Two ghosts, each in its own view with its own time slider (needs two ghosts loaded)"><input type="checkbox" id="optSplit" disabled> Comparison view</label>
     </div>
     <h2>Inputs</h2>
     <div class="opts">
@@ -4503,6 +4507,7 @@ void main() {
   // Which ghost the camera, HUD, stage and input display follow: the one picked with Follow,
   // or the first visible one.
   let followGhost = null;
+  let split = null, splitNoStage = false;   // the comparison view (see renderSplit)
   function leadGhost() { return followGhost && followGhost.visible && ghosts.includes(followGhost) ? followGhost : ghosts.find((x) => x.visible); }
   function setFollow(g) { followGhost = g; gameCam.at = null; renderGhostList(); updateMapNotice(); update(); }
   const GHOST_LATEST = 6;   // newest Moonshine ghost format
@@ -4723,19 +4728,40 @@ void main() {
   // ghost's recorded inputs. GameCube pad bits: d-pad 0x1-0x8, Z 0x10, R 0x20, L 0x40, A 0x100,
   // B 0x200, X 0x400, Y 0x800, Start 0x1000.
   const IN_BITS = { in_A: 0x100, in_B: 0x200, in_X: 0x400, in_Y: 0x800, in_Z: 0x10, in_S: 0x1000, in_Dl: 0x1, in_Dr: 0x2, in_Dd: 0x4, in_Du: 0x8 };
+  // The right view of the side by side gets its own copy of the display (ids prefixed "b").
+  let inputDisplayB = null;
+  function inputsB() {
+    if (!inputDisplayB) {
+      inputDisplayB = $('inputDisplay').cloneNode(true);
+      inputDisplayB.id = 'binputDisplay';
+      inputDisplayB.querySelectorAll('[id]').forEach((n) => { n.id = 'b' + n.id; });
+      inputDisplayB.style.marginTop = '8px';
+    }
+    return inputDisplayB;
+  }
   function updateInputDisplay() {
-    const el = $('inputDisplay');
+    const right = splitNoStage;   // the side by side's right view being posed
+    const el = right ? inputsB() : $('inputDisplay');
+    const q = right ? (id) => document.getElementById('b' + id) : $;
     const g = leadGhost();
     const inp = g && g.data.inputs;
     const onStage = $('inputsWhere').value === 'stage';
     const has = !!(inp && inp.count);
-    const home = onStage ? $('inputsStage') : $('inputsBox');
-    if (el.parentNode !== home) home.prepend(el);
-    $('inputsBox').hidden = !$('optInputs').checked || (onStage);
-    $('inputsStage').hidden = !$('optInputs').checked || !onStage || !has;
+    const sp = splitOn(), tall = sp && splitTall();
+    const home = right ? (onStage ? $('inputsStageB') : $('inputsBox')) : onStage ? $('inputsStage') : $('inputsBox');
+    if (el.parentNode !== home) { if (right && !onStage) home.append(el); else home.prepend(el); }
+    if (!right) {
+      $('inputsBox').hidden = !$('optInputs').checked || (onStage);
+      $('inputsStage').hidden = !$('optInputs').checked || !onStage || !has;
+      // Side by side: the left view's display sits in its own half.
+      $('inputsStage').classList.toggle('splitA', sp && !tall);
+      $('inputsStage').classList.toggle('splitTop', tall);
+      $('inputsStageB').classList.toggle('splitB', sp && !tall);
+      if (!sp) { $('inputsStageB').hidden = true; if (inputDisplayB && inputDisplayB.parentNode) inputDisplayB.remove(); }
+      $('inputsNone').hidden = has;
+      $('inputsNone').textContent = g ? 'This ghost has no recorded inputs.' : 'Add a ghost to see its inputs.';
+    } else $('inputsStageB').hidden = !$('optInputs').checked || !onStage || !has;
     if (has) el.removeAttribute('hidden'); else el.setAttribute('hidden', '');
-    $('inputsNone').hidden = has;
-    $('inputsNone').textContent = g ? 'This ghost has no recorded inputs.' : 'Add a ghost to see its inputs.';
     if (!has) return;
     let lo = 0, hi = inp.count - 1;
     if (t < inp.qf[0]) lo = -1;
@@ -4744,17 +4770,17 @@ void main() {
     const sx = lo < 0 ? 0 : inp.stick[lo * 2], sy = lo < 0 ? 0 : inp.stick[lo * 2 + 1];
     const cx = lo < 0 || !inp.cstick ? 0 : inp.cstick[lo * 2], cy = lo < 0 || !inp.cstick ? 0 : inp.cstick[lo * 2 + 1];
     const tl = lo < 0 || !inp.trig ? 0 : inp.trig[lo * 2], tr = lo < 0 || !inp.trig ? 0 : inp.trig[lo * 2 + 1];
-    Object.entries(IN_BITS).forEach(([id, bit]) => $(id).classList.toggle('on', !!(b & bit)));
+    Object.entries(IN_BITS).forEach(([id, bit]) => q(id).classList.toggle('on', !!(b & bit)));
     const clamp = (v) => Math.max(-1, Math.min(1, v / 100));
-    $('in_main').setAttribute('cx', 67 + clamp(sx) * 28); $('in_main').setAttribute('cy', 92 - clamp(sy) * 28);
-    $('in_c').setAttribute('cx', 182 + clamp(cx) * 24); $('in_c').setAttribute('cy', 92 - clamp(cy) * 24);
-    const trig = (id, v, digital) => $(id).setAttribute('width', digital ? 108 : Math.min(108, 108 * v / 200));
+    q('in_main').setAttribute('cx', 67 + clamp(sx) * 28); q('in_main').setAttribute('cy', 92 - clamp(sy) * 28);
+    q('in_c').setAttribute('cx', 182 + clamp(cx) * 24); q('in_c').setAttribute('cy', 92 - clamp(cy) * 24);
+    const trig = (id, v, digital) => q(id).setAttribute('width', digital ? 108 : Math.min(108, 108 * v / 200));
     trig('in_Lf', tl, b & 0x40); trig('in_Rf', tr, b & 0x20);
   }
   (() => {
     let saved = null;
     try { saved = localStorage.getItem('ghostViewer.inputColor'); } catch (e) { /* storage unavailable */ }
-    const set = (c) => { $('inputDisplay').style.setProperty('--in', c); };
+    const set = (c) => { $('inputDisplay').style.setProperty('--in', c); if (inputDisplayB) inputDisplayB.style.setProperty('--in', c); };
     if (saved) { $('inputColor').value = saved; set(saved); }
     $('inputColor').addEventListener('input', (e) => { set(e.target.value); try { localStorage.setItem('ghostViewer.inputColor', e.target.value); } catch (err) { /* ignore */ } });
     $('optInputs').addEventListener('change', () => updateInputDisplay());
@@ -4870,10 +4896,9 @@ void main() {
   // Two ghosts, one per half of the stage, each with its own clock (the right one runs at an
   // offset from the left, 0 = both from their start) and its own camera. Each half poses the
   // world at its own time; the stage follows the left ghost.
-  let split = null, splitNoStage = false;
   // A phone held upright stacks the views; turned on its side (or any wider screen) they sit side by side.
-  const splitTall = () => matchMedia('(orientation: portrait) and (max-width: 760px)').matches;
-  const splitOn = () => !!(split && ghosts.includes(split.a) && ghosts.includes(split.b));
+  function splitTall() { return matchMedia('(orientation: portrait) and (max-width: 760px)').matches; }
+  function splitOn() { return !!(split && ghosts.includes(split.a) && ghosts.includes(split.b)); }
   const camSave = () => ({ p: camera.position.clone(), q: controls.target.clone(), at: gameCam.at && gameCam.at.clone(),
     dist: gameCam.dist, lastT: gameCam.lastT, key: gameCam.key, user: userCamUntil });
   function camLoad(c) {
@@ -4888,7 +4913,7 @@ void main() {
       const c = camSave();
       split = { a, b, offset: 0, active: 0, cams: [c, camSave()], vis: null };
     } else split = null;
-    $('splitBtn').setAttribute('aria-pressed', String(!!split));
+    $('optSplit').checked = !!split;
     splitUi();
     resize();
     update();
@@ -4897,8 +4922,8 @@ void main() {
     const on = splitOn();
     $('rowB').hidden = !on; $('tagA').hidden = !on; $('splitLbl').hidden = !on;
     document.body.classList.toggle('splitTall', on && splitTall());
-    $('splitBtn').disabled = ghosts.length < 2;
-    if (!on) { if (split && !splitOn()) { split = null; $('splitBtn').setAttribute('aria-pressed', 'false'); } return; }
+    $('optSplit').disabled = ghosts.length < 2;
+    if (!on) { if (split && !splitOn()) split = null; $('optSplit').checked = false; return; }
     const nm = (g) => g.data.header.name || g.fileName;
     $('tagA').style.background = split.a.color; $('tagB').style.background = split.b.color;
     $('lblA').style.setProperty('--c', split.a.color); $('lblB').style.setProperty('--c', split.b.color);
@@ -4948,7 +4973,7 @@ void main() {
     const k = (splitTall() ? e.clientY - r.top > r.height / 2 : e.clientX - r.left > r.width / 2) ? 1 : 0;
     if (k !== split.active) { split.cams[split.active] = camSave(); split.active = k; camLoad(split.cams[k]); }
   }, { capture: true, passive: true }));
-  $('splitBtn').onclick = () => setSplit(!splitOn());
+  $('optSplit').onchange = (e) => setSplit(e.target.checked);
   $('scrubB').oninput = (e) => { if (splitOn()) { split.offset = Number(e.target.value) - t; splitUi(); } };
   $('syncB').onclick = () => { if (splitOn()) { split.offset = 0; splitUi(); } };
 
