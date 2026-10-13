@@ -5135,16 +5135,26 @@ void main() {
     q.set('t', String(r(t)));
     const c = splitOn() ? split.cams[0] : camSave();
     q.set('cam', [cameraMode, r(c.p.x), r(c.p.y), r(c.p.z), r(c.q.x), r(c.q.y), r(c.q.z)].join(','));
-    if (splitOn() && split.a.dgPath && split.b.dgPath) q.set('split', [shared.indexOf(split.a), shared.indexOf(split.b), r(split.offset)].join(','));
+    const hidden = shared.map((g, i) => (g.visible ? -1 : i)).filter((i) => i >= 0);
+    if (hidden.length) q.set('h', hidden.join(','));
+    if (splitOn() && split.a.dgPath && split.b.dgPath) {
+      q.set('split', [shared.indexOf(split.a), shared.indexOf(split.b)].join(','));
+      q.set('tB', String(r(splitTB())));   // the right view's own time stamp (t is the left view's)
+      const b = split.cams[1];
+      q.set('camB', [r(b.p.x), r(b.p.y), r(b.p.z), r(b.q.x), r(b.q.y), r(b.q.z)].join(','));
+    }
     if (!shared.length && currentMap) q.set('stage', currentMap);
-    return { url: location.origin + location.pathname + '#' + q.toString(), skipped: ghosts.length - shared.length };
+    return { url: location.origin + location.pathname + '#' + q.toString(), skipped: ghosts.filter((g) => !g.dgPath && !g.isSample).length,
+      splitLost: splitOn() && !(split.a.dgPath && split.b.dgPath) };
   }
   $('shareBtn').onclick = async () => {
-    const { url, skipped } = shareUrl();
+    const { url, skipped, splitLost } = shareUrl();
     let ok = false;
     try { await navigator.clipboard.writeText(url); ok = true; } catch (e) { /* no clipboard */ }
     if (!ok) window.prompt('Copy this link:', url);
-    else showNotice(skipped ? `Link copied. ${skipped} ghost${skipped === 1 ? '' : 's'} from your computer can't be included; only Delfino Ghosts ghosts can.` : 'Link copied.');
+    else showNotice((skipped ? `Link copied. ${skipped} ghost${skipped === 1 ? '' : 's'} from your computer can't be included; only Delfino Ghosts ghosts can.` : 'Link copied.')
+      + (splitLost ? ' The comparison view needs both its ghosts from Delfino Ghosts, so the link opens without it.' : ''));
+    setTimeout(() => { if (/^Link copied/.test($('notice').textContent)) showNotice(''); }, 6000);
   };
   async function openShared() {
     const q = new URLSearchParams(location.hash.slice(1));
@@ -5168,11 +5178,18 @@ void main() {
       userCamUntil = performance.now() + 2000;
       controls.update();
     }
-    if (sp.length === 3 && added[sp[0]] && added[sp[1]]) {
+    (q.get('h') || '').split(',').filter(Boolean).map(Number).forEach((i) => { if (added[i]) added[i].visible = false; });
+    if (q.get('h')) { ghosts.forEach((g) => { g.path.visible = g.visible && $('optPath').checked; }); renderGhostList(); }
+    if (sp.length >= 2 && added[sp[0]] && added[sp[1]]) {
       followGhost = added[sp[0]];
+      added[sp[0]].visible = added[sp[1]].visible = true;
       setSplit(true);
-      split.a = added[sp[0]]; split.b = added[sp[1]]; split.offset = sp[2] || 0;
+      split.a = added[sp[0]]; split.b = added[sp[1]];
+      split.offset = q.has('tB') ? Number(q.get('tB')) - t : sp[2] || 0;
+      const cb = (q.get('camB') || '').split(',').map(Number);
       split.cams = [camSave(), camSave()];
+      if (cb.length === 6) { split.cams[1].p.set(cb[0], cb[1], cb[2]); split.cams[1].q.set(cb[3], cb[4], cb[5]); split.cams[1].user = performance.now() + 2000; }
+      renderGhostList();
       splitUi();
     }
   }
