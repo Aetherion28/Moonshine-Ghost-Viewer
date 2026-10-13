@@ -1713,6 +1713,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const mk = ([s0, s1]) => ({ t0: d.qf[s0], t1: d.qf[s1], s0, s1, thrown: d.anim[s1 - 1] !== ANIM_PUT && d.anim[s1] !== ANIM_PUT });
     Object.entries(holdRuns(d, a, e)).forEach(([att, list]) => {
       const desc = d.attachments[att - 1];
+      if (isPicket(desc)) return;   // the Chain Chomp's stake: placeChomp moves it
       const dynDef = desc && objDyn[desc.objectId.toString(16).padStart(8, '0')];
       if (dynDef) {   // spawned at run time (bombs): every hold is a different actor
         list.forEach((r) => plan.dyn.push({ def: dynDef, hold: mk(r) }));
@@ -2400,28 +2401,40 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     node.visible = true;
     poseRig(node, f);
   }
-  // The Chain Chomp (TBossWanwan, TNerveBWGraphWander, from the decompiled bosswanwan.cpp): it rides
+  // The Chain Chomp (TBossWanwan, from the decompiled bosswanwan.cpp). TNerveBWGraphWander: it rides
   // the "bwanwan" graph, pulled back onto the line between the node it came from and the one it
-  // heads for by up to 10 units a frame, at 6 x heat + 0.2 units a frame, turning 1 degree a frame.
-  // Within 100 of a node: a plain stretch (2 links) goes straight on; at a junction it takes, of the
-  // links within 100 degrees of where it faces, the one leading farthest from Mario (none: it turns
-  // round). Heat (0-255, starts full): each water hit takes 1 off, while warm it gains 1 every 20
-  // frames, and once cold it barks after 40 s and is hot again 280 frames into the bark.
-  // The leash (n links of mSLLeashNodeLen) holds it to its stake. Water hits are taken as one per
-  // frame while Mario sprays at it (within 1200 units and 30 degrees of his facing); picket
-  // dragging and the bath aren't followed yet.
+  // heads for by up to 10 units a frame, at heat x mSLMarchSpeed (6) + 0.2 a frame, turning 1 degree
+  // a frame. Within 100 of a node: a neighbour flagged 1 is jumped to; a plain stretch goes straight
+  // on; at a junction it takes, of the links within 100 degrees of where it faces, the one leading
+  // farthest from Mario (none: it turns round). Heat (mHitPoints, 0-255): each water hit takes 1
+  // off; while it has any it gains 1 every 20 frames; cold for 2400 frames it barks (TNerveBWBark,
+  // which pulls the picket loose) and is hot again 280 frames in. Taking the picket pulls it out of
+  // the ground; it only moves with Mario when the chomp is cold, and then pulling the chain drags
+  // the chomp: the node behind becomes its goal, within 400 of it the link most toward Mario, and
+  // at the bath's node it jumps in (TNerveBWJumpToBath). Approximations here: water hits are one
+  // per frame of spray at it (within 1200 units and 30 degrees of Mario's facing), the rope is a
+  // length limit (n links of mSLLeashNodeLen), Mario's stick leaning is ignored, and re-staking by
+  // ground pound isn't followed.
   const BW_RADIUS = 500, _bwM = new THREE.Matrix4(), _bwQ = new THREE.Quaternion(), _bwE = new THREE.Euler(0, 0, 0, 'YXZ'), _bwS = new THREE.Vector3(1, 1, 1), _bwP = new THREE.Vector3();
-  const BW = { node: 100, pull: 10, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 40 * 30, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180 };
+  // The stake Mario grabs: a TBWPicket named "ボスワンワンつかみ" (key code 0xE417), actor type
+  // 0x0800000D (TBossWanwan::init).
+  const BW_PICKET_KEY = 0xE417, BW_PICKET_TYPE = 0x0800000D;
+  const isPicket = (desc) => !!desc && (desc.nameKey === BW_PICKET_KEY || desc.objectId === BW_PICKET_TYPE);
+  const BW_BATH = [-1000, 4.5, -6217];
+  const BW = { node: 100, pull: 10, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpF: 60 };
   function chompSim(bw, f, mario, key) {
-    const G = bw.graph, R = bw.n * bw.len, P = bw.p;
+    const G = bw.graph, R = bw.n * bw.len;
+    let P = bw.p;
     if (!bw.sim || bw.simKey !== key) {
       bw.simKey = key;
       let to = -1, best = Infinity;
       (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; to = k; } });
       const from = to >= 0 && G[to][4] && G[to][4].length ? G[to][4][0] : to;
       bw.sim = { x: [bw.start[0]], z: [bw.start[2]], yaw: [bw.ry], heat: [BW.heatMax], bark: [0],
-        st: { from, to, heat: BW.heatMax, warm: 0, cold: 0, bark: 0 } };
+        px: [P[0]], pz: [P[2]], held: [0], bath: [0],
+        st: { from, to, heat: BW.heatMax, warm: 0, cold: 0, bark: 0, px: P[0], pz: P[2], bath: 0, bx: 0, bz: 0, staked: true, tick: 0,
+          bathNode: (G || []).reduce((b, n, k) => (b < 0 || Math.hypot(n[0] - BW_BATH[0], n[2] - BW_BATH[2]) < Math.hypot(G[b][0] - BW_BATH[0], G[b][2] - BW_BATH[2]) ? k : b), -1) } };
     }
     const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 1, 60 * 60 * 30);
     const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -2429,21 +2442,49 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k = S.x.length - 1;
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
       const m = mario ? mario(k) : null;
+      // In the bath (TNerveBWJumpToBath): it hops from where it was to the bath and stays there.
+      if (st.bath) {
+        const u = Math.min(1, st.bath / BW.jumpF);
+        x = st.bx + (BW_BATH[0] - st.bx) * u; z = st.bz + (BW_BATH[2] - st.bz) * u;
+        st.bath++;
+        S.x.push(x); S.z.push(z); S.yaw.push(yaw); S.heat.push(0); S.bark.push(0); S.px.push(st.px); S.pz.push(st.pz); S.held.push(0); S.bath.push(st.bath);
+        continue;
+      }
+      // The stake: in Mario's hands it goes where he goes, unless the chomp has any heat (then it
+      // won't come out of the ground); let go, it stays where he left it.
+      // TBWPicket: taking it pulls it out of the ground (releasePicket); while the chomp has any
+      // heat it won't move (moveRequest refuses), cold it goes where Mario takes it. Out of the
+      // ground and let go, the chain drags it along behind the chomp.
+      const holding = !!(m && m.hold);
+      if (holding) st.staked = false;
+      if (holding && st.heat <= 0) { st.px = m.x; st.pz = m.z; }
+      if (!st.staked && !holding) {
+        const ox = st.px - x, oz = st.pz - z, r = Math.hypot(ox, oz);
+        if (r > R) { st.px = x + ox / r * R; st.pz = z + oz / r * R; }
+      }
+      P = [st.px, 0, st.pz];
+      // Dragged: picket out, held, and the head pulled (the chain near full length).
+      const dragging = holding && !st.staked && Math.hypot(x - st.px, z - st.pz) > R - 150;
       // Heat
       if (m && m.spray && st.heat > 0) {
         const dx = x - m.x, dz = z - m.z, d = Math.hypot(dx, dz);
         if (d < BW.sprayR + BW_RADIUS && Math.abs(wrap(Math.atan2(dx, dz) - m.yaw)) < BW.sprayCone) st.heat = Math.max(0, st.heat - 1);
       }
+      st.tick++;
       if (st.bark) { if (++st.bark >= BW.bark) { st.bark = 0; st.heat = BW.heatMax; st.cold = 0; } }
-      else if (st.heat <= 0) { if (++st.cold >= BW.coldBark) st.bark = 1; }
-      else if (st.heat < BW.heatMax && ++st.warm >= BW.reheat) { st.warm = 0; st.heat++; }
+      else if (st.heat <= 0) { if (++st.cold > BW.coldBark) { st.bark = 1; st.staked = false; } }
+      else { st.cold = 0; if (st.tick % BW.reheat === 0 && st.heat < BW.heatMax) st.heat++; }
       // Movement along the graph
       if (G && st.to >= 0 && !st.bark) {
         const tn = G[st.to];
         if (Math.hypot(tn[0] - x, tn[2] - z) < BW.node) {   // at the node: pick the next link
           const nb = (tn[4] || []).filter((j) => j >= 0 && j < G.length);
           let next;
-          if (nb.length === 2) next = nb[0] === st.from ? nb[1] : nb[0];
+          const jump = nb.find((j) => j !== st.from && (G[j][3] & 1));   // jumpToNextGraphNode: graph node flag 1
+          if (jump !== undefined && !dragging) next = jump;
+          else if (dragging) {   // pulled: the link pointing most toward Mario
+            next = nb.reduce((b, j) => (b < 0 || Math.hypot(G[j][0] - m.x, G[j][2] - m.z) < Math.hypot(G[b][0] - m.x, G[b][2] - m.z) ? j : b), -1);
+          } else if (nb.length === 2) next = nb[0] === st.from ? nb[1] : nb[0];
           else {
             const ok = nb.filter((j) => j !== st.to && Math.abs(wrap(Math.atan2(G[j][0] - tn[0], G[j][2] - tn[2]) - yaw)) <= BW.cone);
             if (!ok.length) next = st.from;
@@ -2453,10 +2494,26 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           if (next === undefined || next < 0) next = st.from;
           st.from = st.to; st.to = next;
         }
+        // Dragged cold: the node behind it is its target; near it, the link most toward Mario.
+        if (dragging && st.from >= 0 && Math.hypot(G[st.from][0] - x, G[st.from][2] - z) < BW.dragNode) {
+          const nb = (G[st.from][4] || []).filter((j) => j >= 0 && j < G.length);
+          const best = nb.reduce((b, j) => (b < 0 || Math.hypot(G[j][0] - m.x, G[j][2] - m.z) < Math.hypot(G[b][0] - m.x, G[b][2] - m.z) ? j : b), -1);
+          if (best >= 0) { st.to = st.from; st.from = best; }
+        }
+        // Dragged to the node by the bath: in it jumps.
+        if (dragging && st.bathNode >= 0 && Math.hypot(G[st.bathNode][0] - x, G[st.bathNode][2] - z) < BW.bathNode) {
+          st.bath = 1; st.bx = x; st.bz = z;
+        }
         const t2 = G[st.to], a = G[st.from] || t2;
         let dy = wrap(Math.atan2(t2[0] - x, t2[2] - z) - yaw);
         yaw = wrap(yaw + Math.max(-BW.turn, Math.min(BW.turn, dy)));
-        const v = 6 * st.heat / BW.heatMax + 0.2;
+        const hv = st.heat / BW.heatMax;
+        const v = dragging ? 3 * hv * 6 : holding ? hv * 6 : hv * 6 + 0.2;
+        // Dragged, the chain pulls it toward Mario (TBossWanwan::control adds the rope's pull).
+        if (dragging) {
+          const ox = x - m.x, oz = z - m.z, r = Math.hypot(ox, oz);
+          if (r > R) { x = m.x + ox / r * R; z = m.z + oz / r * R; }
+        }
         x += Math.sin(yaw) * v; z += Math.cos(yaw) * v;
         // Back onto the rail between the two nodes, by up to 10 a frame.
         const lx = t2[0] - a[0], lz = t2[2] - a[2], L2 = lx * lx + lz * lz;
@@ -2465,13 +2522,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const px = a[0] + lx * u - x, pz = a[2] + lz * u - z, pd = Math.hypot(px, pz);
           if (pd > 1e-6) { const s2 = Math.min(1, BW.pull / pd); x += px * s2; z += pz * s2; }
         }
-        const ox = x - P[0], oz = z - P[2], r = Math.hypot(ox, oz);
-        if (r > R) { x = P[0] + ox / r * R; z = P[2] + oz / r * R; }
+        if (st.staked) {   // while staked it can never go further than the chain allows
+          const ox = x - P[0], oz = z - P[2], r = Math.hypot(ox, oz);
+          if (r > R) { x = P[0] + ox / r * R; z = P[2] + oz / r * R; }
+        }
       }
       S.x.push(x); S.z.push(z); S.yaw.push(yaw); S.heat.push(st.heat); S.bark.push(st.bark);
+      S.px.push(st.px); S.pz.push(st.pz); S.held.push(holding ? 1 : 0); S.bath.push(0);
     }
     const k = Math.min(S.x.length - 1, Math.max(0, Math.floor(f)));
-    return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k]];
+    return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k], S.px[k], S.pz[k], S.held[k], S.bath[k]];
   }
   function placeChomp(node, f, g, base) {
     // Mario at the chomp's frame k of this visit (the ghost's time base + k frames), while he's here.
@@ -2485,16 +2545,20 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const seg = d.segments[d.segIndex[s.i]];
         if (!seg || `${seg.route.area}:${seg.route.episode}` !== here) return null;
         const fe = ghostFluddAt(d, q);
-        return { x: s.x, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray: !!(fe && fe.present && fe.spraying && fe.power) };
+        const h = d.held ? d.held[s.i] : 0, desc = h && h !== 15 ? d.attachments[h - 1] : null;
+        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray: !!(fe && fe.present && fe.spraying && fe.power), hold: isPicket(desc) };
       };
     }
-    const bw = node.userData.bw, [x, z, yaw, heat, bark] = chompSim(bw, f, mario, key);
+    const bw = node.userData.bw, [x, z, yaw, heat, bark, spx, spz, held, bath] = chompSim(bw, f, mario, key);
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const gy = groundY(x, bw.start[1] + 2000, z), y = (gy > -Infinity ? gy : bw.start[1]) + BW_RADIUS;
     placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
     node.visible = true;
     poseRig(node, f);
-    const P = bw.p, pg = groundY(P[0], P[1] + 2000, P[2]), py = (pg > -Infinity ? pg : P[1]) + 90;
+    // The stake: where it was left, or up in Mario's hands while he holds it out of the ground.
+    const P = [spx, 0, spz], pg = groundY(P[0], 2000 + (mario ? 0 : bw.p[1]), P[2]);
+    let py = (pg > -Infinity ? pg : bw.p[1]) + 90;
+    if (held && heat <= 0 && g) { const s = ghostSampleAt(g.data, base + f * QF_PER_FRAME); py = s.y + 140; }
     if (bw.pkNode) { bw.pkNode.matrix.makeTranslation(P[0], py, P[2]); bw.pkNode.matrixWorldNeedsUpdate = true; bw.pkNode.visible = true; }
     // Stake top to the back of the ball, sagging with the slack and resting on the floor.
     const A = [P[0], py + 60, P[2]], B = [x - Math.sin(yaw) * BW_RADIUS * 0.9, y - BW_RADIUS * 0.55, z - Math.cos(yaw) * BW_RADIUS * 0.9];
