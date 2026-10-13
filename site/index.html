@@ -852,18 +852,19 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   async function loadMap(id, routeKey) {
     const entry = maps.find((m) => m.id === id);
     if (!entry) return;
+    const myCtx = stageCtx, main = myCtx === mainCtx;   // the comparison view's right half has its own stage
     currentMap = id;
     if (!routeKey || !entry.routes.some(([a, e]) => `${a}:${e}` === routeKey)) routeKey = `${entry.routes[0][0]}:${entry.routes[0][1]}`;
-    $('mapSelect').value = String(worldOfKey(routeKey));
-    fillEpisodes(routeKey);
+    if (main) { $('mapSelect').value = String(worldOfKey(routeKey)); fillEpisodes(routeKey); }
     loadObjects(entry, routeKey);
-    dgStageChanged();
+    if (main) dgStageChanged();
     if (mapGroup && mapGroup.userData.id === id) return;
     const request = ++mapRequest;
+    let back = null;
     try {
       let group = mapCache.get(id);
       if (!group) {
-        showNotice(`Loading ${entry.name}…`);
+        if (main) showNotice(`Loading ${entry.name}…`);
         group = /\.glb(\.b64\.txt)?$/.test(entry.file) ? await loadGlb(entry) : buildCollisionMesh(await fetchBinary(entry.file));
         group.userData.id = id;
         // The sky dome follows the camera, as in the game, and is drawn behind everything.
@@ -949,6 +950,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         group.userData.id = id;
         mapCache.set(id, group);
       }
+      back = enterCtx(myCtx);
       if (request !== mapRequest) return;
       if (mapGroup) { scene.remove(mapGroup); if (mapGroup.userData.sky) scene.remove(mapGroup.userData.sky); }
       mapGroup = group;
@@ -960,13 +962,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       mapBounds = group.userData.bounds;
       scene.add(mapGroup);
       setWireframe($('optWire').checked);
-      updateMapNotice();
+      if (main) updateMapNotice();
       if (ghosts.length) update();   // thrown-object simulations need this stage's geometry
       loadCollision(entry);
-      if (!isFollow() || !ghosts.length) frameView();
+      if (main && (!isFollow() || !ghosts.length)) frameView();
     } catch (err) {
-      if (request === mapRequest) showNotice(err.message);
-    }
+      if (request === mapRequest && main) showNotice(err.message);
+    } finally { if (back) back(); }
   }
 
   // ---------------------------------------------------------------- stage objects
@@ -1142,7 +1144,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
 
   async function loadObjects(entry, routeKey) {
-    const key = entry.id + '|' + routeKey;
+    const key = entry.id + '|' + routeKey, myCtx = stageCtx, main = myCtx === mainCtx;
     if (key === objectsKey) return;
     objectsKey = key;
     if (objectsGroup) scene.remove(objectsGroup);
@@ -1160,14 +1162,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const file = info.scenes[routeKey];
     let list = objListCache.get(file);
     if (!list) { list = fetch(file, { cache: 'no-cache' }).then((r) => r.json()); objListCache.set(file, list); }
+    let back = null;
     try {
       const [libScene, data] = await Promise.all([lib, list]);
+      back = enterCtx(myCtx);
       if (key !== objectsKey) return;
       setStageLights(data.lights);
       objNoFludd = !!data.noFludd;
       objSpawn = data.spawn || null;
       objTrig = data.trig || [];
-      if (!isFollow() || !ghosts.length) frameView();
+      if (main && (!isFollow() || !ghosts.length)) frameView();
       const items = Array.isArray(data) ? data : data.o;
       const protos = {};
       libScene.children.forEach((c) => { if (/^m\d+(_s\d+)?$/.test(c.name)) protos[c.name.slice(1)] = c; });
@@ -1302,8 +1306,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       update();
     } catch (err) {
       console.error(err);
-      showNotice('This episode\'s objects could not be loaded.');
-    }
+      if (main) showNotice('This episode\'s objects could not be loaded.');
+    } finally { if (back) back(); }
   }
 
   // ---------------------------------------------------------------- carried and thrown actors
@@ -1497,14 +1501,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!entry.col) return;
     let c = colCache.get(entry.id);
     if (!c) { c = fetchBinary(entry.col).then(parseCollision).catch(() => null); colCache.set(entry.id, c); }
+    const myCtx = stageCtx;
     const C = await c;
-    if (!C || !mapGroup || mapGroup.userData.id !== entry.id) return;
-    C.id = entry.id;
-    if (stageCol === C) return;
-    stageCol = C;
-    // Re-run physics that may have used the drawn geometry before the collision arrived.
-    ghosts.forEach((g) => { if (g.carry) g.carry.forEach((pl) => { pl.ready = false; }); if (g.sprayHits) g.sprayHits.clear(); });
-    update();
+    const back = enterCtx(myCtx);
+    try {
+      if (!C || !mapGroup || mapGroup.userData.id !== entry.id) return;
+      C.id = entry.id;
+      if (stageCol === C) return;
+      stageCol = C;
+      // Re-run physics that may have used the drawn geometry before the collision arrived.
+      ghosts.forEach((g) => { if (g.carry) g.carry.forEach((pl) => { pl.ready = false; }); if (g.sprayHits) g.sprayHits.clear(); });
+      update();
+    } finally { back(); }
   }
   function activeCol() { return stageCol && mapGroup && stageCol.id === mapGroup.userData.id ? stageCol : null; }
   // Light set for an actor at (x, y, z): the floor below it when that floor is marked as shadow and
@@ -3211,7 +3219,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // While playing, switch stages when the leading ghost moves into another area (a secret, say).
   let autoStageRoute = '';
   function followGhostStage() {
-    if (!$('optAutoStage').checked || splitNoStage) return;
+    if (!$('optAutoStage').checked) return;
     const g = leadGhost();
     if (!g) return;
     const s = ghostSampleAt(g.data, t);
@@ -4681,8 +4689,9 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
+    if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
     ghosts.forEach((g) => { if (g.visible || ghosts.length === 1) ensureSims(g); });
     ghosts.forEach((g) => {
@@ -4906,6 +4915,43 @@ void main() {
     drawShineOverlay(sgDm, t);
   }
 
+  // ---------------------------------------------------------------- stage contexts
+  // Everything that makes up "the stage on screen" (model, collision, objects, lights, triggers...).
+  // The main view uses mainCtx; the comparison view's right half has a context of its own, so a
+  // ghost that goes into another area first loads it in its own half. Loads finish in the context
+  // that started them (enterCtx), and only the context being drawn is in the scene.
+  const mainCtx = { name: 'main' };
+  let stageCtx = mainCtx, ctxQuiet = false;
+  function ctxCapture(c) {
+    Object.assign(c, { mapGroup, mapBounds, skyBackdrop, currentMap, stageCol, objectsGroup, objectsKey, objList, objNodes,
+      wireMeshes, objDyn, objProtos, objSpawn, objNoFludd, objTrig, autoStageRoute, gxSets, trigGroup, nameGroup, mapRequest,
+      mats: mapMaterials.slice() });
+  }
+  function ctxApply(c) {
+    ({ mapGroup, mapBounds, skyBackdrop, currentMap, stageCol, objectsGroup, objectsKey, objList, objNodes, wireMeshes, objDyn,
+      objProtos, objSpawn, objNoFludd, objTrig, autoStageRoute, gxSets, trigGroup, nameGroup, mapRequest } = c);
+    mapMaterials.length = 0; mapMaterials.push(...(c.mats || []));
+  }
+  const ctxParts = (c) => [c.mapGroup, c.mapGroup && c.mapGroup.userData.sky, c.objectsGroup, c.trigGroup, c.nameGroup];
+  function syncScene(c, others) {
+    others.forEach((o) => { if (o !== c) ctxParts(o).forEach((x) => { if (x) scene.remove(x); }); });
+    ctxParts(c).forEach((x) => { if (x && x.parent !== scene) scene.add(x); });
+    applySceneTheme();
+  }
+  function switchCtx(c) {
+    if (c === stageCtx) return;
+    ctxCapture(stageCtx); ctxApply(c); stageCtx = c;
+  }
+  function enterCtx(c) {
+    if (!c || c === stageCtx) return () => {};
+    const prev = stageCtx, quiet = ctxQuiet;
+    switchCtx(c); ctxQuiet = true;
+    return () => {
+      switchCtx(prev); ctxQuiet = quiet;
+      syncScene(prev, split && split.ctx ? [mainCtx, split.ctx] : [mainCtx]);
+    };
+  }
+
   // ---------------------------------------------------------------- side by side
   // Two ghosts, one per half of the stage, each with its own clock (the right one runs at an
   // offset from the left, 0 = both from their start) and its own camera. Each half poses the
@@ -4925,8 +4971,13 @@ void main() {
     if (on && ghosts.length >= 2) {
       const a = leadGhost() || ghosts[0], b = ghosts.find((x) => x !== a && x.visible) || ghosts.find((x) => x !== a);
       const c = camSave();
-      split = { a, b, offset: 0, active: 0, cams: [c, camSave()], vis: null };
-    } else split = null;
+      ctxCapture(mainCtx);
+      const ctx = Object.assign({}, mainCtx, { name: 'right', trigGroup: null, nameGroup: null, mapRequest: 0 });
+      split = { a, b, offset: 0, active: 0, cams: [c, camSave()], vis: null, ctx };
+    } else {
+      if (split && split.ctx) { switchCtx(mainCtx); syncScene(mainCtx, [mainCtx, split.ctx]); }
+      split = null;
+    }
     $('optSplit').checked = !!split;
     splitUi();
     resize();
@@ -4982,6 +5033,8 @@ void main() {
       t = i ? splitTB() : tA;
       followGhost = g;
       camLoad(split.cams[i]);
+      const ctx = i ? split.ctx : mainCtx;
+      switchCtx(ctx); syncScene(ctx, [mainCtx, split.ctx]);
       splitNoStage = i === 1;
       update();
       splitNoStage = false;
@@ -4993,6 +5046,17 @@ void main() {
     });
     renderer.setScissorTest(false);
     renderer.setViewport(0, 0, W, H);
+    // Moving one view's camera turns the other the same way: while the user has a camera, the
+    // other one eases onto the same angle and distance round its own ghost.
+    const act = split.cams[split.active], oth = split.cams[1 - split.active];
+    if (camDragging || act.user > now) {
+      const oa = act.p.clone().sub(act.q), ob = oth.p.clone().sub(oth.q);
+      ob.lerp(oa, 1 - Math.pow(0.75, Math.max(1, dt * 60)));
+      oth.p.copy(oth.q).add(ob);
+      oth.user = Math.max(oth.user, act.user, camDragging ? now + 2000 : 0);
+      oth.dist = act.dist;
+      if (cameraMode === 'free' || cameraMode === 'top') { oth.at = null; }
+    }
     camera.aspect = W / H; camera.updateProjectionMatrix();
     vis.forEach(([g, v, pv]) => { g.visible = v; g.path.visible = pv; });
     t = tA; followGhost = fg;
