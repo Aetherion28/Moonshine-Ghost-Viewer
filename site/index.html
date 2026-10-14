@@ -100,6 +100,10 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 #play { min-width: 64px; }
 .timeline { position: relative; min-width: 0; display: grid; gap: 4px; }
 .tl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Moonshine v7 split endpoints on the seek bar: click one to jump there. */
+.splitTicks { position: absolute; left: 0; right: 0; top: -6px; height: 6px; pointer-events: none; }
+.splitTicks button { position: absolute; top: 0; width: 10px; height: 10px; margin-left: -5px; padding: 0; border: 0; border-radius: 50%;
+  background: var(--accent); pointer-events: auto; cursor: pointer; min-width: 0; }
 .tlTag { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .tlTag.both { background: linear-gradient(90deg, var(--fg) 50%, var(--muted) 50%); }
 .tl .fr { font-family: var(--mono); padding: 2px 6px; }
@@ -296,7 +300,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     </div>
     <div class="timeline">
       <div class="tl" id="rowBoth" hidden><span class="tlTag both" title="Both ghosts"></span><input type="range" id="scrubBoth" min="0" max="1000" step="1" value="0" aria-label="Move both views together"><span class="tlTime">both</span></div>
-      <div class="tl" id="rowA"><span class="tlTag" id="tagA" hidden></span><button class="tool fr" id="backA" hidden title="Left view back one frame" aria-label="Left view back one frame">&minus;1f</button><button class="tool fr" id="fwdA" hidden title="Left view forward one frame" aria-label="Left view forward one frame">+1f</button><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"><span class="tlTime" id="clockA" hidden>0.000</span></div>
+      <div class="tl" id="rowA" style="position:relative"><div class="splitTicks" id="splitTicks" aria-hidden="true"></div><span class="tlTag" id="tagA" hidden></span><button class="tool fr" id="backA" hidden title="Left view back one frame" aria-label="Left view back one frame">&minus;1f</button><button class="tool fr" id="fwdA" hidden title="Left view forward one frame" aria-label="Left view forward one frame">+1f</button><input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Playback position"><span class="tlTime" id="clockA" hidden>0.000</span></div>
       <div class="tl" id="rowB" hidden><span class="tlTag" id="tagB"></span><button class="tool fr" id="backB" title="Right view back one frame" aria-label="Right view back one frame">&minus;1f</button><button class="tool fr" id="fwdB" title="Right view forward one frame" aria-label="Right view forward one frame">+1f</button><input type="range" id="scrubB" min="0" max="1000" step="1" value="0" aria-label="Right view position"><span class="tlTime" id="clockB">0.000</span>
         <button id="syncB" class="tool" title="Line the right view up with the left one again">Sync</button></div>
     </div>
@@ -4104,7 +4108,15 @@ void main() {
   function burstFrames(g) {
     if (g.bursts) return g.bursts;
     const inp = g.data.inputs, out = [];
-    if (inp && inp.hasFludd) {
+    if (inp && inp.hasFludd && g.data.header.version >= 7) {
+      // V7 records the accepted R+A burst itself: FLUDD mode bit 0x20 (Moonshine Prototype 9 notes).
+      let prev = false;
+      for (let i = 0; i < inp.count; i++) {
+        const on = !!(inp.fluddMode[i] & 0x20);
+        if (on && !prev) out.push(Math.round(inp.qf[i] / QF_PER_FRAME));
+        prev = on;
+      }
+    } else if (inp && inp.hasFludd) {
       // TNozzleTrigger::movement for the bomb: A pressed (rising edge) while digital R is held fires
       // it once; it stays spent (SPRAY_STATE_DEAD) until R's analog level is back to 0
       // (TMario::getLRLevel: under mAnalogLRToZeroVal 30).
@@ -4967,7 +4979,28 @@ void main() {
     $('clockNow').textContent = ghostFormatTime(Math.round(t));
     $('clockSub').textContent = `frame ${Math.floor(t / QF_PER_FRAME)} · ${ghostFormatTime(duration)} total`;
     $('scrub').max = String(Math.max(1, Math.round(duration)));
+    drawSplitTicks();
     $('scrub').value = String(Math.round(t));
+  }
+
+  // Split endpoints recorded by Moonshine v7, as dots over the seek bar (the leading ghost's).
+  let splitTickKey = '';
+  function drawSplitTicks() {
+    const g = leadGhost(), sp = g && g.data.splits || [], box = $('splitTicks'), sc = $('scrub');
+    const key = (g ? g.fileName : '') + '|' + duration + '|' + sp.length + '|' + sc.offsetLeft + '|' + sc.offsetWidth;
+    if (key === splitTickKey) return;
+    splitTickKey = key;
+    box.textContent = '';
+    box.style.left = sc.offsetLeft + 'px'; box.style.width = sc.offsetWidth + 'px'; box.style.right = 'auto';
+    sp.forEach((x, k) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.style.left = (Math.max(0, Math.min(1, x.qf / Math.max(1, duration))) * 100) + '%';
+      b.title = `Split ${k + 1} · ${ghostFormatTime(Math.round(x.qf))}`;
+      b.setAttribute('aria-label', b.title);
+      b.onclick = () => { setPlaying(false); t = Math.max(0, Math.min(duration, x.qf)); update(); };
+      box.append(b);
+    });
   }
 
   // Controller input display (layout after a common SMS stream overlay), from the leading

@@ -154,8 +154,8 @@ function parseSmsGhost(buffer) {
     if (off + 32 <= bytes.length && text(off, 4) === 'SGTI') {
       const sectionVersion = dv.getUint16(off + 4);
       const headerSize = dv.getUint16(off + 6) || 32;
-      // V7 (section version 3): the same 24-byte records, followed by a short table the viewer
-      // doesn't use yet (header +12: entry count, 12 bytes each).
+      // V7 (section version 3): the same 24-byte records (FLUDD mode bit 0x20: an accepted R+A
+      // burst), followed by the split endpoint timestamps (header +12: count, 12 bytes each).
       const stride = sectionVersion >= 2 ? 24 : 16;
       let count = dv.getUint32(off + 8);
       const maxCount = Math.floor((bytes.length - off - headerSize) / stride);
@@ -197,7 +197,17 @@ function parseSmsGhost(buffer) {
     }
   }
 
-  return { header, segments, qf, pos, yaw, anim, phase, yoshi, held, attachments, segIndex, inputs, warnings };
+  // V7: split endpoints after the input records: >I qf, I split set key, H route id, B index, B pad.
+  const splits = [];
+  if (inputs && version >= 7) {
+    const off = sampleOff + sampleSize, hs = dv.getUint16(off + 6) || 32, nSplit = dv.getUint32(off + 12);
+    let o = off + hs + inputs.count * 24;
+    for (let k = 0; k < nSplit && o + 12 <= bytes.length; k++, o += 12) {
+      splits.push({ qf: dv.getUint32(o) - header.startQf, key: dv.getUint32(o + 4), route: dv.getUint16(o + 8), index: bytes[o + 10] });
+    }
+  }
+
+  return { header, segments, qf, pos, yaw, anim, phase, yoshi, held, attachments, segIndex, inputs, splits, warnings };
 }
 
 // Interpolated pose at time t (QF from ghost start). Matches Moonshine's playback:
