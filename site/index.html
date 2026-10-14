@@ -4461,7 +4461,9 @@ void main() {
         while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= time) lo = mid; else hi = mid - 1; }
         secondary = g.secondary[lo];
       }
-      hasFludd = f ? f.present : inferFludd(g, time);
+      // On Yoshi Mario keeps FLUDD on his back, folded down at rest with its spray nozzle.
+      const sYo = ghostSampleAt(g.data, time), onYoshi = !!(g.data.yoshi && g.data.yoshi[sYo.i]) || !!(f && f.yoshi);
+      hasFludd = onYoshi || (f ? f.present : inferFludd(g, time));
       if (rig.parts.fludd_body) {
         rig.parts.fludd_body.visible = hasFludd;
         // Retail backpack tilt (TWaterGun::setBaseTRMtx, as Moonshine reproduces it).
@@ -4469,7 +4471,7 @@ void main() {
       }
       // Only the nozzle that is out: Spray (and its underwater variant) or the active secondary.
       // Ghosts without FLUDD data use the switch timeline (buildSelectedTimeline), else Spray.
-      let active = f && f.present ? f.nozzle : null;
+      let active = f && f.present ? f.nozzle : onYoshi ? 0 : null;
       if (active === null) {
         let sel = 0;
         if (g.selected) {
@@ -4483,7 +4485,8 @@ void main() {
       if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === 0 || active === 2);
       if (hasFludd) {
         nm = active === 0 || active === 2 ? 'normal_wg' : (NOZZLE_PARTS[active] || 'nozzle_normal_wg').replace(/^nozzle_/, '');
-        poseFludd(rig, fluddState(g, time, nm, f && f.present ? (f.power || 0) / 255 : 0, pump));
+        if (onYoshi) poseFludd(rig, { spray: null, since: null, power: 0, nozzle: 'normal_wg', h: 1 });
+        else poseFludd(rig, fluddState(g, time, nm, f && f.present ? (f.power || 0) / 255 : 0, pump));
       }
       Object.entries(NOZZLE_PARTS).forEach(([n, part]) => {
         if (rig.parts[part]) rig.parts[part].visible = hasFludd && Number(n) === active;
@@ -5069,7 +5072,7 @@ void main() {
       const rows = [['X', hud.s.x.toFixed(2)], ['Y', hud.s.y.toFixed(2)], ['Z', hud.s.z.toFixed(2)],
         ['Yaw', `${Math.round(hud.s.yaw)} (${yawDeg.toFixed(1)}°)`], ['HSpd', hud.hs.toFixed(2)],
         ['Anim', hud.yoshi ? `riding Yoshi (0x${hud.anim.toString(16).toUpperCase()})` : `${(typeof MARIO_ANIM_NAMES !== 'undefined' && MARIO_ANIM_NAMES[hud.anim]) || 'unnamed'} (0x${hud.anim.toString(16).toUpperCase()})`], ['Area', hud.gap ? 'loading' : hud.seg.routeLabel]];
-      if (hud.fludd) rows.splice(6, 0, ['FLUDD', !hud.fludd.present ? 'none' : `${hud.fludd.nozzleName}${hud.fludd.spraying ? ` · spraying, power ${hud.fludd.power}` : ''}`]);
+      if (hud.fludd) rows.splice(6, 0, ['FLUDD', hud.fludd.yoshi ? 'on his back (riding Yoshi)' : !hud.fludd.present ? 'none' : `${hud.fludd.nozzleName}${hud.fludd.spraying ? ` · spraying, power ${hud.fludd.power}` : ''}`]);
       rows.forEach(([k, v]) => { const d = document.createElement('div'); const b = document.createElement('b'); b.textContent = k; d.append(b, ' ' + v); hudEl.append(d); });
       hudEl.hidden = false;
     } else hudEl.hidden = true;
