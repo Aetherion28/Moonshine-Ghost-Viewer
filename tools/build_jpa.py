@@ -5,7 +5,9 @@ following JSystem/JParticle's loaders) and its textures as raw RGBA (base64), de
 reads them (I: intensity in all four channels, IA: intensity in RGB, alpha in A). Raw rather than
 PNG so the browser can't premultiply away colour under zero alpha (the indirect texture uses both).
 
-usage: build_jpa.py <particle.szs> <out.js>
+The Chain Chomp's effects come from its stage archive (Pianta 4's monte1.szs, bwanwan/jpa/).
+
+usage: build_jpa.py <particle.szs> <out.js> [<monte1.szs>]
 """
 import base64
 import json
@@ -25,11 +27,19 @@ EFFECTS = {
     "slipsmoke": "ms_m_slipsmoke.jpa",       # 0x103, the same on other ground
 }
 
+# TBossWanwan (bosswanwan.cpp): its effects, in the stage archive.
+BW_EFFECTS = {f"bw_{n}": f"bwanwan/jpa/ms_bwan_{n}.jpa" for n in
+              ("hityuge", "downyuge", "deadyuge", "kira", "jump_rock", "jump_smoke", "hibana", "yugami")}
 
-def main(szs, out):
+
+def main(szs, out, stage=None):
     arc = rarc_files(yaz0_decompress(open(szs, "rb").read()))
+    todo = [(k, arc, f) for k, f in EFFECTS.items()]
+    if stage:
+        sarc = rarc_files(yaz0_decompress(open(stage, "rb").read()))
+        todo += [(k, sarc, f) for k, f in BW_EFFECTS.items() if f in sarc]
     res = {}
-    for key, fn in EFFECTS.items():
+    for key, arc, fn in todo:
         r = parse(arc[fn])
         o = {"em": r["emitter"], "bs": r["base"]}
         if "extra" in r: o["es"] = r["extra"]
@@ -51,4 +61,4 @@ def main(szs, out):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)

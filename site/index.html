@@ -2455,12 +2455,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; to = k; } });
       const from = to >= 0 && G[to][4] && G[to][4].length ? G[to][4][0] : to;
       bw.sim = { x: [bw.start[0]], z: [bw.start[2]], y: [chompGroundY(bw, bw.start[0], bw.start[2], null)], yaw: [bw.ry], heat: [BW.heatMax], bark: [0],
-        px: [P[0]], pz: [P[2]], held: [0], bath: [0], rope: [null], lt: [], temp: new Float32Array(bw.n),
+        px: [P[0]], pz: [P[2]], held: [0], bath: [0], rope: [null], lt: [], temp: new Float32Array(bw.n), fx: [],
         st: { from, to, heat: BW.heatMax, warm: 0, cold: 0, bark: 0, px: P[0], pz: P[2], bath: 0, bx: 0, bz: 0, staked: true, tick: 0,
           rope: ropeInit(bw.n, bw.start[0], bw.start[1] + 182, bw.start[2]), drops: [],
           bathNode: (G || []).reduce((b, n, k) => (b < 0 || Math.hypot(n[0] - BW_BATH[0], n[2] - BW_BATH[2]) < Math.hypot(G[b][0] - BW_BATH[0], G[b][2] - BW_BATH[2]) ? k : b), -1) } };
     }
-    const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 1, 60 * 60 * 30);
+    const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 2, 60 * 60 * 30);
     // Until Mario first takes the picket, the chomp strains at the end of its chain the way it
     // hauls him once he has it (from the stake toward where he is dragged in the next second).
     if (!st.targets) {   // where Mario next takes hold of (or pounds) the picket, by frame
@@ -2503,8 +2503,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k = S.x.length - 1;
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
       const m = mario ? mario(k) : null;
-      chompWaterStep(bw, st, S, k, water);
+      const heat0 = st.heat, hits = chompWaterStep(bw, st, S, k, water);
       chompChainTemp(bw, S, k);
+      S.fx[k] = chompFxBits(bw, st, S, k, hits, heat0);
       if (st.strain && k < st.strain.until) {
         const u = Math.min(1, k / 60), sx = bw.start[0] + (st.strain.x - bw.start[0]) * u, sz = bw.start[2] + (st.strain.z - bw.start[2]) * u;
         const yg = chompGroundY(bw, sx, sz, S.y[k], m), rp = ropeStep(bw, st, k + 1, sx, yg, sz, st.strain.yaw, m, false);
@@ -2530,7 +2531,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         yaw = Math.atan2(BW_BATH[0] - st.bx, BW_BATH[2] - st.bz);
         let yb;
         if (st.jy === null) yb = BW_BATH[1];
-        else { st.jy += st.jv; st.jv = Math.max(-40, st.jv - BW.jumpG); if (st.jv < 0 && st.jy <= BW_BATH[1]) { st.jy = null; yb = BW_BATH[1]; } else yb = st.jy; }
+        else { st.jy += st.jv; st.jv = Math.max(-40, st.jv - BW.jumpG); if (st.jv < 0 && st.jy <= BW_BATH[1]) { st.jy = null; yb = BW_BATH[1]; st.landK = k + 1; } else yb = st.jy; }
         if (st.jy === null && st.heat > 0) st.heat--;
         st.bath++;
         const rp = ropeStep(bw, st, k + 1, x, yb, z, yaw, m, false, true);
@@ -2688,7 +2689,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (m) {
           const gm = groundY(m.x, m.y + 10, m.z), above = gm > -Infinity ? m.y - gm : 0;
           const level = pm && Math.abs(m.y - pm.y) < 6;   // standing, not jumping past
-          st.dbg = { above: Math.round(above), level: !!level, dist: Math.round(Math.hypot(m.x - x, m.z - z)), spray: m.spray };
           // On its back: standing exactly a ball's height (1000) over the floor, right over it, not hovering.
           if (level && !m.spray && Math.abs(above - 1000) < 80 && Math.hypot(m.x - x, m.z - z) < (st.ridden ? 700 : 450)) { x += (m.x - x) * 0.5; z += (m.z - z) * 0.5; st.ridden = 8; }
           else if (st.ridden) st.ridden--;
@@ -2732,12 +2732,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // (80, the burst's 100) x mHitHeight 80. The manager holds 256 droplets at a time.
   const BW_HIT = [{ dy: 500, r: 450, h: 500 }, { dy: 0, r: 270, h: 500 }];
   function chompWaterStep(bw, st, S, k, water) {
-    if (!water) return;
+    if (!water) return 0;
     const D = st.drops;
     const born = water(k);
     if (born) for (const pt of born) { if (D.length >= 256) break; D.push({ pt, k0: k }); }
-    if (!D.length) return;
+    if (!D.length) return 0;
     const x = S.x[k], z = S.z[k], y0 = S.y[k] + (bw.hop ? bw.hop(k) : 0), p = [0, 0, 0];
+    let hits = 0;
     const live = !(S.bath[k] && S.heat[k] <= 0);   // after takeBath it takes no more water
     let w = 0;
     for (let i = 0; i < D.length; i++) {
@@ -2748,12 +2749,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const rr = dr.pt.r || 80, dh = Math.hypot(p[0] - x, p[2] - z);
         if (BW_HIT.some((c) => dh < c.r + rr && p[1] + 80 > y0 + c.dy && p[1] < y0 + c.dy + c.h)) {
           if (live && st.heat > 0) st.heat--;
+          hits++;
+          dr.pt.bwHit = a;   // the drawn spray ends it there too
           continue;
         }
       }
       D[w++] = dr;
     }
     D.length = w;
+    return hits;
   }
   // Heat colour (bwanwan_body.brk / bwanwan_chain.brk). The body shows heat x (end - 1). The links
   // carry a temperature each (TBWLeashNode::calcTemperature): the first takes the chomp's heat
@@ -2763,8 +2767,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function chompChainTemp(bw, S, k) {
     while (S.lt.length <= k) {
       const j = S.lt.length, n = bw.n, T = S.temp, hv = S.heat[j] / BW.heatMax;
-      if (!(S.bath[j] && S.heat[j] <= 0)) {
-        if (S.heat[j] <= 0 || S.heat[j] >= BW.heatMax) T[0] = hv;
+      {   // (cooled in the bath the body stops setting the first one; the links go on creeping)
+        if (!(S.bath[j] && S.heat[j] <= 0) && (S.heat[j] <= 0 || S.heat[j] >= BW.heatMax)) T[0] = hv;
         for (let i = 1; i < n; i++) {
           const d = T[i - 1] - T[i];
           T[i] = Math.max(0, Math.min(1, T[i] + (d < 0 ? (d < -0.1 ? -0.02 : -0.005) : (d > 0.1 ? 0.02 : 0.005))));
@@ -2777,6 +2781,106 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }
       S.lt.push(out);
     }
+  }
+  // Which of the chomp's effects fire at frame k (TBossWanwan::emitEffects, receiveMessage, the bath):
+  //  1 ms_bwan_hityuge   water hit it this frame and it is still hot (unk190), on its body joint
+  //  2 ms_bwan_downyuge  the hit that took its last point of heat, on its body joint
+  //  4 ms_bwan_deadyuge  landing in the bath (TNerveBWDie), where it is
+  //  8 ms_bwan_kira      cooled in the bath, once the gold animation is past half way, 500 up
+  // 16 ms_bwan_jump_rock / _smoke  each hop landing (wait / wait2 passing frame 8), where it is
+  // 32 ms_bwan_hibana    sparks off the hop (passing frames 6 and 12), on its body joint
+  // 64 ms_bwan_yugami    the heat haze while it has any heat (not once cooled in the bath)
+  const BW_GOLD_RATE = 2;   // the gold animation's rate a frame (SMSGetAnmFrameRate)
+  function chompFxBits(bw, st, S, k, hits, heat0) {
+    let b = 0;
+    const cooled = S.bath[k] && S.heat[k] <= 0;
+    if (hits && st.heat > 0) b |= 1;
+    if (hits && heat0 > 0 && st.heat <= 0) b |= 2;
+    if (st.landK === k) b |= 4;
+    if (cooled && st.landK !== undefined && k >= st.landK) {
+      if (st.goldK === undefined) st.goldK = k;
+      if ((k - st.goldK) * BW_GOLD_RATE > (bw.brkGold ? bw.brkGold.dur : 300) / 2) b |= 8;
+    }
+    if (!S.bath[k] && !S.bark[k] && bw.hopFrame && k) {
+      const a = bw.hopFrame(k - 1), c = bw.hopFrame(k);
+      const pass = (t) => (a < c ? a < t && t <= c : a < t || t <= c);
+      if (pass(8)) b |= 16;
+      if (pass(6) || pass(12)) b |= 32;
+    }
+    if (S.heat[k] > 0 && !cooled) b |= 64;
+    return b;
+  }
+  // The chomp's particles at its frame f0, rebuilt from the frames before as Mario's are
+  // (updateJpa): an effect asked for every frame keeps its emitter; one-shots run their course.
+  const BW_FX = [
+    { res: 'bw_hityuge', bit: 1, hold: true, at: 'body' },
+    { res: 'bw_downyuge', bit: 2, at: 'body', span: 300 },
+    { res: 'bw_deadyuge', bit: 4, at: 'pos', span: 420 },
+    { res: 'bw_kira', bit: 8, hold: true, at: 'top' },
+    { res: 'bw_jump_rock', bit: 16, at: 'pos', span: 90 },
+    { res: 'bw_jump_smoke', bit: 16, at: 'pos', span: 120 },
+    { res: 'bw_hibana', bit: 32, at: 'body', span: 40 },
+    { res: 'bw_yugami', bit: 64, hold: true, at: 'body' },
+  ];
+  function chompFxMatrix(bw, S, e, at) {
+    const x = S.x[e], z = S.z[e], y = S.y[e];
+    if (at === 'pos') return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+    if (at === 'top') return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y + 500, z, 1];
+    const c = Math.cos(S.yaw[e]), s = Math.sin(S.yaw[e]), h = bw.hop ? bw.hop(e) : 0;
+    return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, x, y + 500 + h, z, 1];
+  }
+  function chompFx(bw, f0) {
+    const S = bw.sim;
+    if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined' || !S || !S.fx) return [];
+    if (bw.fxAt === f0 && bw.fxKey === bw.simKey) return bw.fxList;
+    const all = [], on = (e, bit) => e >= 0 && !!(S.fx[e] & bit);
+    BW_FX.forEach((slot, si) => {
+      const res = JPA_RES[slot.res];
+      if (!res) return;
+      const seed = (c) => Math.imul(si + 11, 0x9e3779b1) ^ Math.imul(c + 1, 0x85ebca6b);
+      const M = (e) => chompFxMatrix(bw, S, Math.min(e, S.x.length - 1), slot.at);
+      if (slot.hold) {
+        const S0 = Math.max(0, f0 - JPA_SIM_FRAMES), dying = [];
+        let em = null, prev = false;
+        if (S0 > 0 && on(S0 - 1, slot.bit)) {
+          let c = S0 - 1;
+          while (c > 0 && S0 - c < 900 && on(c - 1, slot.bit)) c--;
+          em = JPA.makeEmitter(res, seed(c));
+          JPA.advanceTo(em, 2 * (S0 - c));
+          prev = true;
+        }
+        for (let e = S0; e <= f0; e++) {
+          const cur = on(e, slot.bit);
+          if (cur && !em) em = JPA.makeEmitter(res, seed(e));
+          if (!em && !dying.length) { prev = cur; continue; }
+          const m = M(e);
+          for (let i = 0; i < 2; i++) {
+            if (em && !JPA.calc(em, m)) em = null;
+            for (let j = dying.length - 1; j >= 0; j--) if (!JPA.calc(dying[j], m)) dying.splice(j, 1);
+          }
+          if (prev && !cur && em) { JPA.invalidate(em); dying.push(em); em = null; }
+          prev = cur;
+          if (em) JPA.drawStep(em);
+          dying.forEach(JPA.drawStep);
+        }
+        all.push(...dying);
+        if (em) all.push(em);
+      } else {
+        for (let c = Math.max(0, f0 - slot.span); c <= f0; c++) {
+          if (!on(c, slot.bit)) continue;
+          let em = JPA.makeEmitter(res, seed(c));
+          const fixed = slot.at === 'pos' ? M(c) : null;
+          for (let e = c; e <= f0 && em; e++) {
+            const m = fixed || M(e);
+            for (let i = 0; i < 2 && em; i++) if (!JPA.calc(em, m)) em = null;
+            if (em) JPA.drawStep(em);
+          }
+          if (em) all.push(em);
+        }
+      }
+    });
+    bw.fxAt = f0; bw.fxKey = bw.simKey; bw.fxList = all;
+    return all;
   }
   // A .brk colour track at frame f: keys [time, value, in, out], Hermite between them.
   function brkTrack(keys, f) {
@@ -3040,7 +3144,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       };
     }
     const bw = node.userData.bw, rg = node.userData.rig;
-    if (!bw.hop && rg && rg.anim) bw.hop = (k) => { const a = rg.anim, j = a.j[0]; return j ? bckSample(j[7], ((k * rg.ar + rg.phase) % a.d + a.d) % a.d) : 0; };
+    if (!bw.hop && rg && rg.anim) {
+      bw.hopFrame = (k) => { const a = rg.anim; return ((k * rg.ar + rg.phase) % a.d + a.d) % a.d; };
+      bw.hop = (k) => { const j = rg.anim.j[0]; return j ? bckSample(j[7], bw.hopFrame(k)) : 0; };
+    }
     // The ghost's FLUDD water by frame of this visit: the droplets it puts out (as the spray is drawn).
     let water = null;
     if (mario) {
@@ -3061,9 +3168,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       };
     }
     const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = chompSim(bw, f, mario, key, water);
-    if (bw.brkBody) brkApply(bw.brkBody, bw.bodyMats || (bw.bodyMats = chompMats(node)), heat / BW.heatMax);
+    const kf = Math.max(0, Math.floor(f)), st = bw.sim && bw.sim.st;
+    const gold = bw.brkGold && st && st.goldK !== undefined && kf >= st.goldK;
+    if (gold) brkApply(bw.brkGold, bw.bodyMats || (bw.bodyMats = chompMats(node)), Math.min(1, (kf - st.goldK) * BW_GOLD_RATE / (bw.brkGold.dur - 1)));
+    else if (bw.brkBody) brkApply(bw.brkBody, bw.bodyMats || (bw.bodyMats = chompMats(node)), heat / BW.heatMax);
+    node.userData.bwJpa = chompFx(bw, kf);
     if (bw.brkChain && lt) bw.links.forEach((lk, i) => brkApply(bw.brkChain, lk.userData.mats || (lk.userData.mats = chompMats(lk)), lt[i]));
-    node.userData.bwPts = pts;
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const y = yg + BW_RADIUS;
     placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
@@ -4513,6 +4623,7 @@ void main() {
     const show = (pt, e, key) => {
       const a = F - e;
       if (a <= 0) return;
+      if (pt.bwHit !== undefined && a >= pt.bwHit) return;   // it hit the Chain Chomp (chompWaterStep)
       if (a < pt.hit) {
         if (a > 1 && a < pt.W.alive) {   // drawn once its life is under mAlive - 1 (unk5D88[7])
           waterPosAt(pt, a, tmp);
@@ -5196,18 +5307,19 @@ void main() {
   // Draws the ghosts' particles over the frame: groups 0 / 1 as they are, then group 3 (the
   // water slide's wake, ms_m_watslide_a) refracting a copy of the screen (gpScreenTexture).
   let jpaBatches = null, jpaScene1 = null, jpaScene3 = null, jpaScreen = null;
-  const JPA_GROUP3 = new Set(['watslide_a']);
+  const JPA_GROUP3 = new Set(['watslide_a', 'bw_yugami']);
   function drawJpa() {
     if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined') return;
     const list = [];
     ghosts.forEach((g) => { if (g.visible && g.jpa && g.jpa.length) list.push(...g.jpa); });
+    objNodes.forEach((o) => { if (o.visible && o.userData.bwJpa && o.userData.bwJpa.length) list.push(...o.userData.bwJpa); });
     if (!list.length && !jpaBatches) return;
     if (!jpaBatches) {
       jpaScreen = new THREE.DataTexture(new Uint8Array(3), 1, 1, THREE.RGBFormat);
       jpaScene1 = new THREE.Scene(); jpaScene3 = new THREE.Scene();
       jpaBatches = new Map();
       Object.keys(JPA_RES).forEach((k) => {
-        const b = new JPA.Batch(JPA_RES[k], 6000, jpaScreen);
+        const b = new JPA.Batch(JPA_RES[k], k.startsWith('bw_') ? 2000 : 6000, jpaScreen);
         jpaBatches.set(JPA_RES[k], b);
         (JPA_GROUP3.has(k) ? jpaScene3 : jpaScene1).add(b.mesh);
       });
@@ -5461,9 +5573,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDbg = { groundY: (x, y, z) => groundY(x, y, z), ghost: () => ghosts[0] && ghosts[0].data, bursts: () => ghosts[0] && burstFrames(ghosts[0]), guess: (q) => fluddGuessAt(ghosts[0], q), sel: (ts) => ts.map((t) => { const g = ghosts[0], inp = g.data.inputs; let i = 0; while (i < inp.count - 1 && inp.qf[i + 1] <= t * 120) i++; return g.selected[i]; }),
-    drops: () => { const n = objNodes.find((o) => o.userData.bw); return n && n.userData.bw.sim && n.userData.bw.sim.st.drops.length; } };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), dbg: st && st.dbg, pts: n.userData.bwPts ? Array.from(n.userData.bwPts).map(Math.round) : null, park: !!(st && st.park && st.park.stop), dead: !!(st && st.deadEnd), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;

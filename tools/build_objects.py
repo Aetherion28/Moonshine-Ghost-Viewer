@@ -1116,7 +1116,9 @@ def main(argv):
                                                      "len": 120.0, "v": 6.0, "g": "bwanwan" if "bwanwan" in rails else None}}
                     # Heat colour: TBossWanwan sets bwanwan_body.brk to frame heat x (end - 1), and each
                     # TBWLeashNode its bwanwan_chain.brk from the link's temperature.
-                    for nm, f in (("brkBody", "bwanwan/bwanwan_body.brk"), ("brkChain", "bwanwan/bwanwan_chain.brk")):
+                    # Cooled in the bath (TNerveBWDie -> takeBath) the body plays bwanwan_body_gold.brk.
+                    for nm, f in (("brkBody", "bwanwan/bwanwan_body.brk"), ("brkChain", "bwanwan/bwanwan_chain.brk"),
+                                  ("brkGold", "bwanwan/bwanwan_body_gold.brk")):
                         if f in arc:
                             b = brk.parse(arc[f])
                             extra["bw"][nm] = {"dur": b["dur"], "c": [[a["mat"], a["reg"], a["rgba"]] for a in b["color"]]}
