@@ -167,6 +167,10 @@ function parseSmsGhost(buffer) {
         fluddMode: new Uint8Array(count), fluddOffset: new Float32Array(count * 3),
         fluddYaw: new Float32Array(count), fluddPitch: new Float32Array(count), fluddPower: new Uint8Array(count),
       };
+      if (version >= 7) {
+        Object.assign(inputs, { yoshiAnim: new Uint8Array(count), yoshiFrame: new Float32Array(count), yoshiBlend: new Uint8Array(count),
+          yoshiPrev: new Int16Array(count).fill(-1), yoshiPrevFrame: new Float32Array(count) });
+      }
       for (let i = 0; i < count; i++) {
         const r = off + headerSize + i * stride;
         inputs.qf[i] = dv.getUint32(r) - header.startQf;
@@ -179,7 +183,19 @@ function parseSmsGhost(buffer) {
         inputs.cstick[i * 2 + 1] = dv.getInt8(r + 9);
         inputs.trig[i * 2] = bytes[r + 10];
         inputs.trig[i * 2 + 1] = bytes[r + 11];
-        if (stride === 24) {
+        if (stride === 24 && version >= 7 && (bytes[r + 16] & 0x80)) {   // riding Yoshi: his pose
+          const f = r + 16;
+          inputs.fluddMode[i] = bytes[f];
+          inputs.yoshiAnim[i] = bytes[f + 1];
+          inputs.yoshiFrame[i] = dv.getUint16(f + 2) / 32;
+          inputs.yoshiBlend[i] = bytes[f + 4];
+          // The animation it blends from: the last different one before this record.
+          if (i && (inputs.fluddMode[i - 1] & 0x80)) {
+            const same = inputs.yoshiAnim[i - 1] === bytes[f + 1];
+            inputs.yoshiPrev[i] = same ? inputs.yoshiPrev[i - 1] : inputs.yoshiAnim[i - 1];
+            inputs.yoshiPrevFrame[i] = same ? inputs.yoshiPrevFrame[i - 1] : inputs.yoshiFrame[i - 1];
+          }
+        } else if (stride === 24) {
           const f = r + 16;
           inputs.fluddMode[i] = bytes[f];
           inputs.fluddOffset[i * 3] = dv.getInt8(f + 1) * 2;
@@ -264,13 +280,27 @@ function ghostFluddAt(g, t) {
   let lo = 0, hi = inp.count - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
   const mode = inp.fluddMode[lo];
+  if (mode & 0x80) return { present: false, yoshi: true };   // V7: that record holds Yoshi instead
   if (!(mode & 0x08)) return { present: false };
   return {
     present: true, nozzle: mode & 7, nozzleName: FLUDD_NOZZLES[mode & 7] || '?',
-    spraying: !!(mode & 0x10), power: inp.fluddPower[lo],
+    spraying: !!(mode & 0x10), burst: !!(mode & 0x20), power: inp.fluddPower[lo],
     offset: [inp.fluddOffset[lo * 3], inp.fluddOffset[lo * 3 + 1], inp.fluddOffset[lo * 3 + 2]],
     yaw: inp.fluddYaw[lo], pitch: inp.fluddPitch[lo],
   };
 }
 
-if (typeof module !== 'undefined') module.exports = { parseSmsGhost, ghostSampleAt, ghostFluddAt, ghostAnimAt, ghostFormatTime, ghostRouteLabel, ghostQfToSeconds };
+// V7, riding Yoshi: the FLUDD observation slot holds Yoshi's own pose (mode bit 0x80; 0x10 while
+// he spits juice): byte 1 his BCK index (yoshi.szs, alphabetical), bytes 2-3 the frame x 32,
+// byte 4 the walk blend weight (0-255), bytes 5-6 his upper body (not used yet).
+function ghostYoshiAt(g, t) {
+  const inp = g.inputs;
+  if (!inp || !inp.yoshiAnim || !inp.count || t < inp.qf[0]) return null;
+  let lo = 0, hi = inp.count - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= t) lo = mid; else hi = mid - 1; }
+  if (!(inp.fluddMode[lo] & 0x80)) return null;
+  return { anim: inp.yoshiAnim[lo], frame: inp.yoshiFrame[lo], blend: inp.yoshiBlend[lo] / 255, juice: !!(inp.fluddMode[lo] & 0x10),
+    prevAnim: inp.yoshiPrev[lo], prevFrame: inp.yoshiPrevFrame[lo] };
+}
+
+if (typeof module !== 'undefined') module.exports = { parseSmsGhost, ghostSampleAt, ghostFluddAt, ghostYoshiAt, ghostAnimAt, ghostFormatTime, ghostRouteLabel, ghostQfToSeconds };

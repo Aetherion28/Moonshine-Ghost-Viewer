@@ -3535,6 +3535,91 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }).catch(() => { /* keep the stand-in figure */ });
   }
 
+  // ---------------------------------------------------------------- Yoshi
+  // yoshi.szs's model and its 26 BCKs in alphabetical order (tools/build_yoshi.py; MActor's
+  // index, which Moonshine V7 records). Body colour: TEV C2 = TYoshi bodyColor[mType].
+  let yoshiModel = null, YOSHI_ANIMS = null, YOSHI_NAMES = [];
+  const YOSHI_COLORS = [[0x40, 0xa1, 0x24], [0xff, 0x8c, 0x1c], [0xaa, 0x4c, 0xff], [0xff, 0xa0, 0xbe]];   // green, orange, purple, pink
+  function loadYoshiModel() {
+    fetchBinary('models/yoshi.glb.b64.txt').then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', async (g) => {
+      rawTextures(g); await gxEnvTextures(g); await gxTevTextures(g); gxLight(g.scene); res(g.scene);
+    }, rej))).then((sc) => {
+      yoshiModel = sc;
+      YOSHI_ANIMS = (sc.userData && sc.userData.anims) || {};
+      YOSHI_NAMES = (sc.userData && sc.userData.animNames) || [];
+      update();
+    }).catch((e) => console.warn('[yoshi]', e));
+  }
+  function yoshiFor(g, colour) {
+    if (!yoshiModel) return null;
+    if (!g.yoshiNode) {
+      const root = THREE.SkeletonUtils.clone(yoshiModel), bones = [];
+      root.traverse((o) => {
+        const m = o.name ? /^yoshi_j(\d+)$/.exec(o.name) : null;
+        if (m) bones[+m[1]] = o;
+        if (o.isMesh) { o.frustumCulled = false; o.material = [].concat(o.material).map((x) => x.clone()); if (o.material.length === 1) o.material = o.material[0]; }
+      });
+      g.marker.add(root);
+      g.yoshiNode = { root, bones, colour: -1, saved: bones.map(() => ({ p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3() })) };
+    }
+    const Y = g.yoshiNode;
+    if (Y.colour !== colour) {   // TYoshi: every material's TEV colour 2
+      Y.colour = colour;
+      const c = YOSHI_COLORS[colour >= 1 && colour <= 4 ? colour - 1 : 0].map((v) => v / 255);
+      Y.root.traverse((o) => {
+        if (!o.isMesh) return;
+        [].concat(o.material).forEach((m) => {
+          const T = m.userData && m.userData.gxTev;
+          if (!T) return;
+          m.gxRegs = (m.gxRegs || T.regs).map((r) => r.slice());
+          m.gxRegs[2] = [...c, 1];
+          m.needsUpdate = true;
+        });
+      });
+    }
+    return Y;
+  }
+  // The rider animation's Yoshi counterpart (ghosts before V7 record only Mario): yo_run -> yoshi_run.
+  function yoshiAnimForRider(a) {
+    const file = typeof MARIO_BCK_FILES !== 'undefined' ? MARIO_BCK_FILES[a.id] : null;
+    const name = file && /^yo_/.test(file) ? 'yoshi_' + file.slice(3) : 'yoshi_wait';
+    const k = YOSHI_NAMES.indexOf(name);
+    return k >= 0 ? k : YOSHI_NAMES.indexOf('yoshi_wait');
+  }
+  function poseYoshi(g, s, time) {
+    const d = g.data, colour = d.yoshi ? d.yoshi[s.i] : 0;
+    if (!colour || s.gap || !g.visible) { if (g.yoshiNode) g.yoshiNode.root.visible = false; return; }
+    const Y = yoshiFor(g, colour);
+    if (!Y) return;
+    Y.root.visible = true;
+    if (camera.position.distanceToSquared(g.marker.position) > 12000 * 12000) return;
+    const ob = typeof ghostYoshiAt === 'function' ? ghostYoshiAt(d, time) : null;
+    let anim, frame;
+    if (ob) { anim = YOSHI_ANIMS['yoshi#' + ob.anim]; frame = ob.frame; }
+    else {
+      const a = ghostAnimAt(d, time), k = yoshiAnimForRider(a);
+      anim = YOSHI_ANIMS['yoshi#' + k];
+      frame = anim ? a.phase / 4096 * anim.d : 0;
+    }
+    if (!anim) return;
+    // The walk blend (V7; TMario::calcAnim): running (BCK 15) is blended with walking (24) at the
+    // same point of the stride, the recorded byte being walking's weight.
+    const from = ob && ob.blend > 0 && ob.anim === 15 ? YOSHI_ANIMS['yoshi#24'] : null;
+    if (from) {
+      poseBck(Y.bones, from, frame / anim.d * from.d);
+      Y.bones.forEach((b, i) => { if (b) { Y.saved[i].p.copy(b.position); Y.saved[i].q.copy(b.quaternion); Y.saved[i].s.copy(b.scale); } });
+    }
+    poseBck(Y.bones, anim, frame);
+    if (from) {
+      const w = ob.blend;
+      Y.bones.forEach((b, i) => {
+        if (!b) return;
+        const sv = Y.saved[i];
+        b.position.lerp(sv.p, w); b.quaternion.slerp(sv.q, w); b.scale.lerp(sv.s, w);
+      });
+    }
+  }
+
   // No ghost loaded: Mario at the stage's start, asleep (TMario's sleep_wait loop, animation 309).
   // The Z's over a sleeping Mario (TMario::sleepingEffect, ms_poi_zzz.jpa, its own Z texture):
   // a Z every 20 frames, rising from 100 above him and drifting, growing, then fading.
@@ -4016,11 +4101,11 @@ void main() {
     const sgd = shineDemo(g);   // TMario::winDemo: FLUDD stops with the Shine get
     for (let e = Math.max(0, f0 - 300); e <= f0; e++) {
       if (sgd && e * QF_PER_FRAME >= sgd.q && e * QF_PER_FRAME < sgd.until) continue;
-      const fe = ghostFluddAt(d, e * QF_PER_FRAME);
+      const fe = yoshiJuice(d, e * QF_PER_FRAME) || ghostFluddAt(d, e * QF_PER_FRAME);
       if (!fe || !fe.present) continue;
       const ems = [];
       if (bursts.includes(e)) ems.push([waterEmission(g, e, 0, fe, ghostSampleAt(d, e * QF_PER_FRAME), marioSpeedAt(d, e), BOMB, true), -1 - e]);
-      else if (fe.spraying && fe.power && !bursts.some((b) => e > b && e <= b + 2)) {
+      else if (fe.spraying && fe.power && !fe.burst && !bursts.some((b) => e > b && e <= b + 2)) {
         const K = nozzleEmit(fe.nozzle, fe.power);
         const se = ghostSampleAt(d, e * QF_PER_FRAME), ve = marioSpeedAt(d, e);
         K.jets.forEach((_, ji) => ems.push([waterEmission(g, e, ji, fe, se, ve, K, false), e * 4 + ji]));
@@ -4408,7 +4493,10 @@ void main() {
   }
   function applyFludd(g, s) {
     const { f } = poseFluddAt(g, t, g.pumpFrame);
-    const fluddOn = f ? f.present : inferFludd(g, t);
+    // Yoshi's juice (V7) flies with the same water drops while it's in the air.
+    let juice = false;
+    if (f && f.yoshi) for (let k = 0; k < 40 && !juice; k++) juice = !!yoshiJuice(g.data, t - k * QF_PER_FRAME);
+    const fluddOn = f ? f.present || juice : inferFludd(g, t);
     if (!g.visible || s.gap || !fluddOn) { g.water.visible = false; g.puddles.visible = false; return f; }   // no FLUDD, no spray
     updateSpray(g, s);
     return f;
@@ -4580,6 +4668,14 @@ void main() {
     C.set(e, k);
     return k;
   }
+  // Yoshi spitting juice (V7 records only that he does): a stream from his mouth the way Mario
+  // faces, as the spray nozzle at low power would put it (the game's own juice nozzle isn't modelled).
+  function yoshiJuice(d, q) {
+    const ob = typeof ghostYoshiAt === 'function' ? ghostYoshiAt(d, q) : null;
+    if (!ob || !ob.juice) return null;
+    const s = ghostSampleAt(d, q), yaw = (s.yaw / 32768) * Math.PI;
+    return { present: true, nozzle: 0, spraying: true, power: 30, offset: [Math.sin(yaw) * 110, 150, Math.cos(yaw) * 110], yaw, pitch: -0.05, juice: true };
+  }
   // The nozzle emitters putting out water at frame e: [[x, y, z], dir] each, or null.
   function jpaJets(g, e) {
     const C = g.jpaJets || (g.jpaJets = new Map());
@@ -4591,7 +4687,7 @@ void main() {
       const bursts = burstFrames(g);
       let n = 0, jets = [0];
       if (bursts.includes(e)) n = BOMB.num;
-      else if (fe.spraying && fe.power && !bursts.some((b) => e > b && e <= b + 2)) {
+      else if (fe.spraying && fe.power && !fe.burst && !bursts.some((b) => e > b && e <= b + 2)) {
         const K = nozzleEmit(fe.nozzle, fe.power);
         n = Math.floor((e + 1) * K.num + 1e-6) - Math.floor(e * K.num + 1e-6);
         jets = K.jets;
@@ -4953,6 +5049,7 @@ void main() {
       g.marker.visible = g.visible && !s.gap;
       const rig = g.marker.userData.rig;
       if (rig) { const a = ghostAnimAt(g.data, t); MarioRig.pose(rig, a.id, a.yoshi, a.phase); g.pumpFrame = poseUpper(g, rig, a, t); }
+      poseYoshi(g, s, t);
       const sgd = shineDemoAt(g, t);
       if (sgd) poseShineDemo(g, sgd, t);
       const fludd = applyFludd(g, s);
@@ -6037,6 +6134,7 @@ void main() {
     if (start) await loadMap(start.id);
     frameView();
     loadMarioModel();
+    loadYoshiModel();
     update();
     requestAnimationFrame(loop);
     openShared().catch((e) => console.warn('[share]', e));
