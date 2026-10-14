@@ -101,6 +101,19 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .timeline { position: relative; min-width: 0; display: grid; gap: 4px; }
 .tl { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* Moonshine v7 split endpoints on the seek bar: click one to jump there. */
+.splits { font-size: 12px; font-family: var(--mono); }
+.splits table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.splits th, .splits td { padding: 3px 6px; text-align: right; white-space: nowrap; border-top: 1px solid var(--line); }
+.splits th { font-family: var(--display); font-size: 11px; color: var(--muted); font-weight: 700; }
+.splits th:first-child, .splits td:first-child { text-align: left; }
+.splits tbody tr { cursor: pointer; }
+.splits tbody tr:hover td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.splits tr.now td:first-child { color: var(--accent); font-weight: 700; }
+.splits .seg { display: block; font-size: 10px; color: var(--muted); border: 0; background: none; padding: 0; margin: 0; box-shadow: none; }
+.splits .best .seg { color: #2fa84f; font-weight: 700; }
+.splits .ahead { color: #2fa84f; } .splits .behind { color: var(--danger); }
+.splits .sw { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+.splitDelta { font-weight: 700; } .splitDelta.ahead { color: #39c35f; } .splitDelta.behind { color: #ff6b6b; }
 .splitTicks { position: absolute; left: 0; right: 0; top: -6px; height: 6px; pointer-events: none; }
 .splitTicks button { position: absolute; top: 0; width: 10px; height: 10px; margin-left: -5px; padding: 0; border: 0; border-radius: 50%;
   background: var(--accent); pointer-events: auto; cursor: pointer; min-width: 0; }
@@ -332,6 +345,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   <aside>
     <h2>Ghosts</h2>
     <div id="ghostList"></div>
+    <h2 id="splitsHead" hidden>Splits</h2>
+    <div class="splits" id="splitsBox" hidden></div>
     <h2>Shared ghosts</h2>
     <div class="shared" id="shared">
       <div class="head"><span id="sharedLevel">Pick a stage</span><button type="button" id="sharedAll">Browse all</button></div>
@@ -4980,10 +4995,87 @@ void main() {
     $('clockSub').textContent = `frame ${Math.floor(t / QF_PER_FRAME)} · ${ghostFormatTime(duration)} total`;
     $('scrub').max = String(Math.max(1, Math.round(duration)));
     drawSplitTicks();
+    updateSplitTable();
     $('scrub').value = String(Math.round(t));
   }
 
-  // Split endpoints recorded by Moonshine v7, as dots over the seek bar (the leading ghost's).
+  // ---------------------------------------------------------------- split comparison
+  // Moonshine's split endpoints (ghost format V5+). Ghosts compare when they use the same split
+  // layout (route id). Times are from each ghost's start; the reference is the followed ghost.
+  const fmtDelta = (q) => (q < 0 ? '−' : '+') + (Math.abs(q) / QF_PER_SECOND).toFixed(2);
+  function splitGroup() {
+    const lead = leadGhost();
+    if (!lead || !lead.data.splits || !lead.data.splits.length) return null;
+    const route = lead.data.splits[0].route;
+    const list = [lead, ...ghosts.filter((g) => g !== lead && g.data.splits && g.data.splits.length && g.data.splits[0].route === route)];
+    return { lead, route, list, n: Math.max(...list.map((g) => g.data.splits.length)) };
+  }
+  let splitTableKey = '';
+  function updateSplitTable() {
+    const G = splitGroup(), box = $('splitsBox');
+    $('splitsHead').hidden = box.hidden = !G;
+    if (!G) { splitTableKey = ''; return; }
+    const at = (g, k) => g.data.splits.find((x) => x.index === k);
+    const cur = G.lead.data.splits.filter((x) => x.qf <= t).length;   // splits the lead ghost has passed
+    const key = G.list.map((g) => g.fileName).join('|') + '|' + cur;
+    if (key === splitTableKey) return;
+    splitTableKey = key;
+    const segOf = (g, k) => { const a = at(g, k), b = k ? at(g, k - 1) : { qf: 0 }; return a && b ? a.qf - b.qf : null; };
+    const best = [];
+    for (let k = 0; k < G.n; k++) best[k] = Math.min(...G.list.map((g) => segOf(g, k)).filter((v) => v !== null));
+    const tbl = document.createElement('table');
+    const head = document.createElement('tr');
+    head.innerHTML = '<th>#</th>';
+    G.list.forEach((g) => { const th = document.createElement('th'); th.innerHTML = `<span class="sw" style="background:${g.color}"></span>`; th.append(g.data.header.name.replace(/ - .*$/, '') || g.fileName); th.title = g.data.header.name; head.append(th); });
+    const thead = document.createElement('thead'); thead.append(head); tbl.append(thead);
+    const body = document.createElement('tbody');
+    for (let k = 0; k < G.n; k++) {
+      const tr = document.createElement('tr');
+      if (k === cur - 1) tr.className = 'now';
+      tr.title = splitOn() ? 'Line both views up on this split' : 'Jump to this split';
+      tr.innerHTML = `<td>${k + 1}</td>`;
+      const ref = at(G.lead, k);
+      G.list.forEach((g) => {
+        const td = document.createElement('td'), s0 = at(g, k), seg = segOf(g, k);
+        if (!s0) { td.textContent = '--'; tr.append(td); return; }
+        let txt = ghostFormatTime(Math.round(s0.qf));
+        if (g !== G.lead && ref) { const dq = s0.qf - ref.qf; td.innerHTML = `${txt} <span class="${dq > 0 ? 'behind' : 'ahead'}">${fmtDelta(dq)}</span>`; }
+        else td.textContent = txt;
+        if (seg !== null) {
+          const sp = document.createElement('span'); sp.className = 'seg'; sp.textContent = (seg / QF_PER_SECOND).toFixed(2) + ' s';
+          td.append(sp);
+          if (G.list.length > 1 && seg === best[k]) td.classList.add('best');
+        }
+        tr.append(td);
+      });
+      tr.onclick = () => {
+        setPlaying(false);
+        if (splitOn()) {   // both halves to this split
+          const a = at(split.a, k), b = at(split.b, k);
+          if (a) t = a.qf;
+          if (b) split.offset = b.qf - t;
+        } else if (ref) t = ref.qf;
+        update();
+      };
+      body.append(tr);
+    }
+    tbl.append(body);
+    box.replaceChildren(tbl);
+  }
+  // Comparison view: how far the right ghost is behind (+) or ahead (−) at the last split both passed.
+  function splitDeltaText() {
+    if (!splitOn()) return '';
+    const sa = split.a.data.splits || [], sb = split.b.data.splits || [];
+    if (!sa.length || !sb.length || sa[0].route !== sb[0].route) return '';
+    const tb = splitTB();
+    let k = -1;
+    sa.forEach((x) => { const y = sb.find((z) => z.index === x.index); if (y && x.qf <= t && y.qf <= tb) k = x.index; });
+    if (k < 0) return '';
+    const dq = sb.find((z) => z.index === k).qf - sa.find((z) => z.index === k).qf;
+    return { k, dq };
+  }
+
+  // Split endpoints (Moonshine V5+), as dots over the seek bar (the leading ghost's).
   let splitTickKey = '';
   function drawSplitTicks() {
     const g = leadGhost(), sp = g && g.data.splits || [], box = $('splitTicks'), sc = $('scrub');
@@ -5271,6 +5363,13 @@ void main() {
     const tb = splitTB();
     $('lblA').textContent = `${nm(split.a)} · ${ghostFormatTime(Math.round(t))}`;
     $('lblB').textContent = `${nm(split.b)} · ${ghostFormatTime(Math.round(tb))}`;
+    const sd = splitDeltaText();
+    if (sd) {
+      const sp = document.createElement('b');   // (not a span: .splitLbl spans are the positioned labels)
+      sp.className = 'splitDelta ' + (sd.dq > 0 ? 'behind' : 'ahead');
+      sp.textContent = ` · ${fmtDelta(sd.dq)} at split ${sd.k + 1}`;
+      $('lblB').append(sp);
+    }
     $('scrubB').max = String(Math.max(1, Math.round(ghostEnd(split.b))));
     $('scrubB').value = String(Math.round(tb));
     $('clockB').textContent = ghostFormatTime(Math.round(tb));

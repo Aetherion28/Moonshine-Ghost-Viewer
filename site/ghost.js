@@ -197,11 +197,12 @@ function parseSmsGhost(buffer) {
     }
   }
 
-  // V7: split endpoints after the input records: >I qf, I split set key, H route id, B index, B pad.
+  // Split endpoints (V5+, after the input records; header +12 is their count): >I qf, I split
+  // set key, H route id, B index, B pad. Older ghosts: none recorded.
   const splits = [];
-  if (inputs && version >= 7) {
+  if (inputs) {
     const off = sampleOff + sampleSize, hs = dv.getUint16(off + 6) || 32, nSplit = dv.getUint32(off + 12);
-    let o = off + hs + inputs.count * 24;
+    let o = off + hs + inputs.count * (inputs.hasFludd ? 24 : 16);
     for (let k = 0; k < nSplit && o + 12 <= bytes.length; k++, o += 12) {
       splits.push({ qf: dv.getUint32(o) - header.startQf, key: dv.getUint32(o + 4), route: dv.getUint16(o + 8), index: bytes[o + 10] });
     }
