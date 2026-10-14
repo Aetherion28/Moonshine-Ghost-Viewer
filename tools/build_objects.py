@@ -29,7 +29,8 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import bmd  # noqa: E402
+import bmd
+import brk  # noqa: E402
 import gx_texture  # noqa: E402
 import prm  # noqa: E402
 import npc_payload  # noqa: E402
@@ -1113,6 +1114,12 @@ def main(argv):
                     # TNerveBWGraphWander walks the scene's "bwanwan" graph.
                     extra = {**(extra or {}), "bw": {"pk": pk, "ch": ch, "p": [6012.84, 0.0, 7323.15], "n": 15,
                                                      "len": 120.0, "v": 6.0, "g": "bwanwan" if "bwanwan" in rails else None}}
+                    # Heat colour: TBossWanwan sets bwanwan_body.brk to frame heat x (end - 1), and each
+                    # TBWLeashNode its bwanwan_chain.brk from the link's temperature.
+                    for nm, f in (("brkBody", "bwanwan/bwanwan_body.brk"), ("brkChain", "bwanwan/bwanwan_chain.brk")):
+                        if f in arc:
+                            b = brk.parse(arc[f])
+                            extra["bw"][nm] = {"dur": b["dur"], "c": [[a["mat"], a["reg"], a["rgba"]] for a in b["color"]]}
                     if "bwanwan" in rails:
                         used_graphs.add("bwanwan")
                     px, py, pz = 5741.72, -100.0, 6311.62

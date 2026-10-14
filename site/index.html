@@ -581,6 +581,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     sh.uniforms.gxMatC = { value: (m.gxMatC || T.matc).map(v4) };
     sh.uniforms.gxAmbC = { value: T.amb.map(v4) };
     sh.uniforms.gxR = { value: (m.gxRegs || T.regs).map(v4) };
+    m.gxRU = sh.uniforms.gxR;   // kept so animated registers (.brk) can change it every frame
     sh.uniforms.gxK = { value: (m.gxKRegs || T.k).map(v4) };
     const texs = m.gxTevTex || [];
     texs.forEach((tx, i) => { sh.uniforms['gxTex' + i] = { value: tx }; });
@@ -2444,7 +2445,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
     sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.5, looseRate: 6 };
-  function chompSim(bw, f, mario, key) {
+  function chompSim(bw, f, mario, key, water) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
     let P = bw.p;
@@ -2454,9 +2455,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; to = k; } });
       const from = to >= 0 && G[to][4] && G[to][4].length ? G[to][4][0] : to;
       bw.sim = { x: [bw.start[0]], z: [bw.start[2]], y: [chompGroundY(bw, bw.start[0], bw.start[2], null)], yaw: [bw.ry], heat: [BW.heatMax], bark: [0],
-        px: [P[0]], pz: [P[2]], held: [0], bath: [0], rope: [null],
+        px: [P[0]], pz: [P[2]], held: [0], bath: [0], rope: [null], lt: [], temp: new Float32Array(bw.n),
         st: { from, to, heat: BW.heatMax, warm: 0, cold: 0, bark: 0, px: P[0], pz: P[2], bath: 0, bx: 0, bz: 0, staked: true, tick: 0,
-          rope: ropeInit(bw.n, bw.start[0], bw.start[1] + 182, bw.start[2]),
+          rope: ropeInit(bw.n, bw.start[0], bw.start[1] + 182, bw.start[2]), drops: [],
           bathNode: (G || []).reduce((b, n, k) => (b < 0 || Math.hypot(n[0] - BW_BATH[0], n[2] - BW_BATH[2]) < Math.hypot(G[b][0] - BW_BATH[0], G[b][2] - BW_BATH[2]) ? k : b), -1) } };
     }
     const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 1, 60 * 60 * 30);
@@ -2502,6 +2503,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k = S.x.length - 1;
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
       const m = mario ? mario(k) : null;
+      chompWaterStep(bw, st, S, k, water);
+      chompChainTemp(bw, S, k);
       if (st.strain && k < st.strain.until) {
         const u = Math.min(1, k / 60), sx = bw.start[0] + (st.strain.x - bw.start[0]) * u, sz = bw.start[2] + (st.strain.z - bw.start[2]) * u;
         const yg = chompGroundY(bw, sx, sz, S.y[k], m), rp = ropeStep(bw, st, k + 1, sx, yg, sz, st.strain.yaw, m, false);
@@ -2571,11 +2574,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // Dragged: picket out, held, and the head pulled (the chain near full length).
       // (isHeadPulled only sees a pull when the picket can move, i.e. a cold chomp.)
       const dragging = holding && !st.staked && st.heat <= 0 && Math.hypot(x - st.px, z - st.pz) > RT - 150;
-      // Heat
-      if (m && m.spray && st.heat > 0) {
-        const dx = x - m.x, dz = z - m.z, d = Math.hypot(dx, dz);
-        if (d < BW.sprayR + BW_RADIUS && Math.abs(wrap(Math.atan2(dx, dz) - m.yaw)) < BW.sprayCone) st.heat = Math.max(0, st.heat - 1);
-      }
       st.tick++;
       if (st.bark) { if (++st.bark >= BW.bark) { st.bark = 0; st.heat = BW.heatMax; st.cold = 0; } }
       else if (st.heat <= 0) { if (++st.cold > BW.coldBark) { st.bark = 1; st.staked = false; } }
@@ -2722,7 +2720,107 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       S.px.push(st.px); S.pz.push(st.pz); S.held.push(holding ? 1 : 0); S.bath.push(0); S.rope.push(rp.pts);
     }
     const k = Math.min(S.x.length - 1, Math.max(0, Math.floor(f)));
-    return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k], S.px[k], S.pz[k], S.held[k], S.bath[k], S.y[k], S.rope[k]];
+    chompChainTemp(bw, S, k);
+    return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k], S.px[k], S.pz[k], S.held[k], S.bath[k], S.y[k], S.rope[k], S.lt[k]];
+  }
+  // FLUDD water on the chomp: every droplet that touches it is one HIT_MESSAGE_SPRAYED_BY_WATER
+  // (TModelWaterManager::move), which costs it one point of heat (TBossWanwan::receiveMessage:
+  // decHitPoints) and ends the droplet. A spam spray is 127 droplets at once (NozzleDeformBomb), the
+  // ordinary spray about one a frame (NozzleDeform mNum 0.8-1), so spam spraying point blank is how
+  // runners cool it in a second or so. Its water hitboxes are two TBWHit cylinders (damage radius
+  // and height): 450 x 500 at the ball's centre and 270 x 500 below it; a droplet's own is mHitRadius
+  // (80, the burst's 100) x mHitHeight 80. The manager holds 256 droplets at a time.
+  const BW_HIT = [{ dy: 500, r: 450, h: 500 }, { dy: 0, r: 270, h: 500 }];
+  function chompWaterStep(bw, st, S, k, water) {
+    if (!water) return;
+    const D = st.drops;
+    const born = water(k);
+    if (born) for (const pt of born) { if (D.length >= 256) break; D.push({ pt, k0: k }); }
+    if (!D.length) return;
+    const x = S.x[k], z = S.z[k], y0 = S.y[k] + (bw.hop ? bw.hop(k) : 0), p = [0, 0, 0];
+    const live = !(S.bath[k] && S.heat[k] <= 0);   // after takeBath it takes no more water
+    let w = 0;
+    for (let i = 0; i < D.length; i++) {
+      const dr = D[i], a = k - dr.k0;
+      if (a >= dr.pt.hit || a > dr.pt.W.alive) continue;   // landed on the stage, or dried up
+      if (a >= 1) {
+        waterPosAt(dr.pt, a, p);
+        const rr = dr.pt.r || 80, dh = Math.hypot(p[0] - x, p[2] - z);
+        if (BW_HIT.some((c) => dh < c.r + rr && p[1] + 80 > y0 + c.dy && p[1] < y0 + c.dy + c.h)) {
+          if (live && st.heat > 0) st.heat--;
+          continue;
+        }
+      }
+      D[w++] = dr;
+    }
+    D.length = w;
+  }
+  // Heat colour (bwanwan_body.brk / bwanwan_chain.brk). The body shows heat x (end - 1). The links
+  // carry a temperature each (TBWLeashNode::calcTemperature): the first takes the chomp's heat
+  // when it is fully hot or fully cold, and each other one creeps toward the one before it (0.02 a
+  // frame, 0.005 within 0.1); a link shows its temperature x (link < 5: link x 0.25 + heat; the
+  // last ten: (15 - link) / 10; else 1). In the bath, once cooled (takeBath), nothing changes.
+  function chompChainTemp(bw, S, k) {
+    while (S.lt.length <= k) {
+      const j = S.lt.length, n = bw.n, T = S.temp, hv = S.heat[j] / BW.heatMax;
+      if (!(S.bath[j] && S.heat[j] <= 0)) {
+        if (S.heat[j] <= 0 || S.heat[j] >= BW.heatMax) T[0] = hv;
+        for (let i = 1; i < n; i++) {
+          const d = T[i - 1] - T[i];
+          T[i] = Math.max(0, Math.min(1, T[i] + (d < 0 ? (d < -0.1 ? -0.02 : -0.005) : (d > 0.1 ? 0.02 : 0.005))));
+        }
+      }
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const f = i < 5 ? i * 0.25 + hv : i >= n - 10 ? (n - i) / 10 : 1;
+        out[i] = T[i] * Math.max(0, Math.min(1, f));
+      }
+      S.lt.push(out);
+    }
+  }
+  // A .brk colour track at frame f: keys [time, value, in, out], Hermite between them.
+  function brkTrack(keys, f) {
+    if (keys.length === 1 || f <= keys[0][0]) return keys[0][1];
+    for (let i = 1; i < keys.length; i++) {
+      const b = keys[i];
+      if (f < b[0]) {
+        const a = keys[i - 1], len = b[0] - a[0], u = (f - a[0]) / len, u2 = u * u, u3 = u2 * u;
+        return (2 * u3 - 3 * u2 + 1) * a[1] + (u3 - 2 * u2 + u) * a[3] * len + (-2 * u3 + 3 * u2) * b[1] + (u3 - u2) * b[2] * len;
+      }
+    }
+    return keys[keys.length - 1][1];
+  }
+  // Sets the registers a .brk drives on these materials at fraction u of its length (0 - 1).
+  function brkApply(brk, mats, u) {
+    if (!brk || !mats) return;
+    const f = u * (brk.dur - 1);
+    for (const [name, reg, rgba] of brk.c) {
+      const c = rgba.map((tr) => Math.max(0, Math.min(255, brkTrack(tr, f))) / 255);
+      for (const m of mats) {
+        if (!(m.name || '').endsWith(name)) continue;
+        if (!m.gxRegs) m.gxRegs = m.userData.gxTev.regs.map((r) => r.slice());
+        m.gxRegs[reg] = c;
+        if (m.gxRU) m.gxRU.value[reg].set(c[0], c[1], c[2], c[3]);
+      }
+    }
+  }
+  // Ghosts without FLUDD data (before Moonshine V6): FLUDD as the inputs leave it. Spray with R
+  // (any analog level), nozzle about 10 in front of Mario and 150 up, aimed the way he faces and a
+  // little down, at power 40 (as V6+ ghosts record it standing); the secondary nozzle when the
+  // switch timeline says it is out. Not while he holds something or rides Yoshi (no pumping).
+  function fluddGuessAt(g, q) {
+    const d = g.data, inp = d.inputs;
+    if (!inp || !inp.count || inp.hasFludd || q < inp.qf[0]) return null;
+    let lo = 0, hi = inp.count - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= q) lo = mid; else hi = mid - 1; }
+    const s = ghostSampleAt(d, q);
+    if (s.gap) return null;
+    const a = ghostAnimAt(d, q), h = d.held ? d.held[s.i] : 0;
+    if (a.yoshi || (h && h !== 15)) return { present: true, blocked: true, nozzle: 0, spraying: false, power: 0, offset: [0, 150, 0], yaw: 0, pitch: 0 };
+    const yaw = (s.yaw / 32768) * Math.PI, sec = g.selected && g.selected[lo];
+    const R = inp.trig[lo * 2 + 1] > 30 || !!(inp.buttons[lo] & 0x20);
+    if (sec) return { present: true, nozzle: 4, spraying: R, power: 38, offset: [-Math.sin(yaw) * 70, 120, -Math.cos(yaw) * 70], yaw: yaw + Math.PI, pitch: -1.4 };
+    return { present: true, nozzle: 0, spraying: R, power: R ? 40 : 0, offset: [Math.sin(yaw) * 10, 150, Math.cos(yaw) * 10], yaw, pitch: -0.1 };
   }
   // The floor under the ball, looked for from just above where it was (not from over the roofs).
   function chompGroundY(bw, x, z, lastY, m, from, to) {
@@ -2904,6 +3002,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (best < 0) return;
     st.from = best; st.to = chompHaulBranch(bw, st, best, -1, k, m, mario);
   }
+  // The chomp's body and each chain link get materials of their own, so each can show its heat.
+  function chompMats(root) {
+    const out = [];
+    root.traverse((o) => {
+      if (!o.isMesh || o.userData.npcPart) return;
+      o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+      [].concat(o.material).forEach((m) => { if (m.onBeforeCompile === gxTevCompile) out.push(m); });
+    });
+    return out;
+  }
   function placeChomp(node, f, g, base) {
     // Mario at the chomp's frame k of this visit (the ghost's time base + k frames), while he's here.
     let mario = null, key = 'idle';
@@ -2933,7 +3041,28 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     const bw = node.userData.bw, rg = node.userData.rig;
     if (!bw.hop && rg && rg.anim) bw.hop = (k) => { const a = rg.anim, j = a.j[0]; return j ? bckSample(j[7], ((k * rg.ar + rg.phase) % a.d + a.d) % a.d) : 0; };
-    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts] = chompSim(bw, f, mario, key);
+    // The ghost's FLUDD water by frame of this visit: the droplets it puts out (as the spray is drawn).
+    let water = null;
+    if (mario) {
+      const d = g.data, bursts = burstFrames(g);
+      g.sprayHits = g.sprayHits || new Map();
+      water = (k) => {
+        if (!mario(k)) return null;
+        const q = base + k * QF_PER_FRAME, e = Math.round(q / QF_PER_FRAME);
+        const fe = ghostFluddAt(d, q) || fluddGuessAt(g, q);
+        if (!fe || !fe.present) return null;
+        const se = ghostSampleAt(d, q), ve = marioSpeedAt(d, e), out = [];
+        if (bursts.includes(e)) waterEmission(g, e, 0, fe, se, ve, BOMB, true).parts.forEach((pt) => { pt.r = 100; out.push(pt); });
+        else if (fe.spraying && fe.power && !fe.burst && !bursts.some((b) => e > b && e <= b + 2)) {
+          const K = nozzleEmit(fe.nozzle, fe.power);
+          K.jets.forEach((_, ji) => waterEmission(g, e, ji, fe, se, ve, K, false).parts.forEach((pt) => { pt.r = 80; out.push(pt); }));
+        }
+        return out;
+      };
+    }
+    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = chompSim(bw, f, mario, key, water);
+    if (bw.brkBody) brkApply(bw.brkBody, bw.bodyMats || (bw.bodyMats = chompMats(node)), heat / BW.heatMax);
+    if (bw.brkChain && lt) bw.links.forEach((lk, i) => brkApply(bw.brkChain, lk.userData.mats || (lk.userData.mats = chompMats(lk)), lt[i]));
     node.userData.bwPts = pts;
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const y = yg + BW_RADIUS;
@@ -4094,19 +4223,27 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // Ghosts without FLUDD data: which nozzle is out (FLUDD wears one at a time). X switches between
   // Spray and the secondary nozzle; spraying animations (fepmp / swpmp) mean Spray is out, and R held
   // for a while without them (hovering) means the secondary is. Starts on Spray. 1 = secondary out.
+  const DEMO_ANIMS = new Set([205, 269, 270, 301, 302, 315, 316, 317, 333]);   // shine get, gate in/out: no control
   function buildSelectedTimeline(data) {
     const inp = data.inputs;
     if (!inp || !inp.count || inp.hasFludd) return null;
     const out = new Uint8Array(inp.count);
-    let sel = 0, prev = 0, rRun = 0;
+    // Hovering holds Mario's height (R held, under 4 a frame up or down for 8 inputs running); a
+    // spam spray (R pressed, A within 2 inputs: the guide's R then A) only exists on Spray.
+    let sel = 0, prev = 0, rRun = 0, lastY = null, rDown = -99, demo = -99;
     for (let i = 0; i < inp.count; i++) {
       const b = inp.buttons[i];
       if ((b & 0x400) && !(prev & 0x400)) sel ^= 1;   // X
-      prev = b;
       const s = ghostSampleAt(data, inp.qf[i]), anim = data.anim[s.i];
       const rHeld = (b & 0x20) || inp.trig[i * 2 + 1] > 60;
-      if (anim === 286 || anim === 287) { sel = 0; rRun = 0; }
-      else if (rHeld) { if (++rRun >= 8) sel = 1; }
+      if ((b & 0x20) && !(prev & 0x20)) rDown = i;
+      const spam = (b & 0x100) && !(prev & 0x100) && (b & 0x20) && i - rDown <= 2;
+      const level = lastY !== null && Math.abs(s.y - lastY) < 4;
+      lastY = s.y;
+      prev = b;
+      if (DEMO_ANIMS.has(anim)) demo = i;
+      if (anim === 286 || anim === 287 || spam) { sel = 0; rRun = 0; }
+      else if (rHeld && level && i - demo > 45) { if (++rRun >= 8) sel = 1; }   // (not while landing from a gate)
       else rRun = 0;
       out[i] = sel;
     }
@@ -4501,17 +4638,18 @@ void main() {
         if (on && !prev) out.push(Math.round(inp.qf[i] / QF_PER_FRAME));
         prev = on;
       }
-    } else if (inp && inp.hasFludd) {
+    } else if (inp && inp.count) {
       // TNozzleTrigger::movement for the bomb: A pressed (rising edge) while digital R is held fires
       // it once; it stays spent (SPRAY_STATE_DEAD) until R's analog level is back to 0
-      // (TMario::getLRLevel: under mAnalogLRToZeroVal 30).
+      // (TMario::getLRLevel: under mAnalogLRToZeroVal 30). (The guide's spam spray: R, then A.)
+      // Ghosts without FLUDD data: on the Spray nozzle, not holding anything or riding Yoshi.
       let prev = 0, armed = true;
       for (let i = 0; i < inp.count; i++) {
         const b = inp.buttons[i];
         if (inp.trig[i * 2 + 1] < 30 && !(b & 0x20)) armed = true;
         if (armed && (b & 0x100) && !(prev & 0x100) && (b & 0x20)) {
-          const f = ghostFluddAt(g.data, inp.qf[i]);
-          if (f && f.present && (f.nozzle === 0 || f.nozzle === 2)) { out.push(Math.round(inp.qf[i] / QF_PER_FRAME)); armed = false; }
+          const f = inp.hasFludd ? ghostFluddAt(g.data, inp.qf[i]) : fluddGuessAt(g, inp.qf[i]);
+          if (f && f.present && !f.blocked && (f.nozzle === 0 || f.nozzle === 2)) { out.push(Math.round(inp.qf[i] / QF_PER_FRAME)); armed = false; }
         }
         prev = b;
       }
@@ -5323,6 +5461,8 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
+  window.ghostViewerDbg = { groundY: (x, y, z) => groundY(x, y, z), ghost: () => ghosts[0] && ghosts[0].data, bursts: () => ghosts[0] && burstFrames(ghosts[0]), guess: (q) => fluddGuessAt(ghosts[0], q), sel: (ts) => ts.map((t) => { const g = ghosts[0], inp = g.data.inputs; let i = 0; while (i < inp.count - 1 && inp.qf[i + 1] <= t * 120) i++; return g.selected[i]; }),
+    drops: () => { const n = objNodes.find((o) => o.userData.bw); return n && n.userData.bw.sim && n.userData.bw.sim.st.drops.length; } };
   window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), dbg: st && st.dbg, pts: n.userData.bwPts ? Array.from(n.userData.bwPts).map(Math.round) : null, park: !!(st && st.park && st.park.stop), dead: !!(st && st.deadEnd), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
