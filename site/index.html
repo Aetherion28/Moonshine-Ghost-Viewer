@@ -2444,8 +2444,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_BATH = [-1000, 4.5, -6217];
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.5, looseRate: 6 };
-  function chompSim(bw, f, mario, key, water) {
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.5, looseRate: 6, rvMax: 70, rvAcc: 4 };
+  function chompSim(bw, f, mario, key, water, bursts) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
     let P = bw.p;
@@ -2480,11 +2480,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           }
           // (Taking it, he is moved onto the picket: where he is a few frames in is where it was.)
           const m3 = mario(k + 3), at = m3 && m3.hold ? m3 : m0;
-          st.targets.push({ k, x: at.x, y: at.y, z: at.z, grab: true, bx: last.x, bz: last.z });
+          st.targets.push({ k, x: at.x, y: at.y, z: at.z, grab: true, bx: last.x, bz: last.z, full: acc >= RT });
         } else if (m0.pound && !(was && was.pound)) st.targets.push({ k, x: m0.x, z: m0.z, grab: false });
         was = m0;
       }
     }
+    if (!st.rv) st.rv = chompRendezvous(bw, st, mario, bursts || []);
     if (st.strain === undefined) {
       st.strain = null;
       for (let k = 0; mario && k < 30 * 60 * 10; k++) {
@@ -2633,12 +2634,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             else if (d < st.park.best) st.park.best = d;
             else if (st.park.best < 900 && d > st.park.best + 50) { st.park.stop = true; parked = true; }
           }
+          // Loose and hot, where the ghost says it was next (chompRendezvous) sets its pace and way.
+          // (Only places ahead of it on its rail: one it could only reach by going round, or not in
+          // time at any believable pace, is passed by.)
+          const rvs = !st.staked && !holding && st.heat > 0 && !st.ridden ? st.rv.filter((r) => {
+            if (!(r.k > k && r.k - k < 600)) return false;
+            const D = chompRvDist(bw, st, x, z, r);
+            return D < 1.6 * Math.hypot(r.p.px - x, r.p.pz - z) + 500 && (D - r.r) / (r.k - k) < BW.rvMax;
+          }) : [];
           if (!parked && Math.hypot(tn[0] - x, tn[2] - z) < BW.node) {   // at the node: pick the next link
             const nb = (tn[4] || []).filter((j) => j >= 0 && j < G.length);
             st.deadEnd = nb.length <= 1;
             let next;
+            const rvNext = rvs.length && nb.length > 1 ? chompRvBranch(bw, st.to, st.from, nb, rvs[0]) : -1;
             const jump = nb.find((j) => j !== st.from && (G[j][3] & 1));   // jumpToNextGraphNode: graph node flag 1
             if (nb.length === 1) next = nb[0];   // the end of the rail: back the way it came
+            else if (rvNext >= 0 && !dragging) next = rvNext;
             else if (jump !== undefined && !dragging) next = jump;
             else if (dragging) {   // pulled: the link pointing most toward Mario
               next = nb.reduce((b, j) => (b < 0 || Math.hypot(G[j][0] - m.x, G[j][2] - m.z) < Math.hypot(G[b][0] - m.x, G[b][2] - m.z) ? j : b), -1);
@@ -2678,7 +2689,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             const fx = x - m.x, fz = z - m.z, fl = Math.hypot(fx, fz) || 1;
             rate = Math.max(0, Math.min(1.5, 1 - (m.mag / 32) * 0.75 * -((fx / fl) * Math.sin(m.yaw) + (fz / fl) * Math.cos(m.yaw))));
           }
-          const v = (st.shake ? 0 : dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : hv * 6 + 0.2) * loose;
+          let v = (st.shake ? 0 : dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : hv * 6 + 0.2) * loose;
+          if (!parked && !st.shake && rvs.length) {
+            // The pace that gets it to the next place it has to be just in time (once there, its
+            // walking pace). Speeding up and slowing down a little a frame.
+            const r = rvs[0], D = chompRvDist(bw, st, x, z, r), dt = r.k - k;
+            const walk = hv * 6 + 0.2;
+            let want = D > r.r * 0.5 ? (D - r.r * 0.5) / dt : Math.min(walk, D / dt);
+            want = Math.min(BW.rvMax, Math.max(0, want));
+            st.v = st.v === undefined ? want : st.v + Math.max(-BW.rvAcc, Math.min(BW.rvAcc, want - st.v));
+            v = st.v;
+          } else st.v = v;
           // slideToCurPathNode heads straight for the node, and TBWBinder::bind keeps the move
           // along the link, so its track is the rail itself, corners and all (the facing just
           // lags behind).
@@ -2722,6 +2743,126 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const k = Math.min(S.x.length - 1, Math.max(0, Math.floor(f)));
     chompChainTemp(bw, S, k);
     return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k], S.px[k], S.pz[k], S.held[k], S.bath[k], S.y[k], S.rope[k], S.lt[k]];
+  }
+  // ---- Where the ghost says the loose chomp was. Its speed off the stake isn't explained yet (the
+  // code's 6 x heat is far slower than runs show), so between the moments the ghost pins it down it
+  // takes whatever pace gets it to the next one along its rail in time:
+  //  - Mario lands on it (a landing well above the floor): it is under him;
+  //  - a spam spray: it is in front of him, in reach of the burst;
+  //  - a ground pound on its picket: the picket is there, so the ball is on along its rail by
+  //    nearly a chain's length (or at the rail's end);
+  //  - he takes the picket: the ball is a chain's length down the way he is then towed.
+  // Shortest distances along the graph (Floyd), for routing and pacing.
+  function chompGraph(bw) {
+    if (bw.gd) return bw.gd;
+    const G = bw.graph, n = G.length, D = new Float64Array(n * n).fill(Infinity);
+    for (let i = 0; i < n; i++) {
+      D[i * n + i] = 0;
+      for (const j of G[i][4] || []) if (j >= 0 && j < n) D[i * n + j] = Math.hypot(G[j][0] - G[i][0], G[j][2] - G[i][2]);
+    }
+    for (let k = 0; k < n; k++) for (let i = 0; i < n; i++) {
+      const ik = D[i * n + k]; if (ik === Infinity) continue;
+      for (let j = 0; j < n; j++) { const v = ik + D[k * n + j]; if (v < D[i * n + j]) D[i * n + j] = v; }
+    }
+    bw.gd = D;
+    return D;
+  }
+  function chompRailPoint(bw, x, z) {   // the nearest point on any link: {a, b, px, pz}
+    const G = bw.graph;
+    let best = null;
+    G.forEach((A, a) => (A[4] || []).forEach((b) => {
+      if (b < a || b >= G.length) return;
+      const B = G[b], lx = B[0] - A[0], lz = B[2] - A[2], L2 = lx * lx + lz * lz;
+      const u = L2 > 1e-6 ? Math.max(0, Math.min(1, ((x - A[0]) * lx + (z - A[2]) * lz) / L2)) : 0;
+      const px = A[0] + lx * u, pz = A[2] + lz * u, d = Math.hypot(px - x, pz - z);
+      if (!best || d < best.d) best = { a, b, px, pz, d };
+    }));
+    return best;
+  }
+  // From node j, the distance on to a rendezvous' rail point.
+  function chompRvFrom(bw, j, r) {
+    const G = bw.graph, n = G.length, D = chompGraph(bw), p = r.p;
+    return Math.min(D[j * n + p.a] + Math.hypot(G[p.a][0] - p.px, G[p.a][2] - p.pz), D[j * n + p.b] + Math.hypot(G[p.b][0] - p.px, G[p.b][2] - p.pz));
+  }
+  // From a node it is arriving at (coming from `from`), how far on to a rendezvous: it doesn't turn
+  // straight back (only at the end of the rail).
+  function chompRvOn(bw, node, from, r) {
+    const G = bw.graph, p = r.p, N = G[node];
+    const nb = (N[4] || []).filter((j) => j >= 0 && j < G.length), opts = nb.filter((j) => j !== from);
+    let best = Infinity, bj = -1;
+    for (const j of opts.length ? opts : nb) {
+      const c = (p.a === node && p.b === j) || (p.b === node && p.a === j)
+        ? Math.hypot(p.px - N[0], p.pz - N[2])   // it lies on that link
+        : Math.hypot(G[j][0] - N[0], G[j][2] - N[2]) + chompRvFrom(bw, j, r);
+      if (c < best) { best = c; bj = j; }
+    }
+    return { d: best, j: bj };
+  }
+  function chompRvDist(bw, st, x, z, r) {   // along the rail from the ball, heading for st.to
+    const G = bw.graph, p = r.p, t = G[st.to];
+    if ((p.a === st.from && p.b === st.to) || (p.b === st.from && p.a === st.to)) {
+      // on this link: straight there if it is ahead
+      const ahead = (p.px - x) * (t[0] - x) + (p.pz - z) * (t[2] - z) >= 0;
+      if (ahead) return Math.hypot(p.px - x, p.pz - z);
+    }
+    return Math.hypot(t[0] - x, t[2] - z) + chompRvOn(bw, st.to, st.from, r).d;
+  }
+  function chompRvBranch(bw, node, from, nb, r) {   // the link from a node that leads there soonest
+    return chompRvOn(bw, node, from, r).j;
+  }
+  // A point on the rail `len` on from rail point p, heading for (tx, tz) by the shortest way.
+  function chompRailAhead(bw, p, len, tx, tz) {
+    const G = bw.graph, n = G.length, D = chompGraph(bw), q = chompRailPoint(bw, tx, tz);
+    const toQ = (j) => Math.min(D[j * n + q.a] + Math.hypot(G[q.a][0] - q.px, G[q.a][2] - q.pz), D[j * n + q.b] + Math.hypot(G[q.b][0] - q.px, G[q.b][2] - q.pz));
+    let cx = p.px, cz = p.pz, node = toQ(p.a) + Math.hypot(G[p.a][0] - cx, G[p.a][2] - cz) < toQ(p.b) + Math.hypot(G[p.b][0] - cx, G[p.b][2] - cz) ? p.a : p.b, prev = -1;
+    for (let guard = 0; guard < 64 && len > 0; guard++) {
+      const N = G[node], d = Math.hypot(N[0] - cx, N[2] - cz);
+      if (d >= len) { cx += (N[0] - cx) / d * len; cz += (N[2] - cz) / d * len; return { x: cx, z: cz }; }
+      len -= d; cx = N[0]; cz = N[2];
+      const nb = (N[4] || []).filter((j) => j >= 0 && j < n && j !== prev);
+      if (!nb.length || toQ(node) < 1) return { x: cx, z: cz };   // the end of the rail, or there
+      const nx = nb.reduce((b, j) => (Math.hypot(G[j][0] - cx, G[j][2] - cz) + toQ(j) < Math.hypot(G[b][0] - cx, G[b][2] - cz) + toQ(b) ? j : b));
+      prev = node; node = nx;
+    }
+    return { x: cx, z: cz };
+  }
+  function chompRendezvous(bw, st, mario, bursts) {
+    if (!bw.graph || !mario) return [];
+    const out = [], R = bw.len * (bw.n - 1) + 551;
+    let was = null;
+    for (let k = 0; k < 30 * 60 * 10; k++) {
+      const m = mario(k);
+      if (!m) { if (k > 30 * 60 && !was) break; was = null; continue; }
+      // Landing on the ball: a landing (land / laend) 500-1150 over the floor below him.
+      const landing = m.anim === 86 || m.anim === 87 || m.anim === 214;
+      if (landing && !(was && (was.anim === 86 || was.anim === 87 || was.anim === 214)) && !m.hold) {
+        const gy = groundY(m.x, m.y + 10, m.z), above = gy > -Infinity ? m.y - gy : 0;
+        if (above > 500 && above < 1150) out.push({ k, x: m.x, z: m.z, r: 350, kind: 'land' });
+      }
+      was = m;
+    }
+    for (const k of bursts) {
+      const m = mario(k);
+      if (m && !m.hold) out.push({ k, x: m.x + Math.sin(m.yaw) * 700, z: m.z + Math.cos(m.yaw) * 700, r: 600, kind: 'spray' });
+    }
+    for (const T of st.targets) {
+      if (T.grab && T.full) out.push({ k: T.k, x: T.bx, z: T.bz, r: 400, kind: 'grab' });
+    }
+    out.sort((a, b) => a.k - b.k);
+    // A pound on the picket: the ball is on along its rail from there by nearly the chain's length,
+    // toward wherever it has to be after.
+    for (const T of st.targets) {
+      if (T.grab) continue;
+      const after = out.find((r) => r.k > T.k), p = chompRailPoint(bw, T.x, T.z);
+      if (!p || !after) continue;
+      const a = chompRailAhead(bw, p, R * 0.9, after.x, after.z);
+      out.push({ k: T.k, x: a.x, z: a.z, r: 400, kind: 'pound' });
+    }
+    out.forEach((r) => { r.p = chompRailPoint(bw, r.x, r.z); });
+    out.sort((a, b) => a.k - b.k);
+    // (A spam spray only says it was somewhere in front of him: one in the 1.5 s before a landing,
+    // pound or grab gives way to it.)
+    return out.filter((r) => r.p && r.p.d < 1500 && !(r.kind === 'spray' && out.some((h) => h.kind !== 'spray' && h.k >= r.k && h.k - r.k < 45)));
   }
   // FLUDD water on the chomp: every droplet that touches it is one HIT_MESSAGE_SPRAYED_BY_WATER
   // (TModelWaterManager::move), which costs it one point of heat (TBossWanwan::receiveMessage:
@@ -3140,7 +3281,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         const spray = fe ? !!(fe.present && fe.spraying && fe.power) : pump && !SPRAY_BLOCK_ANIMS.has(d.anim[s.i]);
         return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray, hold: isPicket(desc),
-          mag, pound: HIP_ANIMS.has(d.anim[s.i]) };
+          mag, pound: d.anim[s.i] === HIP_LAND, anim: d.anim[s.i] };   // the pound lands (hiped): HIP_DROP on what's under him
       };
     }
     const bw = node.userData.bw, rg = node.userData.rig;
@@ -3167,7 +3308,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         return out;
       };
     }
-    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = chompSim(bw, f, mario, key, water);
+    // Spam sprays by frame of this visit (the chomp should be in front of Mario for them).
+    const bk = mario ? burstFrames(g).map((e) => e - Math.round(base / QF_PER_FRAME)).filter((k) => k >= 0) : [];
+    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = chompSim(bw, f, mario, key, water, bk);
     const kf = Math.max(0, Math.floor(f)), st = bw.sim && bw.sim.st;
     const gold = bw.brkGold && st && st.goldK !== undefined && kf >= st.goldK;
     if (gold) brkApply(bw.brkGold, bw.bodyMats || (bw.bodyMats = chompMats(node)), Math.min(1, (kf - st.goldK) * BW_GOLD_RATE / (bw.brkGold.dur - 1)));
@@ -4852,6 +4995,7 @@ void main() {
   const NO_FLUDD_AREAS = new Set([31, 32, 40, 41, 42, 46, 47, 48, 50, 51]);
   const FLUDD_ANIMS = new Set([245, 286, 287]);   // turbo_dash, fepmp, swpmp
   const HIP_ANIMS = new Set([58, 60, 61]);   // hiped, hipsr, hipat (ground pound)
+  const HIP_LAND = 58;   // hiped: the pound landing
   function inferFludd(g, time) {
     const d = g.data, s = ghostSampleAt(d, time);
     if (d.yoshi && d.yoshi[s.i]) return false;
@@ -5573,7 +5717,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), rv: st && st.rv && st.rv.map((r) => r.kind + '@' + (r.k / 30).toFixed(2) + ':' + Math.round(r.p.px) + ',' + Math.round(r.p.pz)), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
