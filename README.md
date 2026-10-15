@@ -8,6 +8,9 @@ Open `site/index.html` from any static web server, then drop ghost files on the 
   Bob-ombs), the Noki Bay Monty Mole cannon, tightropes, pickups, input display.
 - The Chain Chomp and Gooper Blooper fights run the game's own code (from the decomp, in
   `site/gesso.js` for Gooper Blooper) on what the ghost did: tentacles, nose pulls, damage.
+- Shines that fly in with a demo (the bosses', and the ones event scripts bring out, read by
+  `tools/spc.py`) fly the way `TShine::appearWithTime` does, with the world stopped meanwhile
+  and, for ghosts without a recorded camera, the demo's own cameras.
 - Frame-by-frame or Cinematic playback, follow / free / top cameras; Follow plays a V8 ghost
   through the camera it recorded (drag to look round, and it swings back when you let go).
 

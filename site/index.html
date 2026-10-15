@@ -1085,6 +1085,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   let objNoFludd = false, objSpawn = null;
   let objTrig = [];
   let objectsGroup = null, objectsKey = '', objList = [], objNodes = [], wireMeshes = [], objDyn = {}, objProtos = {};
+  // The stage's cameras: its camera map tools (name -> [demo length (ticks), mode, x, y, z, pitch,
+  // yaw, flags]) and its demo camera BCKs (map/camera, by name).
+  let objCams = { tools: {}, bck: {} };
+  let objEvShines = [];   // Shines its event scripts bring out: [shine key, NPC key (0: the Shine itself), demo camera]
 
   function routeLabel(key) {
     const [a, e] = key.split(':').map(Number);
@@ -1253,7 +1257,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (key === objectsKey) return;
     objectsKey = key;
     if (objectsGroup) scene.remove(objectsGroup);
-    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {}; objSpawn = null;
+    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {}; objSpawn = null; objCams = { tools: {}, bck: {} }; objEvShines = [];
     const info = entry.objects;
     if (!info || !info.scenes[routeKey]) { update(); return; }
     let lib = objLibCache.get(info.lib);
@@ -1398,6 +1402,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       objectsGroup = group;
       objList = items;
       objDyn = (!Array.isArray(data) && data.dyn) || {};
+      objCams = { tools: (!Array.isArray(data) && data.cams) || {}, bck: (!Array.isArray(data) && data.camBck) || {} };
+      objEvShines = (!Array.isArray(data) && data.evShines) || [];
       objProtos = {};
       Object.values(objDyn).forEach((def) => [def.m, def.sprayed].forEach((mi) => {
         const p = mi >= 0 ? protos[mi] : null;
@@ -2560,21 +2566,23 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function placeBird(node, g, time) {
     const wk = node.userData.walk, b = node.userData.base, rg = node.userData.rig;
     const fls = g ? birdFlights(node, g, time) : null;
-    const fl = fls ? fls.find((x) => time >= x.trig && time < x.land) : null;
+    // (on the world's clock, which stops while a Shine flies in: flights pick up after it)
+    const W = (q) => q - stoppedQf(-Infinity, q), tw = W(time);
+    const fl = fls ? fls.find((x) => tw >= W(x.trig) && tw < W(x.trig) + x.land - x.trig) : null;
     const near = rg && camera.position.distanceToSquared(node.position) < 9000 * 9000;
     if (!fl) {   // on the perch
       placeFree(node, b.p, b.r, b.s); node.visible = true;
-      if (near) poseBck(rg.bones, rg.idle || rg.anim, (time / QF_PER_FRAME) * rg.ar + rg.phase);
+      if (near) poseBck(rg.bones, rg.idle || rg.anim, (tw / QF_PER_FRAME) * rg.ar + rg.phase);
       return;
     }
-    const f = (time - fl.trig) / QF_PER_FRAME;
-    if (time < fl.ret) {   // its loop, as without a ghost (no perch wait)
+    const tf = tw - W(fl.trig), f = tf / QF_PER_FRAME;
+    if (tf < fl.ret - fl.trig) {   // its loop, as without a ghost (no perch wait)
       const save = wk.delay; wk.delay = 0;
       placeWalker(node, f);
       wk.delay = save;
       return;
     }
-    const u = (time - fl.ret) / (fl.land - fl.ret), A = fl.from, P = b.p;   // straight back home
+    const u = (tf - (fl.ret - fl.trig)) / (fl.land - fl.ret), A = fl.from, P = b.p;   // straight back home
     const p = [A[0] + (P[0] - A[0]) * u, A[1] + (P[1] - A[1]) * u, A[2] + (P[2] - A[2]) * u];
     const yaw = Math.hypot(P[0] - A[0], P[2] - A[2]) > 1e-3 ? Math.atan2(P[0] - A[0], P[2] - A[2]) : b.r[1];
     placeFree(node, p, [b.r[0], yaw, b.r[2]], b.s); node.visible = true;
@@ -3771,6 +3779,19 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // Shine appears (makeShineAppearWithDemo, the stage's demo shine over the bath) 60 ticks on
     // once that demo is over.
     bw.shineAt = mario && st && st.goldK !== undefined ? base + st.goldK * QF_PER_FRAME + Math.max(BW.shineAfter, BW.downDemoFrames * BW_TICKS) : Infinity;
+    // It flies in from where the chomp is (takeBath put it at the bath) as its demo (ボスシャイン
+    // カメラ) starts, a tick on; the bwanwan_down_camera demo before it, from the cooling.
+    bw.flight = null;
+    const tool = objCams.tools['ボスシャインカメラ'];
+    if (Number.isFinite(bw.shineAt) && bw.shineIdx >= 0 && tool) {
+      const qa = bw.shineAt + 1, down = objCams.bck.bwanwan_down_camera;
+      if (!bw.flightC || bw.flightC.qa !== qa) {
+        const it = objList[bw.shineIdx], qd = base + st.goldK * QF_PER_FRAME + 1, { q0, stopEnd } = ghostStop(g, qa, tool[0]);
+        bw.flightC = { i: bw.shineIdx, qa, q0, stopEnd, ...shineFlight(BW_BATH.slice(), [it[3], it[4], it[5]], tool[0]),
+          cams: [...(down ? [{ q: qd, len: Math.min((down.d + 1) * 2, q0 - qd), bck: down }] : []), { q: q0, len: tool[0], tool }] };
+      }
+      bw.flight = bw.flightC;
+    }
     if (bw.brkChain && lt) bw.links.forEach((lk, i) => brkApply(bw.brkChain, lk.userData.mats || (lk.userData.mats = chompMats(lk)), lt[i]));
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const y = yg + BW_RADIUS;
@@ -3915,6 +3936,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!g) { if (sim.f0 === undefined) sim.f0 = Math.floor(f); f = Math.max(0, f - sim.f0); }   // (idle: from when it was first shown)
     const k = Math.max(0, Math.floor(f)), u = Math.min(1, Math.max(0, f - k));
     const a = objStillDo(() => GessoSim.runTo(sim, k)), b = objStillDo(() => GessoSim.runTo(sim, k + 1));
+    if (g) { const [ar, ep] = objectsKey.split('|').pop().split(':').map(Number); bg.flight = gessoShine(sim, g, base, ar, ep); }
+    else bg.flight = null;
     // (light: the set of the floor under him, as his body has)
     if (bg.lit !== node.userData.gxKey) { const set = gxSet('object', lightSetAt(bg.start[0], bg.start[1], bg.start[2])); bg.parts.forEach((p) => gxApply(p, set)); bg.lit = node.userData.gxKey; }
     gessoDraw(node, bg, A, a, b === a ? a : b, b === a ? 0 : u);
@@ -4079,6 +4102,191 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       });
     });
   }
+  // His Shine (TNerveBGDie, Ricco Harbor only: maps 3 and 59). On his first tick of dying it's put
+  // 6000 above him and his fall camera (bgeso_fall_camera, the second fight's bgeso_fall_camera2)
+  // and its own demo (ボスシャインカメラ) are queued; the fall camera's (frames + 1) x 2 ticks
+  // run first (TCameraBck::getTotalDemoFrames), and as the next demo starts the Shine comes out.
+  const BG_SHINE_KEY = 60574;   // "シャイン（ボス用）" (its JDrama key code)
+  function gessoShine(sim, g, base, area, ep) {
+    if (sim.flightDone) return sim.flight;
+    const die = sim.ev.find((e) => e.e === 'die');
+    if (!die) return null;   // (not yet, as far as the simulation has run)
+    sim.flightDone = true;
+    sim.flight = null;
+    if (area !== 3 && area !== 59) return null;
+    const i = objList.findIndex((it) => it[15] === BG_SHINE_KEY && /^shine/.test(it[12] || ''));
+    const tool = objCams.tools['ボスシャインカメラ'], fall = objCams.bck[ep === 4 ? 'bgeso_fall_camera2' : 'bgeso_fall_camera'];
+    if (i < 0 || !tool || !fall) return null;
+    const qd = base + die.k * QF_PER_FRAME, fallLen = (fall.d + 1) * 2, it = objList[i];
+    const { q0, stopEnd } = ghostStop(g, qd + fallLen + 1, tool[0]);
+    sim.flight = { i, q0, stopEnd, ...shineFlight([die.p[0], die.p[1] + 6000, die.p[2]], [it[3], it[4], it[5]], tool[0]),
+      cams: [{ q: qd + 1, len: q0 - qd - 1, bck: fall }, { q: q0, len: tool[0], tool }] };
+    return sim.flight;
+  }
+  // The world's stop for a Shine expected to fly in at q0 for L ticks, as the recording has it:
+  // Mario's samples the same (place, facing, animation and its frame) over a run that starts
+  // within a few frames of q0 and lasts about as long. The Shine comes out a tick after the run's
+  // first sample, and the world runs again by the first sample after it. (Without one: q0, L.)
+  function ghostStop(g, q0, L) {
+    const d = g.data, n = d.qf.length, same = (a, b) => d.pos[a * 3] === d.pos[b * 3] && d.pos[a * 3 + 1] === d.pos[b * 3 + 1]
+      && d.pos[a * 3 + 2] === d.pos[b * 3 + 2] && d.yaw[a] === d.yaw[b] && d.anim[a] === d.anim[b] && d.phase[a] === d.phase[b];
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (d.qf[m] < q0 - 16) lo = m + 1; else hi = m; }
+    for (let a = lo; a < n && d.qf[a] <= q0 + 16; a++) {
+      let b = a;
+      while (b + 1 < n && same(b + 1, a)) b++;
+      if (b + 1 < n && d.qf[b] - d.qf[a] >= L - 24) {
+        const s0 = d.qf[a] + 1;
+        return { q0: s0, stopEnd: Math.max(d.qf[b] + 1, Math.min(s0 + L, d.qf[b + 1])) };
+      }
+    }
+    return { q0, stopEnd: q0 + L };
+  }
+
+  // ---------------------------------------------------------------- Shines that fly in
+  // TItemManager::makeShineAppearWithDemo puts the Shine somewhere and queues its demo camera; as
+  // that demo starts, TShine::appearWithTime(the camera's demo length: L ticks) brings it out there.
+  // 240 ticks rising 1 a tick, L - 480 ticks on to where it's placed (evenly across, down a line
+  // with an arc on top half as high as it's far, or 500 straight down), then 240 ticks settling
+  // while its spin (7 degrees a tick on the way) slows back to 2; then it can be taken. All the
+  // while the director stops the world (DEMO_FLAG_SHINE_GET_STOP_THE_WORLD: only the Shine's
+  // perform lists run; in the recording Mario stands still too). shineFlight: per tick from its
+  // appearance, position (P) and turn in degrees (R).
+  const SHINE_FLY = { up: 240, settle: 240, upSpeed: 1, circleY: 0.5, spinIn: 7, spin: 2, spinDown: 0.1, slow: 0.99 };
+  function shineFlight(from, to, L) {
+    const S = SHINE_FLY, n = Math.max(1, L - (S.up + S.settle));   // unk168
+    const P = new Float64Array((L + 2) * 3), R = new Float64Array(L + 2);
+    let x = from[0], y = from[1], z = from[2], ry = 0, spin = S.spin, st = 0, timer = 0, ang = 0, y0 = y, dy = 0;
+    const yDelta = to[1] - (S.upSpeed * S.up + from[1]);
+    const vx = (to[0] - x) / n, vz = (to[2] - z) / n;
+    let far = Math.hypot(to[0] - x, to[2] - z);
+    if (far === 0) far = 1000;
+    if (yDelta > 0) far += Math.abs(yDelta);
+    const arc = far * S.circleY;
+    P[0] = x; P[1] = y; P[2] = z;
+    for (let k = 1; k < L + 2; k++) {
+      if (timer > 0) timer--;   // (TMapObjBase::perform, before control)
+      if (st === 0) { if (timer === 0) { timer = S.up; st = 1; } }   // STATE_UNKB: waits unk174 (0) ticks
+      else if (st === 1) { y += S.upSpeed; if (timer === 0) { y0 = y; timer = n; st = 2; } }   // movingUp
+      else if (st === 2) {   // movingCircle
+        const py = y, u = (n - timer) / n;
+        ang += 180 / n;
+        x += vx; z += vz;
+        y = arc * Math.sin(ang * DEG) + (u * (to[1] - y0) + y0);
+        dy = y - py;
+        ry += S.spinIn;
+        if (timer === 0) { spin = S.spinIn; timer = S.settle; st = 3; }
+      } else if (st === 3) {   // STATE_UNKF
+        if (y > to[1]) { y += dy; dy *= S.slow; } else y = to[1];
+        spin = spin > S.spin ? spin - S.spinDown : S.spin;
+        ry += spin;
+        if (timer === 0) st = 4;   // STATE_UNK11: it can be taken
+      } else ry += spin;
+      P[k * 3] = x; P[k * 3 + 1] = y; P[k * 3 + 2] = z; R[k] = ry;
+    }
+    return { P, R, L, from, to };
+  }
+  // Where a flying Shine is at time t (from fl.q0, its appearance), and its turn (radians).
+  function shineFlightAt(fl, t, out) {
+    const n = t - fl.q0, last = fl.L + 1;
+    if (n >= last) {
+      out.set(fl.P[last * 3], fl.P[last * 3 + 1], fl.P[last * 3 + 2]);
+      return (fl.R[last] + SHINE_FLY.spin * (n - last)) * DEG;
+    }
+    const k = Math.max(0, Math.floor(n)), u = Math.max(0, n - k), j = Math.min(last, k + 1);
+    out.set(fl.P[k * 3] + (fl.P[j * 3] - fl.P[k * 3]) * u, fl.P[k * 3 + 1] + (fl.P[j * 3 + 1] - fl.P[k * 3 + 1]) * u,
+      fl.P[k * 3 + 2] + (fl.P[j * 3 + 2] - fl.P[k * 3 + 2]) * u);
+    return (fl.R[k] + (fl.R[j] - fl.R[k]) * u) * DEG;
+  }
+  // This frame's flights (the lead ghost's run of the bosses that bring them out), and how long the
+  // world had been stopped for them between `from` and t.
+  let shineFlights = [];
+  function stoppedQf(from, time) {
+    let s = 0;
+    shineFlights.forEach((fl) => { s += Math.max(0, Math.min(time, fl.stopEnd) - Math.max(from, fl.q0)); });
+    return s;
+  }
+  // Shines an event script brings out (TEventWatcher: appearShine(shine, demo) where the Shine is
+  // placed, appearShineFromNPC(shine, NPC, demo) where the NPC stands) when the run finishes the
+  // event or talks to the NPC. The moment comes from the recording: Mario standing still for the
+  // demo's length on this stage (the world stopped). The NPC: where it was placed, if Mario is
+  // beside it then, else just in front of him (talking turns him to it).
+  function eventFlights(g) {
+    if (!objEvShines.length) return [];
+    g.evFlights = g.evFlights || new Map();
+    if (g.evFlights.has(objectsKey)) return g.evFlights.get(objectsKey);
+    const d = g.data, n = d.qf.length, here = objectsKey.split('|').pop(), base = d.header.startQf, out = [];
+    const visits = d.segments.filter((sg) => `${sg.route.area}:${sg.route.episode}` === here).map((sg) => [sg.startQf - base, sg.endQf - base]);
+    const same = (a, b) => d.pos[a * 3] === d.pos[b * 3] && d.pos[a * 3 + 1] === d.pos[b * 3 + 1] && d.pos[a * 3 + 2] === d.pos[b * 3 + 2]
+      && d.yaw[a] === d.yaw[b] && d.anim[a] === d.anim[b] && d.phase[a] === d.phase[b];
+    const runs = [];   // [first sample, last sample] of each stand-still on this stage
+    for (let a = 1; a < n; a++) {
+      if (!same(a, a - 1)) continue;
+      let b = a;
+      while (b + 1 < n && same(b + 1, a)) b++;
+      const q = d.qf[a - 1];
+      if (visits.some(([v0, v1]) => q > v0 + QF_PER_SECOND && q < v1)) runs.push([a - 1, b]);   // (not the stage's opening)
+      a = b;
+    }
+    const used = new Set();
+    objEvShines.forEach(([shineKey, npcKey, cam]) => {
+      const i = objList.findIndex((it) => it[15] === shineKey && /^shine/.test(it[12] || '')), tool = objCams.tools[cam];
+      if (i < 0 || !tool) return;
+      const L = tool[0], npc = npcKey ? objList.find((it) => it[15] === npcKey && /^NPC/.test(it[1] || '')) : null;
+      if (npcKey && !npc) return;
+      const r = runs.find(([a, b]) => !used.has(a) && b + 1 < n && d.qf[b] - d.qf[a] >= L - 24 && d.qf[b] - d.qf[a] <= L + 12);
+      if (!r) return;
+      used.add(r[0]);
+      const [a, b] = r, q0 = d.qf[a] + 1, stopEnd = Math.max(d.qf[b] + 1, Math.min(q0 + L, d.qf[b + 1])), it = objList[i];
+      let from = [it[3], it[4], it[5]];
+      if (npc) {
+        const mx = d.pos[a * 3], my = d.pos[a * 3 + 1], mz = d.pos[a * 3 + 2], yaw = d.yaw[a] / 32768 * Math.PI;
+        from = Math.hypot(npc[3] - mx, npc[5] - mz) < 400 ? [npc[3], npc[4], npc[5]] : [mx + Math.sin(yaw) * 100, my, mz + Math.cos(yaw) * 100];
+      }
+      out.push({ i, q0, stopEnd, ...shineFlight(from, [it[3], it[4], it[5]], L), cams: [{ q: q0, len: L, tool }] });
+    });
+    g.evFlights.set(objectsKey, out);
+    return out;
+  }
+  // A Shine's turn: its own once it has flown in, else the Shines' common spin (TShine: 2 degrees
+  // a tick; coins turn at the same rate, TItemManager's shared matrix).
+  const _sfV = new THREE.Vector3();
+  function shineTurn(i, time) {
+    const fl = shineFlights.find((x) => x.i === i);
+    return fl && time >= fl.q0 ? shineFlightAt(fl, time, _sfV) : time * SHINE_FLY.spin * DEG;
+  }
+  // The demo cameras of a flight, for the follow camera of a ghost that recorded none: a camera
+  // BCK (TCameraBck::updateDemo: cam_interest the look point, cam_position its child the camera,
+  // its y scale the field of view; at 2 frames a game frame, here with no offset or turn) or a
+  // camera map tool in a definite mode, looking at the Shine (getUsualLookat: the demo's target)
+  // with kinddefinite*.prm's field of view of 50, cut to (inbetween 1); from the tool's position,
+  // or, with its flag 2, from where the camera already was (changeCamModeSub_ keeps mPosition):
+  // the end of the demo camera before it.
+  const DEFINITE_FOV = 50;
+  const _dcI = new THREE.Matrix4(), _dcP = new THREE.Matrix4(), _dcV = new THREE.Vector3();
+  function camBckView(A, f) {
+    bckJoint(A.j[0], f, _dcI);
+    _dcP.multiplyMatrices(_dcI, bckJoint(A.j[1], f, _dcP));
+    _dcV.setFromMatrixPosition(_dcP);
+    return { pos: [_dcV.x, _dcV.y, _dcV.z], at: [_dcI.elements[12], _dcI.elements[13], _dcI.elements[14]], fov: bckSample(A.j[1][1], f) };
+  }
+  function flightCam(time) {
+    for (const fl of shineFlights) {
+      const cams = fl.cams || [];
+      for (let k = 0; k < cams.length; k++) {
+        const c = cams[k];
+        if (time < c.q || time >= c.q + c.len) continue;
+        if (c.bck) return camBckView(c.bck, Math.min(c.bck.d, (time - c.q) / 2));
+        if (!c.pos) {
+          const prev = cams[k - 1];
+          c.pos = c.tool[7] & 2 && prev && prev.bck ? camBckView(prev.bck, prev.bck.d).pos : [c.tool[2], c.tool[3], c.tool[4]];
+        }
+        shineFlightAt(fl, time, _dcV);
+        return { pos: c.pos, at: [_dcV.x, _dcV.y, _dcV.z], fov: DEFINITE_FOV };
+      }
+    }
+    return null;
+  }
   function poseBck(bones, anim, f) {
     const fr = ((f % anim.d) + anim.d) % anim.d;
     for (let i = 0; i < bones.length && i < anim.j.length; i++) {
@@ -4219,8 +4427,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     k -= o.wait; if (k < run) return o.hi - k * o.sp;
     return o.lo;
   }
-  function placeMoving(node, f, g, stageStart) {   // f: QF since the stage started
+  function placeMoving(node, f, g, stageStart, stopped) {   // f: QF since the stage started
     const mv = node.userData.move, b = node.userData.base;
+    // stopped: QF the world stood still for by now (a Shine flying in). Lifts and the rails that
+    // wait for Mario follow the ghost frame by frame, so they keep its clock.
+    if (mv.rail && mv.waits === undefined) mv.waits = mv.rail.some((n) => n[7] & 0x180);
+    if (stopped && !mv.lift && !(mv.rail && mv.waits)) f -= stopped;
     if (!$('optSmooth').checked) f = Math.floor(f / QF_PER_FRAME) * QF_PER_FRAME;
     f = Math.max(0, f);
     node.matrixAutoUpdate = false;
@@ -4598,7 +4810,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const b = node.userData.base;
     if (getting) _sgN.compose(_sgV.set(dm.x, dm.y, dm.z), _sgQ.setFromEuler(_sgE.set(0, dm.yaw, 0)), _sgS.set(1, 1, 1));
     else {
-      const spin = (time / QF_PER_SECOND) * Math.PI * 1.5;   // still turning as it was
+      const spin = shineTurn(dm.i, time);   // still turning as it was
       _sgN.compose(_sgV.set(b.p[0], b.p[1], b.p[2]), _sgQ.setFromEuler(_sgE.set(b.r[0], (node.userData.baseRotY || 0) + spin, b.r[2], 'ZYX')), _sgS.set(b.s[0], b.s[1], b.s[2]));
     }
     node.matrixAutoUpdate = false;
@@ -4716,7 +4928,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const g = leadGhost();
     const times = g && g.pickups ? g.pickups.get(objectsKey) : null;
     const counts = { coin: 0, coin_blue: 0, coin_red: 0, shine: 0, '1up': 0 };
-    const spin = (t / QF_PER_SECOND) * Math.PI * 1.5;
+    const spin = t * SHINE_FLY.spin * DEG;   // coins and Shines: 2 degrees a tick
     const plan = g && g.carry ? g.carry.get(objectsKey) : null;
     const rig = g ? g.marker.userData.rig : null;
     const handOk = rig && rig.handR && g.marker.visible;
@@ -4737,18 +4949,30 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       node.userData.gxKey = colKey;
       gxApply(node, gxSet('object', lightSetAt(b.p[0], b.p[1], b.p[2])));
     };
-    // The Chain Chomp first: the boss Shine's timing further on comes from this view's run of it.
+    // The bosses first: their Shines' timing further on (and its flight, while the rest of the
+    // world stands still) comes from this view's run of them.
+    const flights = [];
     objNodes.forEach((node) => {
-      if (!node.userData.bw) return;
+      if (!node.userData.bw && !node.userData.bg) return;
       lightSet(node);
       const wc = walkClock(g, t);
-      placeChomp(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc);
+      if (node.userData.bw) {
+        placeChomp(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc);
+        if (node.userData.bw.flight) flights.push(node.userData.bw.flight);
+      } else {
+        placeGesso(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc);
+        if (node.userData.bg.flight) flights.push(node.userData.bg.flight);
+      }
     });
+    if (g && ghosts.length) flights.push(...eventFlights(g));
+    shineFlights = flights;
+    // The world's clock (walkers, animated characters, objects that move by themselves): stopped
+    // while a Shine flies in.
+    const visit = g && ghosts.length ? t - walkClock(g, t) : t, stopped = flights.length ? stoppedQf(visit, t) : 0;
     objNodes.forEach((node, i) => {
       const b = node.userData.base;
       lightSet(node);
-      if (node.userData.bw) return;   // (placed above)
-      if (node.userData.bg) { const wc = walkClock(g, t); placeGesso(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc); return; }
+      if (node.userData.bw || node.userData.bg) return;   // (placed above)
       if (node.userData.carry) {
         const holds = plan ? plan.placed.get(i) : null;
         const st = holds ? carryState(node, holds, t) : { pos: b.p, shrink: 0 };
@@ -4784,9 +5008,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         return;
       }
       if (node.userData.walk && node.userData.walk.bird && ghosts.length) { placeBird(node, g, t); return; }
-      if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
-      if (node.userData.rig) { poseRig(node, walkClock(g, t) / QF_PER_FRAME); return; }
-      if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock); return; }
+      if (node.userData.walk) { placeWalker(node, (walkClock(g, t) - stopped) / QF_PER_FRAME); return; }
+      if (node.userData.rig) { poseRig(node, (walkClock(g, t) - stopped) / QF_PER_FRAME); return; }
+      if (node.userData.move) { placeMoving(node, stageClock, g, t - stageClock, stopped); return; }
       const pick = node.userData.pick;
       const gate = g && g.shineSpawn && !$('optShines').checked ? g.shineSpawn.get(objectsKey) : null;
       if (!pick) {   // a red coin switch before its secret's revisit
@@ -4800,9 +5024,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const got = times && t >= times[i];
       node.visible = !got;
       if (gate && pick === 'coin_red' && !(t >= gate[i])) node.visible = false;
+      // A Shine flying in (shineFlights): out from its appearance, where its flight has it.
+      const fl = flights.length ? flights.find((x) => x.i === i) : null, flying = fl && t >= fl.q0;
       if (node.userData.shineMode === 'demo' && !$('optShines').checked) {   // only once it has appeared
         const sp = g && g.shineSpawn ? g.shineSpawn.get(objectsKey) : null;
-        const bwq = chompShineAt(i);
+        const bwq = fl ? fl.q0 : chompShineAt(i);
         if (bwq !== null ? !(t >= bwq) : !sp || !(t >= sp[i])) node.visible = false;
       }
       if (/^shine/.test(pick) && !$('optShines').checked && g && g.finalShine) {   // only the one it collects
@@ -4810,7 +5036,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (keep && keep.size && !keep.has(i)) node.visible = false;
       }
       if (got) { const k = pick.replace(/_hidden$/, ''); if (k in counts) counts[k]++; }
-      if (node.userData.spin) node.rotation.y = node.userData.baseRotY + spin;
+      if (flying) {
+        const ry = shineFlightAt(fl, t, _sfV);
+        node.position.set(b.p[0] + _sfV.x - fl.to[0], b.p[1] + _sfV.y - fl.to[1], b.p[2] + _sfV.z - fl.to[2]);
+        node.rotation.y = node.userData.baseRotY + ry;
+      } else {
+        if (fl || node.userData.flew) { node.position.set(b.p[0], b.p[1], b.p[2]); }
+        if (node.userData.spin) node.rotation.y = node.userData.baseRotY + (/^shine/.test(pick) ? shineTurn(i, t) : spin);
+      }
+      node.userData.flew = !!flying;
       if (node.userData.glow) {   // the glow card turns to the camera while the body spins
         const yaw = Math.atan2(camera.position.x - node.position.x, camera.position.z - node.position.z);
         node.userData.glow.forEach((o) => { o.rotation.y = yaw - node.rotation.y; });
@@ -6573,7 +6807,8 @@ void main() {
       L.drops.forEach((p) => { h = (h * 31 + Math.round(p.x * 10) + Math.round(p.y * 10) * 7 + Math.round(p.z * 10) * 13) | 0; });
       L.splashes.forEach((p) => { h = (h * 31 + Math.round(p.p[0] * 10) + Math.round(p.b * 100)) | 0; });
       return [L.drops.length, L.splashes.length, h, g.puddles ? g.puddles.geometry.drawRange.count : 0, !!g.water.visible]; }),
-    jpa: ghosts.map((g) => (g.jpa || []).reduce((n, e) => n + (e.ptcl ? e.ptcl.length : 0), 0)) });
+    jpa: ghosts.map((g) => (g.jpa || []).reduce((n, e) => n + (e.ptcl ? e.ptcl.length : 0), 0)),
+    flights: shineFlights.map((fl) => ({ i: fl.i, q0: fl.q0, stopEnd: fl.stopEnd, L: fl.L, from: fl.from, to: fl.to, cams: (fl.cams || []).map((c) => [c.q, c.len, c.bck ? 'bck' : 'tool']) })) });
   let hudKey = null;   // what the readout shows
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
@@ -6889,7 +7124,8 @@ void main() {
     // takes over the game's follow camera (not Fixed, not a drag).
     const sgLead = leadGhost(), sgDm = sgLead ? shineDemoAt(sgLead, t) : null;
     const rv = cameraMode === 'follow' ? recordedView(sgLead) : null, rp = rv ? recordedPhase(now) : null;
-    const sgCam = !rv && sgDm && cameraMode === 'follow' && !(userCamUntil > now || camDragging) ? shineDemoCam(sgDm, t) : null;
+    // (else a demo camera of a boss Shine's: the boss's fall, then the Shine flying in)
+    const sgCam = !rv && cameraMode === 'follow' && !(userCamUntil > now || camDragging) ? (sgDm ? shineDemoCam(sgDm, t) : flightCam(t)) : null;
     if (sgCam) {
       camera.position.set(sgCam.pos[0], sgCam.pos[1], sgCam.pos[2]);
       controls.target.set(sgCam.at[0], sgCam.at[1], sgCam.at[2]);
@@ -6941,12 +7177,14 @@ void main() {
   let stageCtx = mainCtx, ctxQuiet = false;
   function ctxCapture(c) {
     Object.assign(c, { mapGroup, mapBounds, skyBackdrop, currentMap, stageCol, objectsGroup, objectsKey, objList, objNodes,
-      wireMeshes, objDyn, objProtos, objSpawn, objNoFludd, objTrig, autoStageRoute, gxSets, trigGroup, nameGroup, mapRequest,
+      wireMeshes, objDyn, objProtos, objCams, objEvShines, objSpawn, objNoFludd, objTrig, autoStageRoute, gxSets, trigGroup, nameGroup, mapRequest,
       mats: mapMaterials.slice() });
   }
   function ctxApply(c) {
     ({ mapGroup, mapBounds, skyBackdrop, currentMap, stageCol, objectsGroup, objectsKey, objList, objNodes, wireMeshes, objDyn,
       objProtos, objSpawn, objNoFludd, objTrig, autoStageRoute, gxSets, trigGroup, nameGroup, mapRequest } = c);
+    objCams = c.objCams || { tools: {}, bck: {} };
+    objEvShines = c.objEvShines || [];
     mapMaterials.length = 0; mapMaterials.push(...(c.mats || []));
   }
   const ctxParts = (c) => [c.mapGroup, c.mapGroup && c.mapGroup.userData.sky, c.objectsGroup, c.trigGroup, c.nameGroup];

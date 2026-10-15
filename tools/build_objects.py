@@ -713,6 +713,61 @@ def wires(arc: dict):
     return out
 
 
+def camera_tools(arc: dict) -> dict:
+    """The stage's camera map tools (CameraMapInfo in map/tables.bin, TCameraMapTool::load): name ->
+    [demo length (ticks), camera mode, x, y, z, pitch, yaw, flags (unk28, negative read as 0)].
+    A demo started by name (fireStartDemoCamera, TShine::appearWithDemo) lasts its length."""
+    out = {}
+    if "map/tables.bin" not in arc:
+        return out
+    for o in scene_bin.parse(arc["map/tables.bin"]):
+        if o["type"] != "CameraMapInfo" or len(o["payload"]) < 36:
+            continue
+        x, y, z, pitch, yaw, _u20, mode, flags, length = struct.unpack_from(">5fIiiI", o["payload"], 0)
+        out[o["name"]] = [length, mode, round(x, 1), round(y, 1), round(z, 1), round(pitch, 2), round(yaw, 2), max(flags, 0)]
+    return out
+
+
+def camera_bcks(arc: dict) -> dict:
+    """The stage's demo cameras (map/camera/*.bck on camera_model.bmd: cam_interest, cam_position;
+    TCameraBck), by name; startcamera (the stage's opening) left out."""
+    out = {}
+    for k in sorted(arc):
+        m = re.fullmatch(r"map/camera/(.+)\.bck", k)
+        if m and m.group(1) != "startcamera":
+            out[m.group(1)] = parse_bck(arc[k])
+    return out
+
+
+def name_key(name: str) -> int:
+    """JDrama::TNameRef::calcKeyCode: the u16 key the game looks names up by."""
+    k = 0
+    for b in name.encode("shift_jis"):
+        k = (k * 3 + b) & 0xFFFF
+    return k
+
+
+def event_shines(arc: dict) -> list:
+    """Shines the stage's event scripts bring out with a demo (map/sp/*.sb, TEventWatcher):
+    appearShineFromNPC(shine, NPC, demo camera) where the NPC stands, appearShine(shine, demo
+    camera) where the Shine is placed. [[shine key, NPC key (0: at the Shine), demo camera]]."""
+    import spc
+    out = []
+    for k in sorted(arc):
+        if not re.fullmatch(r"map/sp/.+\.sb", k):
+            continue
+        for name, args in spc.builtin_calls(arc[k]):
+            if name == "appearShineFromNPC" and len(args) == 3 and all(isinstance(a, str) and a for a in args):
+                ev = [name_key(args[0]), name_key(args[1]), args[2]]
+            elif name == "appearShine" and len(args) == 2 and all(isinstance(a, str) and a for a in args):
+                ev = [name_key(args[0]), 0, args[1]]
+            else:
+                continue
+            if ev not in out:
+                out.append(ev)
+    return out
+
+
 def idle_pose(arc: dict, model_path: str, model: bmd.Model):
     folder = model_path.rsplit("/", 1)[0]
     for k in sorted(arc):
@@ -1310,6 +1365,14 @@ def main(argv):
             ropes = bridge_ropes(arc, scene, scene_objs)
             if ropes:
                 data["ropes"] = ropes
+            cams, cam_bcks = camera_tools(arc), camera_bcks(arc)
+            if cams:
+                data["cams"] = cams
+            if cam_bcks:
+                data["camBck"] = cam_bcks
+            ev_shines = event_shines(arc)
+            if ev_shines:
+                data["evShines"] = ev_shines
             for o in scene_bin.parse(arc["map/scene.bin"]):   # TMario::load: flag bit 1 = starts without FLUDD
                 if o["type"] == "Mario" and len(o["payload"]) >= 4 and struct.unpack_from(">I", o["payload"], len(o["payload"]) - 4)[0] & 1:
                     data["noFludd"] = 1
