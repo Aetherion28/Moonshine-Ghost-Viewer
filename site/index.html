@@ -2473,7 +2473,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_BATH = [-1000, 4.5, -6217];
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.8, looseRate: 6, rvMax: 70, haulSmooth: 0.12 };
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.8, looseRate: 6, rvMax: 70 };
   function chompSim(bw, f, mario, key, water, bursts) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
@@ -2545,7 +2545,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // In the bath (TNerveBWJumpToBath): it hops from where it was to the bath and stays there.
       // TNerveBWJumpToBath / TNerveBWDie: it leaps to the bath, then cools off completely there.
       if (st.bath) {
-        st.hauling = false;
+        st.plan = null;
         // calcVelocityToJumpToY(BW_BATH_POS, 10, gravity): up at 10 a frame, falling faster by the
         // gravity each frame (down to -40), and across at the pace that lands it on the bath as it
         // comes down to its height (SMSCalcJumpVelocityY). The gravity it falls with is from IL
@@ -2616,43 +2616,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         const pm = m && k ? mario(k - 1) : null;
         const haul = holding && st.heat > 0;
         if (haul) {
-          // Hot and held, the picket - the chain's end - is wherever Mario is: TBWPicket::perform
+          // Hot and held, the picket - the chain's end - is wherever Mario is (TBWPicket::perform
           // moves its holder to the rope's tail, and moveRequest won't move the picket while the
-          // chomp has any heat. So the ball runs on along its rail just as far as keeps the chain
-          // taut to his hands (the chain's links in a straight line from its chain_null joint):
-          // the ghost pins it to the rail.
-          if (!st.hauling) { st.hauling = true; chompRailStart(bw, st, x, z, k, m, mario); }
-          const sp = pm ? Math.hypot(m.x - pm.x, m.z - pm.z) : 0;
-          const vmax = Math.min(60, Math.max(BW.looseRate * hv * 6, sp * 1.25));
-          const base = { x, z, yaw, from: st.from, to: st.to };
-          const hx = m.x, hy = m.y + 60, hz = m.z;
-          // Where along the rail: the heavy chain lies along the ball's track behind it, so the ball
-          // is a chain's length ahead of him measured along its rail (and the chain bends with it),
-          // never further than the chain reaches in a straight line.
-          const CH = bw.len * (bw.n - 1), Q = chompRailPoint(bw, m.x, m.z);
-          const over = (c) => {   // how far past full stretch the ball there is (< 0: slack)
-            const yg2 = chompGroundY(bw, c.x, c.z, S.y[k], m, c.from, c.to);
-            const straight = Math.hypot(c.x - Math.sin(c.yaw) * 551 - hx, yg2 + 182 - hy, c.z - Math.cos(c.yaw) * 551 - hz) - CH;
-            const along = Q ? chompRailBetween(bw, { a: c.from, b: c.to, px: c.x, pz: c.z }, Q) - 551 - CH - Q.d * 0.5 : straight;
-            return Math.max(straight, along);
-          };
-          let lo = -vmax, hi = vmax, best;
-          if (over(chompRailAdvance(bw, st, base, hi, k, m, mario)) <= 0) best = { ds: hi };
-          else if (over(chompRailAdvance(bw, st, base, lo, k, m, mario)) >= 0) best = { ds: lo };
-          else {
-            for (let it = 0; it < 12; it++) { const mid = (lo + hi) / 2; if (over(chompRailAdvance(bw, st, base, mid, k, m, mario)) > 0) hi = mid; else lo = mid; }
-            best = { ds: lo };
-          }
-          // The ball rolls on at an even pace: Mario is yanked in pulses, once a hop (the head
-          // lifting with the hop drags the heavy chain's end in, then lets it go slack; ghosts show
-          // him at ~11 to ~65 a frame every 12-13 frames). So the ball's advance is the best fit
-          // smoothed over about a hop, and the rope's own hop does the yanking.
-          st.hds = st.hds === undefined ? best.ds : st.hds + (best.ds - st.hds) * BW.haulSmooth;
-          const even = chompRailAdvance(bw, st, base, st.hds, k, m, mario);
-          x = even.x; z = even.z; yaw = even.yaw; st.from = even.from; st.to = even.to;
+          // chomp has any heat), and the ball rolls on along its rail towing him. Its run for the
+          // whole hold is planned as he takes hold (chompHaulPlan).
+          if (!st.plan || k < st.plan.k0 || k > st.plan.k1) st.plan = chompHaulPlan(bw, st, S, k, x, z, yaw, mario);
+          const at = chompPlanAt(st.plan, st.plan.s[k - st.plan.k0]), turn = BW.turn * BW.looseRate;
+          if (Math.hypot(at.x - x, at.z - z) > 0.5) yaw = wrap(yaw + Math.max(-turn, Math.min(turn, wrap(Math.atan2(at.tx - at.x, at.tz - at.z) - yaw))));
+          x = at.x; z = at.z; st.from = at.from; st.to = at.to;
         } else {
-          st.hds = undefined;
-          st.hauling = false;
+          st.plan = null;
           const tn = G[st.to];
           // The ghost's next grab or pound of the picket: the picket, trailing a chain behind the
           // ball, has to get to that spot, and the ball heads for where it will be when that
@@ -2842,18 +2815,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function chompRvBranch(bw, node, from, nb, r) {   // the link from a node that leads there soonest
     return chompRvOn(bw, node, from, r).j;
-  }
-  // The distance along the rail between two rail points ({a, b, px, pz}: on the link a-b).
-  function chompRailBetween(bw, A, B) {
-    const G = bw.graph, n = G.length, D = chompGraph(bw);
-    if ((A.a === B.a && A.b === B.b) || (A.a === B.b && A.b === B.a)) return Math.hypot(A.px - B.px, A.pz - B.pz);
-    let best = Infinity;
-    for (const ea of [A.a, A.b]) for (const eb of [B.a, B.b]) {
-      if (ea < 0 || eb < 0 || !G[ea] || !G[eb]) continue;
-      const d = Math.hypot(A.px - G[ea][0], A.pz - G[ea][2]) + D[ea * n + eb] + Math.hypot(B.px - G[eb][0], B.pz - G[eb][2]);
-      if (d < best) best = d;
-    }
-    return best;
   }
   // A point on the rail `len` on from rail point p, heading for (tx, tz) by the shortest way.
   function chompRailAhead(bw, p, len, tx, tz) {
@@ -3184,6 +3145,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       ropeChainFrom(bw, R, n - 1, -1);
       const pull = [R.p[0][0] - h0[0], R.p[0][1] - h0[1], R.p[0][2] - h0[2]];   // unk15C
       if (st.staked || st.heat <= 0) { out.x += pull[0]; out.z += pull[2]; }   // control(): it goes with the chain
+      else if (holding) {
+        // Hot, the game only hangs the chain from the ball (Mario is put on its end); here his
+        // hands are the ghost's, so what little the chain is short between them is taken up
+        // along its links rather than by pulling its head off the ball.
+        for (let i = 0; i < n - 1; i++) { const w = 1 - i / (n - 1); R.p[i][0] -= pull[0] * w; R.p[i][1] -= pull[1] * w; R.p[i][2] -= pull[2] * w; }
+      }
       if (st.staked) {   // TBWLeash::perform: kept within reach of the head, turned to face away from it
         const tx = R.p[0][0] - out.x, ty = R.p[0][1] - (yg + 500), tz = R.p[0][2] - out.z, d = Math.hypot(tx, ty, tz);
         if (d > BW_ROPE.reach) { out.x += tx / d * BW_ROPE.push; out.z += tz / d * BW_ROPE.push; }
@@ -3203,38 +3170,137 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     for (let i = 0; i < n; i++) { out.pts[i * 3] = R.p[i][0]; out.pts[i * 3 + 1] = R.p[i][1]; out.pts[i * 3 + 2] = R.p[i][2]; }
     return out;
   }
-  const angWrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
   function chompLinkDist(G, from, to, x, z) {   // how far off the link between two nodes a point is
     const b = G[to], a = from >= 0 && G[from] ? G[from] : b;
     const lx = b[0] - a[0], lz = b[2] - a[2], L2 = lx * lx + lz * lz;
     const u = L2 > 1e-6 ? Math.max(0, Math.min(1, ((x - a[0]) * lx + (z - a[2]) * lz) / L2)) : 0;
     return Math.hypot(a[0] + lx * u - x, a[2] + lz * u - z);
   }
-  // Hauling Mario, the ball keeps to its rail: this walks it along the graph from where it is
-  // (toward the node it is heading for, picking the next link as it reaches each node), or back
-  // toward the one behind it, never past that.
-  function chompRailAdvance(bw, st, base, ds, k, m, mario) {
-    const G = bw.graph, turn = BW.turn * BW.looseRate;
-    let x = base.x, z = base.z, yaw = base.yaw, from = base.from, to = base.to, left = ds, first = true;
-    for (let guard = 0; guard < 8 && to !== from; guard++) {
-      if (left > 1e-6) {
-        const tn = G[to]; if (!tn) break;
-        const dx = tn[0] - x, dz = tn[2] - z, d = Math.hypot(dx, dz);
-        if (first && d > 1e-6) { yaw = angWrap(yaw + Math.max(-turn, Math.min(turn, angWrap(Math.atan2(dx, dz) - yaw)))); first = false; }
-        if (d <= left) {
-          x = tn[0]; z = tn[2]; left -= d;
-          const next = chompHaulBranch(bw, st, to, from, k, m, mario);
-          if (next === from) { from = to; left = 0; break; }   // out of rail: it stays put (Mario isn't towed)
-          from = to; to = next;
-        } else { x += dx / d * left; z += dz / d * left; left = 0; }
-      } else if (left < -1e-6) {
-        const tn = G[from]; if (!tn) break;
-        const dx = tn[0] - x, dz = tn[2] - z, d = Math.hypot(dx, dz), step = Math.min(-left, d);
-        if (d > 1e-6) { x += dx / d * step; z += dz / d * step; }
-        left = 0;
-      } else break;
+  // Hauling Mario: the ball's run along its rail for the whole time he holds the picket, planned
+  // as he takes hold. The chain's end is in his hands, so the ball is at most as far on as the
+  // chain reaches him - along its track (the heavy chain lies along the ball's track, round
+  // corners) and in a straight line - and it rolls on at an even pace, that furthest point evened
+  // out over a couple of its hops: the hop lifting the chain is what yanks him along in pulses
+  // (every 12-13 frames in ghosts), while the ball itself keeps going (TNerveBWGraphWander's pace
+  // only changes with its heat and the stick). Slack as he takes hold, it closes in until the
+  // chain is taut. In the air with the picket (a jump while holding, as before the throw) it
+  // stops - in the game it stands still until he is back on the ground - and he lets go in the
+  // air, so it is off again as soon as he has.
+  const BW_HOLD_AIR = new Set([240, 241, 101]);   // hold_to_hang, hold_hang (his jump), throw
+  function chompHaulPlan(bw, st, S, k0, x, z, yaw, mario) {
+    const G = bw.graph, CH = bw.len * (bw.n - 1), RT = CH + 551, m0 = mario(k0);
+    let k1 = k0;
+    while (k1 - k0 < 30 * 60) { const q = mario(k1 + 1); if (!q || !q.hold) break; k1++; }
+    // The route: the ball's own track behind it (the chain, and Mario on its end, come along
+    // that), then on along the rail the way it tows him (chompHaulStart), link by link as it
+    // gets there (chompHaulBranch).
+    const pts = [], seg = [];   // seg[i]: the rail link from pts[i] to pts[i + 1] (null: its track)
+    let back = 0, lx = x, lz = z;
+    for (let j = k0 - 1; j >= Math.max(0, k0 - 1800) && back < RT + 1500; j--) {
+      const d = Math.hypot(S.x[j] - lx, S.z[j] - lz);
+      if (d < 30) continue;
+      back += d; lx = S.x[j]; lz = S.z[j]; pts.push([lx, lz]);
     }
-    return { x, z, yaw, from, to };
+    pts.reverse();
+    pts.forEach(() => seg.push(null));
+    pts.push([x, z]);
+    const iBall = pts.length - 1;
+    chompHaulStart(bw, st, x, z, k0, k1, mario);
+    let prev = st.from, node = st.to, dead = false;
+    seg.push({ from: st.from, to: st.to }); pts.push([G[node][0], G[node][2]]);
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const c0 = cum[iBall];
+    for (let i = 0; i < cum.length; i++) cum[i] -= c0;   // the ball is at 0
+    const extend = (k, m) => {
+      const next = chompHaulBranch(bw, st, node, prev, k, m, mario);
+      if (next === prev || next < 0 || !G[next]) { dead = true; return; }   // the end of the rail: it stays there
+      seg.push({ from: node, to: next }); pts.push([G[next][0], G[next][2]]);
+      cum.push(cum[cum.length - 1] + Math.hypot(G[next][0] - G[node][0], G[next][2] - G[node][2]));
+      prev = node; node = next;
+    };
+    const P = { k0, k1, pts, seg, cum, iBall };
+    const n = k1 - k0 + 1, smax = new Float64Array(n), air = new Uint8Array(n);
+    let iM = -1;
+    for (let i = 0; i < n; i++) {
+      const k = k0 + i, m = mario(k) || m0;
+      air[i] = BW_HOLD_AIR.has(m.anim) ? 1 : 0;
+      // Mario on the route (followed along it from where he was, so a junction or a corner he
+      // cuts doesn't throw him onto another stretch).
+      let best = null;
+      const i0 = iM < 0 ? 0 : Math.max(0, iM - 3), i1 = iM < 0 ? pts.length - 2 : Math.min(pts.length - 2, iM + 10);
+      for (let j = i0; j <= i1; j++) {
+        const a = pts[j], b = pts[j + 1], ux = b[0] - a[0], uz = b[1] - a[1], L2 = ux * ux + uz * uz;
+        const u = L2 > 1e-6 ? Math.max(0, Math.min(1, ((m.x - a[0]) * ux + (m.z - a[1]) * uz) / L2)) : 0;
+        const d = Math.hypot(a[0] + ux * u - m.x, a[1] + uz * u - m.z);
+        if (!best || d < best.d) best = { d, j, s: cum[j] + Math.sqrt(L2) * u };
+      }
+      const on = best && best.d < 800;
+      if (on) iM = best.j;
+      const sA = on ? best.s + 551 + CH + 0.5 * best.d : Infinity;
+      const need = Math.min(sA, (i ? smax[i - 1] : 0) + 800) + 700;
+      while (!dead && cum[cum.length - 1] < need) extend(k, m);
+      const sEnd = cum[cum.length - 1];
+      // In a straight line: the chain's head (chain_null, 551 behind the ball's centre; taken
+      // along its track, as the ball turns into a corner gradually) within a chain of his hands.
+      const over = (sv) => {
+        const c = chompPlanAt(P, sv), h = chompPlanAt(P, sv - 551);
+        const yg = chompGroundY(bw, c.x, c.z, S.y[k0], m, c.from, c.to);
+        return Math.hypot(h.x - m.x, yg + 182 - (m.y + 60), h.z - m.z) - CH;
+      };
+      let hi = Math.min(sA, sEnd), lo = Math.max(0, Math.min(hi, on ? best.s : (i ? smax[i - 1] : 0) - 300));
+      let sB = hi;
+      if (over(hi) > 0) {
+        if (over(lo) > 0) sB = lo;
+        else { for (let it = 0; it < 16; it++) { const mid = (lo + hi) / 2; if (over(mid) > 0) hi = mid; else lo = mid; } sB = lo; }
+      }
+      smax[i] = Math.min(sA, sB, sEnd);
+    }
+    // Evened out: the furthest point averaged over 13 frames (about a hop), twice - so over about
+    // 0.4 s either way - carried on at its loose pace past the ends.
+    const v = (st.heat / BW.heatMax * 6 + 0.2) * BW.looseRate, W = 6, E = new Float64Array(n + 8 * W);
+    for (let i = 0; i < E.length; i++) { const j = i - 4 * W; E[i] = j < 0 ? smax[0] + v * j : j >= n ? smax[n - 1] + v * (j - n + 1) : smax[j]; }
+    const box = (A) => {
+      const B = new Float64Array(A.length);
+      let acc = 0;
+      for (let i = 0; i < A.length; i++) {
+        acc += A[i]; if (i - 2 * W - 1 >= 0) acc -= A[i - 2 * W - 1];
+        if (i - W >= 0) B[i - W] = acc / (2 * W + 1);
+      }
+      for (let i = Math.max(0, A.length - W); i < A.length; i++) B[i] = A[i];
+      for (let i = 0; i < W; i++) B[i] = A[i];
+      return B;
+    };
+    const sm = box(box(E));
+    // Slack, it runs on until the chain is taut - closing in at up to the 1.5 x its pace that
+    // holding the stick toward it allows (TNerveBWGraphWander: rate = 1 + 0.75 x tilt toward it,
+    // at most 1.5), easing into the taut pace over about a quarter second.
+    P.s = new Float64Array(n);
+    let sp = 0, slack = true;
+    for (let i = 0; i < n; i++) {
+      const tgt = sm[i + 4 * W] - 15, vt = sm[i + 4 * W] - sm[i + 4 * W - 1];
+      if (air[i]) slack = true;   // stopped: Mario carries on, so it's slack once he lands
+      else if (slack) {
+        const next = sp + Math.max(0, Math.min(1.5 * v, Math.max(vt, 0) + (tgt - sp) / 8));
+        if (next >= tgt - 2) { slack = false; sp = Math.max(sp, tgt); } else sp = next;
+      } else sp = Math.max(sp, tgt);
+      P.s[i] = Math.min(sp, cum[cum.length - 1]);
+    }
+    return P;
+  }
+  // Where the ball is at distance s along a haul plan's route: {x, z, from, to} and the point it
+  // heads for (tx, tz), the end of its link.
+  function chompPlanAt(P, s) {
+    const { pts, cum, seg } = P;
+    let lo = 0, hi = pts.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; }
+    const i = Math.min(lo, pts.length - 2), a = pts[i], b = pts[i + 1], L = cum[i + 1] - cum[i];
+    const u = L > 1e-6 ? Math.max(0, Math.min(1, (s - cum[i]) / L)) : 1;
+    const x = a[0] + (b[0] - a[0]) * u, z = a[1] + (b[1] - a[1]) * u;
+    let t = i + 1;
+    if (Math.hypot(pts[t][0] - x, pts[t][1] - z) < 1 && t + 1 < pts.length) t++;
+    const sg = seg[Math.min(t - 1, seg.length - 1)] || seg[P.iBall];
+    return { x, z, tx: pts[t][0], tz: pts[t][1], from: sg.from, to: sg.to };
   }
   // The link to take from a node while hauling. Towed along the ball's track, Mario comes past
   // the node later, and the link the ghost then has him pass is the way the ball went; if he lets
@@ -3272,13 +3338,26 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     st.bc[key] = next;
     return next;
   }
-  // Taking hold of the picket: the ball takes to the rail at the nearest node, heading on along it.
-  function chompRailStart(bw, st, x, z, k, m, mario) {
-    const G = bw.graph;
-    let best = -1;
-    G.forEach((n, j) => { if (best < 0 || Math.hypot(n[0] - x, n[2] - z) < Math.hypot(G[best][0] - x, G[best][2] - z)) best = j; });
-    if (best < 0) return;
-    st.from = best; st.to = chompHaulBranch(bw, st, best, -1, k, m, mario);
+  // Taking hold of the picket: the way along its rail the ball tows him is the way the ghost has
+  // him go (he is towed along its track; while he barely moves, away from him), from the link it
+  // is on - or, at a node, out along whichever of its links does that.
+  function chompHaulStart(bw, st, x, z, k0, k1, mario) {
+    const G = bw.graph, m0 = mario(k0), mq = mario(Math.min(k1, k0 + 60)) || m0;
+    let vx = mq.x - m0.x, vz = mq.z - m0.z;
+    if (Math.hypot(vx, vz) < 200) { vx = x - m0.x; vz = z - m0.z; }
+    const q = chompRailPoint(bw, x, z);
+    if (!q) return;
+    const opts = [];
+    for (const [a, b] of [[q.a, q.b], [q.b, q.a]]) {
+      if (Math.hypot(G[b][0] - x, G[b][2] - z) < 50) (G[b][4] || []).forEach((j) => { if (j >= 0 && j < G.length && j !== b) opts.push([b, j]); });
+      else opts.push([a, b]);
+    }
+    let best = null;
+    for (const [a, b] of opts) {
+      const dx = G[b][0] - x, dz = G[b][2] - z, dl = Math.hypot(dx, dz) || 1, sc = (dx * vx + dz * vz) / dl;
+      if (!best || sc > best.sc) best = { from: a, to: b, sc };
+    }
+    if (best) { st.from = best.from; st.to = best.to; }
   }
   // Cooled in the bath the Chain Chomp is solid (takeBath: its map collision at its centre, 1.1 x
   // its size), and its Shine comes down onto it: the top of the ball under (x, z), if it's there.
@@ -5780,7 +5859,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
