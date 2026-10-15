@@ -2623,8 +2623,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_TICKS = QF_PER_FRAME;
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, barkHot: 280,
     barkFrames: 214 / 2, shakeAfter: 600, shakeFrames: 55 / 2, downDemoFrames: 199 / 2, shineAfter: 61,
-    dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.15, fallMax: 40, rvMax: 70, looseM: 7.5 };
-  function chompSim(bw, f, mario, key, water, bursts) {
+    dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.15, fallMax: 40, rvMax: 70, looseM: 7.5,
+    coolNear: 800, spamWithin: 90, spamLate: 15, spamEvery: 5, spamLand: 3 };
+  function chompSim(bw, f, mario, key, water, bursts, ev) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
     let P = bw.p;
@@ -2670,6 +2671,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         was = m0;
       }
     }
+    // The take that sends it into the bath: the ghost's last before it collects the boss Shine
+    // (ev.shineK, its frame of this visit), within a chain's reach of the end of the bath path
+    // (the node by the bath, where it turns round). The chomp goes there for it and waits.
+    if (st.bathTake === undefined) {
+      st.bathTake = null;
+      if (ev && Number.isFinite(ev.shineK) && G && st.bathNode >= 0) {
+        const T = st.targets.filter((q) => q.grab && q.k < ev.shineK && ev.shineK - q.k < 30 * 30).pop();
+        if (T && Math.hypot(T.x - G[st.bathNode][0], T.z - G[st.bathNode][2]) < RT + 400) { T.bath = true; st.bathTake = T; }
+      }
+    }
     if (!st.rv) st.rv = chompRendezvous(bw, st, mario, bursts || []);
     if (st.strain === undefined) {
       st.strain = null;
@@ -2689,7 +2700,23 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const k = S.x.length - 1;
       let x = S.x[k], z = S.z[k], yaw = S.yaw[k];
       const m = mario ? mario(k) : null;
-      const heat0 = st.heat, hits = chompWaterStep(bw, st, S, k, water);
+      const heat0 = st.heat;
+      let hits = chompWaterStep(bw, st, S, k, water);
+      // A ghost from before Moonshine V5 records neither FLUDD nor its inputs, so how the run
+      // cooled the chomp for the take into the bath can't be seen. It is taken to be spam sprayed
+      // cold right next to the bath before that take: from when it comes within BW.coolNear of the
+      // bath in the last BW.spamWithin frames (or BW.spamLate frames before the take, wherever it
+      // is), a burst every BW.spamEvery frames, as the V5 ghosts space theirs, its 127 droplets
+      // (NozzleDeformBomb) all on the ball over BW.spamLand frames, until it has no heat left.
+      const BT = st.bathTake;
+      if (ev && ev.blind && BT && k < BT.k && !st.bath) {
+        if (st.spam === undefined && st.heat > 0 && k >= BT.k - BW.spamWithin && (Math.hypot(x - BW_BATH[0], z - BW_BATH[2]) < BW.coolNear || k >= BT.k - BW.spamLate)) st.spam = k;
+        const a = st.spam === undefined ? -1 : (k - st.spam) % BW.spamEvery;
+        if (a >= 0 && a < BW.spamLand && st.heat > 0) {
+          const dh = Math.min(st.heat, Math.round(BOMB.num * (a + 1) / BW.spamLand) - Math.round(BOMB.num * a / BW.spamLand));
+          st.heat -= dh; hits += dh;
+        }
+      }
       chompChainTemp(bw, S, k);
       S.fx[k] = chompFxBits(bw, st, S, k, hits, heat0);
       if (st.strain && k < st.strain.until) {
@@ -2802,7 +2829,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           // ball, has to get to that spot, and the ball heads for where it will be when that
           // happens (a grab: a chain's length down Mario's path from it).
           const T = !st.staked && !holding ? st.targets.find((q) => q.k > k) : null;
-          const goal = T ? (T.grab ? { x: T.bx, z: T.bz } : T) : null;
+          const goal = T ? (T.bath ? { x: G[st.bathNode][0], z: G[st.bathNode][2] } : T.grab ? { x: T.bx, z: T.bz } : T) : null;
           // Once its rail has brought the picket as close as it will come to the spot (or it has
           // run out of rail), it waits there - the video shows it standing by until Mario comes
           // for the picket. The decomp has no such wait (at the end of a rail it turns straight
@@ -2811,11 +2838,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           // to his hands, so the haul starts with the chain tight.
           let parked = false;
           if (T && !st.ridden) {
-            if (!st.park || st.park.k !== T.k) st.park = { k: T.k, best: Infinity, stop: false };
+            if (!st.park || st.park.k !== T.k) st.park = { k: T.k, best: Infinity, stop: false, near: false };
             const d = Math.hypot(T.x - st.px, T.z - st.pz);
-            const taut = T.grab && Math.hypot(x - Math.sin(yaw) * 551 - T.x, S.y[k] + 182 - (T.y + 60), z - Math.cos(yaw) * 551 - T.z) >= bw.len * (bw.n - 1);
+            // (taut once it has come by the spot and gone on a chain's length: from further off
+            // the chain can't reach his hands yet)
+            const reach = Math.hypot(x - Math.sin(yaw) * 551 - T.x, S.y[k] + 182 - (T.y + 60), z - Math.cos(yaw) * 551 - T.z);
+            if (reach < bw.len * (bw.n - 1)) st.park.near = true;
+            const taut = T.grab && st.park.near && reach >= bw.len * (bw.n - 1);
             if (st.park.stop) parked = true;
-            else if (d < 150 || taut || st.deadEnd) { st.park.stop = true; parked = true; }
+            else if (T.bath) {   // for the take into the bath: at the end of the bath path, turned round there
+              if (st.from === st.bathNode && Math.hypot(G[st.bathNode][0] - x, G[st.bathNode][2] - z) < BW.bathNode) { st.park.stop = true; parked = true; }
+            } else if (d < 150 || taut || st.deadEnd) { st.park.stop = true; parked = true; }
             else if (d < st.park.best) st.park.best = d;
             else if (st.park.best < 900 && d > st.park.best + 50) { st.park.stop = true; parked = true; }
           }
@@ -2893,7 +2926,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const level = pm && Math.abs(m.y - pm.y) < 6;   // standing, not jumping past
           // On its back: standing exactly a ball's height (1000) over the floor, right over it, not hovering.
           // (It isn't moved to him: in the game he lands on the ball where it is.)
-          if (level && !m.spray && Math.abs(above - 1000) < 80 && Math.hypot(m.x - x, m.z - z) < (st.ridden ? 700 : 450)) st.ridden = 8;
+          if (level && !m.spray && !m.hover && Math.abs(above - 1000) < 80 && Math.hypot(m.x - x, m.z - z) < (st.ridden ? 700 : 450)) st.ridden = 8;
           else if (st.ridden) st.ridden--;
           // Carried off its rail by that: back onto the graph at the nearest node
           // (goToShortestNextGraphNode), heading on to the one after it.
@@ -2906,8 +2939,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             st.to = !nb.length ? best : Q ? nb.reduce((b, j) => (Math.hypot(G[j][0] - Q.x, G[j][2] - Q.z) < Math.hypot(G[b][0] - Q.x, G[b][2] - Q.z) ? j : b))
               : nb.reduce((b, j) => (Math.abs(wrap(Math.atan2(G[j][0] - x, G[j][2] - z) - yaw)) < Math.abs(wrap(Math.atan2(G[b][0] - x, G[b][2] - z) - yaw)) ? j : b));
           }
-          // Brought to the bath (ridden or on the chain): in it goes.
+          // Brought to the bath (ridden or on the chain): in it goes. (And at the take the run shows
+          // sends it in, in it goes from wherever it got to by then.)
           if ((st.ridden || holding) && Math.hypot(BW_BATH[0] - x, BW_BATH[2] - z) < 900) { st.bath = 1; st.bx = x; st.bz = z; }
+          else if (holding && st.bathTake && k >= st.bathTake.k && Math.hypot(G[st.bathNode][0] - x, G[st.bathNode][2] - z) < RT) { st.bath = 1; st.bx = x; st.bz = z; }
           // Mario standing in the bath with the chomp loose beside it: he rode it in.
           if (!st.staked && Math.hypot(BW_BATH[0] - m.x, BW_BATH[2] - m.z) < 700 && m.y > BW_BATH[1] + 400 && Math.hypot(BW_BATH[0] - x, BW_BATH[2] - z) < 3000) { st.bath = 1; st.bx = x; st.bz = z; }
         }
@@ -3014,9 +3049,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     for (let k = 0; k < 30 * 60 * 10; k++) {
       const m = mario(k);
       if (!m) { if (k > 30 * 60 && !was) break; was = null; continue; }
-      // Landing on the ball: a landing (land / laend) 500-1150 over the floor below him.
-      const landing = m.anim === 86 || m.anim === 87 || m.anim === 214;
-      if (landing && !(was && (was.anim === 86 || was.anim === 87 || was.anim === 214)) && !m.hold) {
+      // Landing on the ball: touching down 500-1150 over the floor below him - the landing (laend),
+      // or the air pose giving way to anything else with him no longer dropping. (The air pose,
+      // "land", starts wherever a fall or a hover does, high over the floor, not where he comes down.)
+      let down = false;
+      if (was && !m.hold) {
+        if (m.anim === 87 || m.anim === 214) down = was.anim !== 87 && was.anim !== 214;
+        else if (was.anim === 86 && m.anim !== 86) { const nx = mario(k + 1); down = !!nx && Math.abs(nx.y - m.y) < 12; }
+      }
+      if (down) {
         const gy = groundY(m.x, m.y + 10, m.z), above = gy > -Infinity ? m.y - gy : 0;
         if (above > 500 && above < 1150) out.push({ k, x: m.x, z: m.z, r: 350, kind: 'land' });
       }
@@ -3027,7 +3068,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (m && !m.hold) out.push({ k, x: m.x + Math.sin(m.yaw) * 700, z: m.z + Math.cos(m.yaw) * 700, r: 600, kind: 'spray' });
     }
     for (const T of st.targets) {
-      if (T.grab && T.full) out.push({ k: T.k, x: T.bx, z: T.bz, r: 400, kind: 'grab' });
+      if (T.bath) out.push({ k: T.k, x: bw.graph[st.bathNode][0], z: bw.graph[st.bathNode][2], r: 400, kind: 'bath' });
+      else if (T.grab && T.full) out.push({ k: T.k, x: T.bx, z: T.bz, r: 400, kind: 'grab' });
     }
     out.sort((a, b) => a.k - b.k);
     // A pound on the picket: the ball is on along its rail from there by nearly the chain's length,
@@ -3226,9 +3268,57 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // switch timeline says it is out. Not while he holds something or rides Yoshi (no pumping).
   // Gate in / out, shine get: Mario has no control (and can't pump).
   const NO_PUMP_ANIMS = new Set([205, 269, 270, 301, 302, 315, 316, 317, 333]);
+  // Hovering, in a ghost that recorded neither FLUDD nor inputs (before Moonshine V5). The air pose
+  // is the "land" animation, two of its frames in turn: falling (off a ledge, after a jump, spam
+  // spraying on the way down) as much as hovering, so the pose alone doesn't tell. The hover's
+  // lift does: it holds him rising a steady 2-5 a frame (or stops a fall at once), where a fall
+  // gathers 4 a frame of speed downward (the V6 and V7 ghosts, FLUDD against height, agree to a
+  // frame or so at each end). By sample: 2 hovering; 1 later in the same fall, Hover still out.
+  const HOVER = { lo: -3, hi: 8, steady: -1.5, kick: 3, min: 2 };
+  function hoverRuns(d) {
+    if (d.hoverRuns) return d.hoverRuns;
+    const n = d.anim.length, out = new Uint8Array(n), y = (i) => d.pos[i * 3 + 1];
+    for (let i = 0; i < n;) {
+      if (d.anim[i] !== 86) { i++; continue; }
+      let j = i + 1;
+      while (j < n && d.anim[j] === 86 && d.segIndex[j] === d.segIndex[i]) j++;
+      let flips = 0;
+      for (let k = i + 1; k < j; k++) if (Math.abs(Math.abs(d.phase[k] - d.phase[k - 1]) - 2039) < 64) flips++;
+      if (j - i >= 3 && flips >= (j - i - 1) * 0.75) {
+        // each frame: 3 rising steadily, 2 a fall stopped short (or holding), from the two before
+        for (let k = Math.max(i, 2); k < j; k++) {
+          if (d.segIndex[k - 2] !== d.segIndex[k] || d.segIndex[k - 1] !== d.segIndex[k]) continue;
+          const dy = y(k) - y(k - 1), a = dy - (y(k - 1) - y(k - 2));
+          if (dy <= HOVER.hi && ((dy >= HOVER.lo && a >= HOVER.steady) || a >= HOVER.kick)) out[k] = dy >= 0.5 && a >= HOVER.steady ? 3 : 2;
+        }
+        // a hover: two or more such frames running, rising in at least one
+        let first = -1;
+        for (let k = i; k < j;) {
+          if (out[k] < 2) { k++; continue; }
+          let e = k, rise = false;
+          while (e < j && out[e] >= 2) { if (out[e] === 3) rise = true; e++; }
+          const ok = e - k >= HOVER.min && rise;
+          if (ok && first < 0) first = k;
+          for (let z = k; z < e; z++) out[z] = ok ? 2 : 0;
+          k = e;
+        }
+        if (first >= 0) for (let k = first; k < j; k++) if (!out[k]) out[k] = 1;
+      }
+      i = j;
+    }
+    return (d.hoverRuns = out);
+  }
   function fluddGuessAt(g, q) {
     const d = g.data, inp = d.inputs;
-    if (!inp || !inp.count || inp.hasFludd || q < inp.qf[0]) return null;
+    if (!inp || !inp.count) {   // no inputs either: only a hover shows
+      if (inp && inp.hasFludd) return null;
+      const s = ghostSampleAt(d, q);
+      if (s.gap || !inferFludd(g, q) || (d.yoshi && d.yoshi[s.i])) return null;
+      const yaw = (s.yaw / 32768) * Math.PI, hv = hoverRuns(d)[s.i];
+      if (hv) return { present: true, nozzle: 4, spraying: hv === 2, power: hv === 2 ? 38 : 0, offset: [-Math.sin(yaw) * 70, 120, -Math.cos(yaw) * 70], yaw: yaw + Math.PI, pitch: -1.4, guessed: true };
+      return { present: true, nozzle: 0, spraying: false, power: 0, offset: [Math.sin(yaw) * 10, 150, Math.cos(yaw) * 10], yaw, pitch: -0.1, guessed: true };
+    }
+    if (inp.hasFludd || q < inp.qf[0]) return null;
     let lo = 0, hi = inp.count - 1;
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= q) lo = mid; else hi = mid - 1; }
     const s = ghostSampleAt(d, q);
@@ -3602,8 +3692,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           mag = Math.min(32, Math.hypot(inp.stick[lo * 2], inp.stick[lo * 2 + 1]) / 72 * 32);
           pump = inp.trig[lo * 2 + 1] > 30 || !!(inp.fluddMode[lo] & 0x10);   // R pressed: spraying (ghosts without FLUDD data)
         }
-        const spray = fe ? !!(fe.present && fe.spraying && fe.power) : pump && !SPRAY_BLOCK_ANIMS.has(d.anim[s.i]);
-        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray, hold: isPicket(desc),
+        const hover = hoverRuns(d)[s.i] === 2;
+        const spray = fe ? !!(fe.present && fe.spraying && fe.power) : inp && inp.count ? pump && !SPRAY_BLOCK_ANIMS.has(d.anim[s.i]) : hover;
+        return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw / 32768) * Math.PI, spray, hover, hold: isPicket(desc),
           mag, pound: d.anim[s.i] === HIP_LAND, anim: d.anim[s.i] };   // the pound lands (hiped): HIP_DROP on what's under him
       };
     }
@@ -3621,14 +3712,25 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       water = (k) => {
         const e = Math.round((base + k * QF_PER_FRAME) / QF_PER_FRAME), out = { t0: e * QF_PER_FRAME - QF_PER_FRAME + 1, born: [] };
         const ems = mario(k) ? frameWater(g, e, sgd) : null;
-        if (ems) ems.forEach(([em]) => em.parts.forEach((pt) => { pt.r = em.bomb ? 100 : 80; out.born.push({ pt, tk: em.e }); }));
+        // (Not Hover's water: a hover can't put the chomp out - runs cool it with spam sprays - so
+        // hover water on the ball here would only be the simulated ball being where it wasn't.)
+        if (ems) ems.forEach(([em]) => { if (!em.hover) em.parts.forEach((pt) => { pt.r = em.bomb ? 100 : 80; out.born.push({ pt, tk: em.e }); }); });
         return out;
       };
     }
     // Spam sprays by frame of this visit (the chomp should be in front of Mario for them).
     const bk = mario ? burstFrames(g).map((e) => e - Math.round(base / QF_PER_FRAME)).filter((k) => k >= 0) : [];
+    // What the run shows: the frame it collects the boss Shine (the chomp has been in the bath by
+    // then), and whether its ghost is blind to FLUDD (before Moonshine V5: no FLUDD, no inputs).
+    let ev = null;
+    if (mario) {
+      chompShineAt(-1);   // (finds which Shine it is)
+      if (!g.pickups || !g.pickups.has(objectsKey)) computePickups(g);   // (a ghost just added: before its first run of the chomp)
+      const times = g.pickups ? g.pickups.get(objectsKey) : null, sq = times && bw.shineIdx >= 0 ? times[bw.shineIdx] : Infinity;
+      ev = { shineK: Number.isFinite(sq) ? (sq - base) / QF_PER_FRAME : Infinity, blind: g.data.header.version <= 4 };
+    }
     // (Nothing else moves while it runs: placeChomp places only the chomp, after it.)
-    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = objStillDo(() => chompSim(bw, f, mario, key, water, bk));
+    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = objStillDo(() => chompSim(bw, f, mario, key, water, bk, ev));
     const kf = Math.max(0, Math.floor(f)), st = bw.sim && bw.sim.st;
     const gold = bw.brkGold && st && st.goldK !== undefined && kf >= st.goldK;
     if (gold) brkApply(bw.brkGold, bw.bodyMats || (bw.bodyMats = chompMats(node)), Math.min(1, (kf - st.goldK) * BW_GOLD_RATE / (bw.brkGold.dur - 1)));
@@ -5070,7 +5172,7 @@ void main() {
       }
       parts.push(pt);
     }
-    em = { e: tk, parts, bomb };
+    em = { e: tk, parts, bomb, hover: !bomb && K.type === 15 };   // (WTP15_Hover)
     g.sprayHits.set(key, em);
     return em;
   }
@@ -5541,6 +5643,7 @@ void main() {
           while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= time) lo = mid; else hi = mid - 1; }
           sel = g.selected[lo];
         }
+        else if (!(g.data.inputs && g.data.inputs.count) && hoverRuns(g.data)[sYo.i]) sel = 1;   // (no inputs: a hover shows Hover)
         active = sel ? secondary : 0;
       }
       if (rig.parts.nozzle_normal_wg) rig.parts.nozzle_normal_wg.visible = hasFludd && (active === 0 || active === 2);
