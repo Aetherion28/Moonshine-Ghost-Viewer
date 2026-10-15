@@ -2874,37 +2874,40 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // FLUDD water on the chomp: every droplet that touches it is one HIT_MESSAGE_SPRAYED_BY_WATER
   // (TModelWaterManager::move), which costs it one point of heat (TBossWanwan::receiveMessage:
   // decHitPoints) and ends the droplet. A spam spray is 127 droplets at once (NozzleDeformBomb), the
-  // ordinary spray about one a frame (NozzleDeform mNum 0.8-1), so spam spraying point blank is how
-  // runners cool it in a second or so. Its water hitboxes are two TBWHit cylinders (damage radius
-  // and height): 450 x 500 at the ball's centre and 270 x 500 below it; a droplet's own is mHitRadius
-  // (80, the burst's 100) x mHitHeight 80. The manager holds 256 droplets at a time.
+  // ordinary spray about one a movement tick (NozzleDeform mNum 0.8-1: three or four a frame), so
+  // spam spraying point blank is how runners cool it in a second or so. Its water hitboxes are two
+  // TBWHit cylinders (damage radius and height): 450 x 500 at the ball's centre and 270 x 500 below
+  // it; a droplet's own is mHitRadius (80, the burst's 100) x mHitHeight 80. The manager holds 256
+  // droplets at a time. TObjHitCheck::checkWater looks for droplets on actors once a frame (every
+  // fourth tick, before it moves anything): here at the start of each frame's first tick, with the
+  // droplets where the tick before left them; one found there is gone in that tick's move.
   const BW_HIT = [{ dy: 500, r: 450, h: 500 }, { dy: 0, r: 270, h: 500 }];
   function chompWaterStep(bw, st, S, k, water) {
     if (!water) return 0;
-    const D = st.drops;
-    const born = water(k);
-    if (born) for (const pt of born) { if (D.length >= 256) break; D.push({ pt, k0: k }); }
-    if (!D.length) return 0;
-    const x = S.x[k], z = S.z[k], y0 = S.y[k] + (bw.hop ? bw.hop(k) : 0), p = [0, 0, 0];
+    const D = st.drops, w0 = water(k), tc = w0.t0;
     let hits = 0;
-    const live = !(S.bath[k] && S.heat[k] <= 0);   // after takeBath it takes no more water
-    let w = 0;
-    for (let i = 0; i < D.length; i++) {
-      const dr = D[i], a = k - dr.k0;
-      if (a >= dr.pt.hit || a > dr.pt.W.alive) continue;   // landed on the stage, or dried up
-      if (a >= 1) {
-        waterPosAt(dr.pt, a, p);
-        const rr = dr.pt.r || 80, dh = Math.hypot(p[0] - x, p[2] - z);
-        if (BW_HIT.some((c) => dh < c.r + rr && p[1] + 80 > y0 + c.dy && p[1] < y0 + c.dy + c.h)) {
-          if (live && st.heat > 0) st.heat--;
-          hits++;
-          dr.pt.bwHit = a;   // the drawn spray ends it there too
-          continue;
+    if (D.length) {
+      const x = S.x[k], z = S.z[k], y0 = S.y[k] + (bw.hop ? bw.hop(k) : 0), p = [0, 0, 0];
+      const live = !(S.bath[k] && S.heat[k] <= 0);   // after takeBath it takes no more water
+      let w = 0;
+      for (let i = 0; i < D.length; i++) {
+        const dr = D[i], a = tc - 1 - dr.tk;   // ticks it has moved
+        if (a >= dr.pt.hit || a >= dr.pt.W.alive) continue;   // landed on the stage, or dried up
+        if (a >= 0) {
+          waterPosAt(dr.pt, a, p);
+          const rr = dr.pt.r || 80, dh = Math.hypot(p[0] - x, p[2] - z);
+          if (BW_HIT.some((c) => dh < c.r + rr && p[1] + 80 > y0 + c.dy && p[1] < y0 + c.dy + c.h)) {
+            if (live && st.heat > 0) st.heat--;
+            hits++;
+            dr.pt.bwHit = a + 1;   // the drawn spray ends it there too
+            continue;
+          }
         }
+        D[w++] = dr;
       }
-      D[w++] = dr;
+      D.length = w;
     }
-    D.length = w;
+    for (const b of w0.born) { if (D.length >= 256) break; D.push(b); }   // (checked from the next frame)
     return hits;
   }
   // Heat colour (bwanwan_body.brk / bwanwan_chain.brk). The body shows heat x (end - 1). The links
@@ -3441,22 +3444,16 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       bw.hopFrame = (k) => { const a = rg.anim; return ((k * rg.ar + rg.phase) % a.d + a.d) % a.d; };
       bw.hop = (k) => { const p = chompPose(bw, rg, k), j = p.anim.j[0]; return j ? bckSample(j[7], p.f) : 0; };
     }
-    // The ghost's FLUDD water by frame of this visit: the droplets it puts out (as the spray is drawn).
+    // The ghost's FLUDD water by frame of this visit: the droplets it puts out (as the spray is
+    // drawn), each with the movement tick it was put out on, and the frame's first tick.
     let water = null;
     if (mario) {
-      const d = g.data, bursts = burstFrames(g);
+      const sgd = shineDemo(g);
       g.sprayHits = g.sprayHits || new Map();
       water = (k) => {
-        if (!mario(k)) return null;
-        const q = base + k * QF_PER_FRAME, e = Math.round(q / QF_PER_FRAME);
-        const fe = ghostFluddAt(d, q) || fluddGuessAt(g, q);
-        if (!fe || !fe.present) return null;
-        const se = ghostSampleAt(d, q), ve = marioSpeedAt(d, e), out = [];
-        if (bursts.includes(e)) waterEmission(g, e, 0, fe, se, ve, BOMB, true).parts.forEach((pt) => { pt.r = 100; out.push(pt); });
-        else if (fe.spraying && fe.power && !fe.burst && !bursts.some((b) => e > b && e <= b + 2)) {
-          const K = nozzleEmit(fe.nozzle, fe.power);
-          K.jets.forEach((_, ji) => waterEmission(g, e, ji, fe, se, ve, K, false).parts.forEach((pt) => { pt.r = 80; out.push(pt); }));
-        }
+        const e = Math.round((base + k * QF_PER_FRAME) / QF_PER_FRAME), out = { t0: e * QF_PER_FRAME - QF_PER_FRAME + 1, born: [] };
+        const ems = mario(k) ? frameWater(g, e, sgd) : null;
+        if (ems) ems.forEach(([em]) => em.parts.forEach((pt) => { pt.r = em.bomb ? 100 : 80; out.born.push({ pt, tk: em.e }); }));
         return out;
       };
     }
@@ -4673,8 +4670,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // power each frame, so every frame's particles are rebuilt from that with a fixed random
   // sequence per particle: scrubbing shows the same water.
   //
+  // Timing: TMarDirector::direct runs the movement perform list four times a frame (600 / 30 =
+  // 20 units of simulation time, 5 a tick: the ghost's QF), and both Mario's gunExec (so each
+  // emission) and TModelWaterManager::move happen every tick. So a drop moves its speed, gains its
+  // gravity and loses a point of life four times a frame, and a wet spot dries four points a
+  // frame. Only TSplashManager moves once a frame (on CUE_CALC_ANIM, the frame's last tick).
+  //
   // Particle types (TWaterParticleType): mExtension stretches a drop along its view-space speed,
-  // mMagnify scales it on landing, mGravity is added to its y speed each frame, mAlive its life.
+  // mMagnify scales it on landing, mGravity is added to its y speed each tick, mAlive its life (ticks).
   const WTP = {
     0: { ext: 0.7, mag: 0.4, g: -0.4, alive: 255 },    // WTP00_Normal
     2: { ext: 0.8, mag: 0.3, g: -0.2, alive: 100 },    // WTP02_Bomb
@@ -4824,11 +4827,11 @@ void main() {
     return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
   }
 
-  // One emission (frame e, emitter ji): its particles' start, speed and fate, kept per stage.
-  // Flight: v.y += gravity, then p += v, each frame (TModelWaterManager::move); speed across the
-  // ground is capped just under the drop's size. Fate is where the path first meets the stage.
-  function waterEmission(g, e, ji, fe, se, ve, K, bomb) {
-    const key = bomb ? -1 - e : e * 4 + ji;
+  // One emission (movement tick tk, emitter ji): its particles' start, speed and fate, kept per
+  // stage. Flight: v.y += gravity, then p += v, each tick (TModelWaterManager::move); speed across
+  // the ground is capped just under the drop's size. Fate is where the path first meets the stage.
+  function waterEmission(g, tk, ji, fe, se, ve, K, bomb) {
+    const key = bomb ? -(tk + 8) : (tk + 8) * 4 + ji;
     let em = g.sprayHits.get(key);
     if (em) return em;
     const cp = Math.cos(fe.pitch);
@@ -4837,8 +4840,8 @@ void main() {
     const p0 = [se.x + fe.offset[0] + side[0] * off, se.y + fe.offset[1], se.z + fe.offset[2] + side[2] * off];
     const W = WTP[K.type] || WTP[0];
     const pow = bomb ? BOMB.pow : fe.power;
-    // emitted this frame: the nozzle's running count (mEmitNum) passing whole numbers
-    const n = bomb ? BOMB.num : Math.floor((e + 1) * K.num + 1e-6) - Math.floor(e * K.num + 1e-6);
+    // emitted this tick: the nozzle's running count (mEmitNum) passing whole numbers
+    const n = bomb ? BOMB.num : Math.floor((tk + 9) * K.num + 1e-6) - Math.floor((tk + 8) * K.num + 1e-6);
     const parts = [];
     for (let k = 0; k < n; k++) {
       const r = (i) => rand11(key, k * 8 + i);
@@ -4877,7 +4880,7 @@ void main() {
       }
       parts.push(pt);
     }
-    em = { e, parts };
+    em = { e: tk, parts, bomb };
     g.sprayHits.set(key, em);
     return em;
   }
@@ -4892,24 +4895,48 @@ void main() {
     return Math.hypot(dx, dz) > 200 ? [0, 0, 0] : [dx * 0.125, 0, dz * 0.125];
   }
 
-  // Rebuilds what of the ghost's water is in the air, splashing or lying on the ground at frame F.
-  // The manager holds 256 particles (SLOT_NUM): an emission only gets the free slots, and wet
-  // spots hold theirs until they dry. Walked oldest first, as the particle array is.
+  // What FLUDD puts out in frame e, as [emission, key]: one emission a movement tick (the frame's
+  // four, QF 4e - 3 .. 4e, ending at the ghost's sample), each from where the nozzle is at that
+  // tick (Mario's track between samples, plus the frame's nozzle offset) along the frame's
+  // direction. A spam spray is the 127 droplets of a single tick, the frame's first: the pad's A
+  // press is only seen then (TMarDirector::direct resets the pads' edges on the later ticks), and
+  // the bomb (mTriggerTime 1) is spent by the next. TMario::winDemo stops FLUDD for the Shine get.
+  function frameWater(g, e, sgd) {
+    const d = g.data, q = e * QF_PER_FRAME;
+    if (sgd && q >= sgd.q && q < sgd.until) return null;
+    const fe = yoshiJuice(d, q) || ghostFluddAt(d, q) || fluddGuessAt(g, q);
+    if (!fe || !fe.present) return null;
+    burstFrames(g);
+    const bs = g.burstSet, ve = marioSpeedAt(d, e), t0 = q - QF_PER_FRAME + 1, out = [];
+    if (bs.has(e)) out.push([waterEmission(g, t0, 0, fe, ghostSampleAt(d, t0), ve, BOMB, true), -(t0 + 8)]);
+    else if (fe.spraying && fe.power && !fe.burst && !bs.has(e - 1) && !bs.has(e - 2)) {
+      const K = nozzleEmit(fe.nozzle, fe.power);
+      for (let j = 0; j < QF_PER_FRAME; j++) {
+        const tk = t0 + j, se = ghostSampleAt(d, tk);
+        K.jets.forEach((_, ji) => out.push([waterEmission(g, tk, ji, fe, se, ve, K, false), (tk + 8) * 4 + ji]));
+      }
+    }
+    return out;
+  }
+
+  // Rebuilds what of the ghost's water is in the air, splashing or lying on the ground at QF t
+  // (movement tick T). The manager holds 256 particles (SLOT_NUM): an emission only gets the free
+  // slots, and wet spots hold theirs until they dry. Walked oldest first, as the particle array is.
+  // (A drop lives at most 255 ticks and a wet spot 256 more: 130 frames back is all there can be.)
   const WATER_SLOTS = 256;
   function updateSpray(g, s) {
-    const d = g.data, F = t / QF_PER_FRAME, f0 = Math.floor(F);
+    const T = t, eTop = Math.floor((T + QF_PER_FRAME - 1) / QF_PER_FRAME);
     g.sprayHits = g.sprayHits || new Map();
     const colKey = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
     if (g.sprayHits.mapId !== colKey) { g.sprayHits.clear(); g.sprayHits.mapId = colKey; }
     const L = g.water.userData.list;
     L.drops.length = 0; L.splashes.length = 0;
-    const bursts = burstFrames(g);
     const tmp = [0, 0, 0];
-    let live = [];          // death frames of particles holding a slot
+    let live = [];          // death ticks of particles holding a slot
     const kept = [];        // wet spots
     let anchor = null, anchorW = null;
-    const show = (pt, e, key) => {
-      const a = F - e;
+    const show = (pt, tk, key) => {
+      const a = T - tk;   // ticks it has moved
       if (a <= 0) return;
       if (pt.bwHit !== undefined && a >= pt.bwHit) return;   // it hit the Chain Chomp (chompWaterStep)
       if (a < pt.hit) {
@@ -4917,79 +4944,74 @@ void main() {
           waterPosAt(pt, a, tmp);
           L.drops.push({ x: tmp[0], y: tmp[1], z: tmp[2], vx: pt.v[0], vy: pt.v[1] + pt.W.g * a, vz: pt.v[2], size: pt.size, ext: pt.W.ext });
         }
-      } else if (pt.splash && a - pt.hit < SPLASH.life) L.splashes.push({ p: pt.splashAt, b: a - pt.hit, key });
+      } else if (pt.splash && a - pt.hit < SPLASH.life * QF_PER_FRAME) L.splashes.push({ p: pt.splashAt, b: (a - pt.hit) / QF_PER_FRAME, key });   // (a splash moves once a frame)
     };
-    const sgd = shineDemo(g);   // TMario::winDemo: FLUDD stops with the Shine get
-    for (let e = Math.max(0, f0 - 300); e <= f0; e++) {
-      if (sgd && e * QF_PER_FRAME >= sgd.q && e * QF_PER_FRAME < sgd.until) continue;
-      const fe = yoshiJuice(d, e * QF_PER_FRAME) || ghostFluddAt(d, e * QF_PER_FRAME) || fluddGuessAt(g, e * QF_PER_FRAME);
-      if (!fe || !fe.present) continue;
-      const ems = [];
-      if (bursts.includes(e)) ems.push([waterEmission(g, e, 0, fe, ghostSampleAt(d, e * QF_PER_FRAME), marioSpeedAt(d, e), BOMB, true), -1 - e]);
-      else if (fe.spraying && fe.power && !fe.burst && !bursts.some((b) => e > b && e <= b + 2)) {
-        const K = nozzleEmit(fe.nozzle, fe.power);
-        const se = ghostSampleAt(d, e * QF_PER_FRAME), ve = marioSpeedAt(d, e);
-        K.jets.forEach((_, ji) => ems.push([waterEmission(g, e, ji, fe, se, ve, K, false), e * 4 + ji]));
-      }
-      if (!ems.length) continue;
-      live = live.filter((x) => x.end > e);
-      ems.forEach(([em, key0]) => em.parts.forEach((pt, k) => {
-        if (live.length >= WATER_SLOTS) return;
-        const key = key0 + k * 0.25, land = e + pt.hit;
-        let end = e + Math.min(pt.hit, pt.W.alive);
-        if (pt.kind === 'ground' && pt.stay && land <= F) {
-          // A wet spot landing within 2.5 x the summed sizes of the last one hands that one its size
-          // and life and goes; life counts on from the drop's (at most 256) and sets the radius.
-          const size = pt.size * pt.W.mag, life0 = Math.min(WM.life, pt.W.alive - pt.hit), van = pt.slip ? WM.vanishSlip : WM.vanish;
-          const spotEnd = land + life0 / van;
-          if (anchor && anchor.end > land && Math.hypot(anchor.pt.at[0] - pt.at[0], anchor.pt.at[2] - pt.at[2]) < WM.mergeDist * (anchor.size + size)) {
-            anchor.size = size; anchor.end = spotEnd; anchor.from = land; anchor.life = life0; anchor.van = van;
-            anchor.slot.end = spotEnd;
-          } else {
-            anchor = { pt, land, size, end: spotEnd, from: land, life: life0, van, fr: pt.slip ? WM.frictionSlip : WM.friction };
-            kept.push(anchor);
-            end = spotEnd;
-            anchor.slot = { end };
-            live.push(anchor.slot);
-            show(pt, e, key);
-            return;
+    const sgd = shineDemo(g);
+    for (let e = Math.max(0, eTop - 130); e <= eTop; e++) {
+      const ems = frameWater(g, e, sgd);
+      if (!ems || !ems.length) continue;
+      ems.forEach(([em, key0]) => {
+        const tk = em.e;
+        if (tk > T) return;
+        live = live.filter((x) => x.end > tk);
+        em.parts.forEach((pt, k) => {
+          if (live.length >= WATER_SLOTS) return;
+          const key = key0 + k * 0.25, land = tk + pt.hit;
+          let end = tk + Math.min(pt.hit, pt.W.alive, pt.bwHit !== undefined ? pt.bwHit : Infinity);
+          if (pt.kind === 'ground' && pt.stay && land <= T) {
+            // A wet spot landing within 2.5 x the summed sizes of the last one hands that one its size
+            // and life and goes; life counts on from the drop's (at most 256) and sets the radius.
+            const size = pt.size * pt.W.mag, life0 = Math.min(WM.life, pt.W.alive - pt.hit), van = pt.slip ? WM.vanishSlip : WM.vanish;
+            const spotEnd = land + life0 / van;
+            if (anchor && anchor.end > land && Math.hypot(anchor.pt.at[0] - pt.at[0], anchor.pt.at[2] - pt.at[2]) < WM.mergeDist * (anchor.size + size)) {
+              anchor.size = size; anchor.end = spotEnd; anchor.from = land; anchor.life = life0; anchor.van = van;
+              anchor.slot.end = spotEnd;
+            } else {
+              anchor = { pt, land, size, end: spotEnd, from: land, life: life0, van, fr: pt.slip ? WM.frictionSlip : WM.friction };
+              kept.push(anchor);
+              end = spotEnd;
+              anchor.slot = { end };
+              live.push(anchor.slot);
+              show(pt, tk, key);
+              return;
+            }
           }
-        }
-        if (pt.kind === 'wall' && pt.stay && land <= F) {
-          // State 3: it runs down the wall (getPlaneFall: 1 a frame, 3 on water-slip walls) until it
-          // reaches the floor, shrinking as it dries; the same hand-over rule as on the ground.
-          const size = pt.size * pt.W.mag, life0 = Math.min(WM.life, pt.W.alive - pt.hit), van = pt.slip ? WM.vanishSlip : WM.vanish;
-          const fall = pt.slip ? WM.fallSlip : WM.fall;
-          if (pt.floorY === undefined) pt.floorY = groundY(pt.at[0] + pt.n[0] * 20, pt.at[1], pt.at[2] + pt.n[2] * 20);
-          const toFloor = pt.floorY > -Infinity ? Math.max(0, (pt.at[1] - pt.floorY) / fall) : Infinity;
-          const spotEnd = land + Math.min(life0 / van, toFloor);
-          if (anchorW && anchorW.end > land && Math.hypot(anchorW.pt.at[0] - pt.at[0], anchorW.pt.at[1] - pt.at[1], anchorW.pt.at[2] - pt.at[2]) < WM.mergeDist * (anchorW.size + size)) {
-            anchorW.size = size; anchorW.end = spotEnd; anchorW.from = land; anchorW.life = life0; anchorW.van = van;
-            anchorW.slot.end = spotEnd;
-          } else {
-            anchorW = { pt, land, size, end: spotEnd, from: land, life: life0, van, fall, wall: true };
-            kept.push(anchorW);
-            end = spotEnd;
-            anchorW.slot = { end };
-            live.push(anchorW.slot);
-            show(pt, e, key);
-            return;
+          if (pt.kind === 'wall' && pt.stay && land <= T) {
+            // State 3: it runs down the wall (getPlaneFall: 1 a tick, 3 on water-slip walls) until it
+            // reaches the floor, shrinking as it dries; the same hand-over rule as on the ground.
+            const size = pt.size * pt.W.mag, life0 = Math.min(WM.life, pt.W.alive - pt.hit), van = pt.slip ? WM.vanishSlip : WM.vanish;
+            const fall = pt.slip ? WM.fallSlip : WM.fall;
+            if (pt.floorY === undefined) pt.floorY = groundY(pt.at[0] + pt.n[0] * 20, pt.at[1], pt.at[2] + pt.n[2] * 20);
+            const toFloor = pt.floorY > -Infinity ? Math.max(0, (pt.at[1] - pt.floorY) / fall) : Infinity;
+            const spotEnd = land + Math.min(life0 / van, toFloor);
+            if (anchorW && anchorW.end > land && Math.hypot(anchorW.pt.at[0] - pt.at[0], anchorW.pt.at[1] - pt.at[1], anchorW.pt.at[2] - pt.at[2]) < WM.mergeDist * (anchorW.size + size)) {
+              anchorW.size = size; anchorW.end = spotEnd; anchorW.from = land; anchorW.life = life0; anchorW.van = van;
+              anchorW.slot.end = spotEnd;
+            } else {
+              anchorW = { pt, land, size, end: spotEnd, from: land, life: life0, van, fall, wall: true };
+              kept.push(anchorW);
+              end = spotEnd;
+              anchorW.slot = { end };
+              live.push(anchorW.slot);
+              show(pt, tk, key);
+              return;
+            }
           }
-        }
-        live.push({ end });
-        show(pt, e, key);
-      }));
+          live.push({ end });
+          show(pt, tk, key);
+        });
+      });
     }
     const sp = g.puddles, pa = sp.geometry.attributes.position.array, ua = sp.geometry.attributes.uv.array;
     let ns = 0;
     kept.forEach((k) => {
-      if (F < k.land || F >= k.end || ns >= WATER_SPOTS) return;
-      const life = k.life - (F - k.from) * k.van;
+      if (T < k.land || T >= k.end || ns >= WATER_SPOTS) return;
+      const life = k.life - (T - k.from) * k.van;
       const r = 11.76 * k.size * Math.max(0, life) / WM.life;
       if (r < 1) return;
       if (k.wall) {   // water_shadow_kabe: 8.5 across, 7.29 up and 14.1 down from its centre, x the size
         const f = k.size * Math.max(0, life) / WM.life, n = k.pt.n;
-        const down = k.fall * (F - k.land);
+        const down = k.fall * (T - k.land);
         let ux = [-n[2], 0, n[0]];
         const ul = Math.hypot(ux[0], ux[2]) || 1; ux = ux.map((x) => x / ul);
         let vx = [n[1] * ux[2] - n[2] * ux[1], n[2] * ux[0] - n[0] * ux[2], n[0] * ux[1] - n[1] * ux[0]];
@@ -5004,7 +5026,7 @@ void main() {
         ns++;
         return;
       }
-      const b = Math.min(F - k.land, 60), slide = k.fr * (1 - Math.pow(k.fr, b)) / (1 - k.fr);
+      const b = Math.min(T - k.land, 60), slide = k.fr * (1 - Math.pow(k.fr, b)) / (1 - k.fr);   // (friction each tick)
       const n = k.pt.n, c = [k.pt.at[0] + k.pt.vh[0] * slide + n[0] * 3, k.pt.at[1] + n[1] * 3, k.pt.at[2] + k.pt.vh[1] * slide + n[2] * 3];
       // disc axes on the plane
       const ax = Math.abs(n[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
@@ -5054,6 +5076,7 @@ void main() {
       }
     }
     g.bursts = out;
+    g.burstSet = new Set(out);
     return out;
   }
 
