@@ -2909,7 +2909,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     while (S.lt.length <= k) {
       const j = S.lt.length, n = bw.n, T = S.temp, hv = S.heat[j] / BW.heatMax;
       {   // (cooled in the bath the body stops setting the first one; the links go on creeping)
-        if (!(S.bath[j] && S.heat[j] <= 0) && (S.heat[j] <= 0 || S.heat[j] >= BW.heatMax)) T[0] = hv;
+        if (S.heat[j] <= 0 || (S.heat[j] >= BW.heatMax && !S.bath[j])) T[0] = hv;   // (cold in the bath: the last value it set)
         for (let i = 1; i < n; i++) {
           const d = T[i - 1] - T[i];
           T[i] = Math.max(0, Math.min(1, T[i] + (d < 0 ? (d < -0.1 ? -0.02 : -0.005) : (d > 0.1 ? 0.02 : 0.005))));
@@ -3247,6 +3247,23 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (best < 0) return;
     st.from = best; st.to = chompHaulBranch(bw, st, best, -1, k, m, mario);
   }
+  // The Chain Chomp's Shine: the demo shine nearest the bath, once its simulation has it cooled there.
+  function chompShineAt(i) {
+    const bwNode = objNodes.find((o) => o.userData.bw);
+    if (!bwNode) return null;
+    const bw = bwNode.userData.bw;
+    if (bw.shineIdx === undefined) {
+      bw.shineIdx = -1;
+      let best = 1500;
+      objList.forEach((it, j) => {
+        const ex = it[17];
+        if (!ex || ex.shine !== 'demo' || ex.coin100) return;
+        const d = Math.hypot(it[3] - BW_BATH[0], it[5] - BW_BATH[2]);
+        if (d < best) { best = d; bw.shineIdx = j; }
+      });
+    }
+    return i === bw.shineIdx && Number.isFinite(bw.shineAt) ? bw.shineAt : null;   // (else as before)
+  }
   // The chomp's body and each chain link get materials of their own, so each can show its heat.
   function chompMats(root) {
     const out = [];
@@ -3316,6 +3333,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (gold) brkApply(bw.brkGold, bw.bodyMats || (bw.bodyMats = chompMats(node)), Math.min(1, (kf - st.goldK) * BW_GOLD_RATE / (bw.brkGold.dur - 1)));
     else if (bw.brkBody) brkApply(bw.brkBody, bw.bodyMats || (bw.bodyMats = chompMats(node)), heat / BW.heatMax);
     node.userData.bwJpa = chompFx(bw, kf);
+    // TNerveBWDie: 60 frames after it has cooled off in the bath, the boss Shine appears
+    // (makeShineAppearWithDemo) - the stage's demo shine over the bath.
+    bw.shineAt = mario && st && st.goldK !== undefined ? base + (st.goldK + 61) * QF_PER_FRAME : Infinity;
     if (bw.brkChain && lt) bw.links.forEach((lk, i) => brkApply(bw.brkChain, lk.userData.mats || (lk.userData.mats = chompMats(lk)), lt[i]));
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const y = yg + BW_RADIUS;
@@ -4076,7 +4096,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (gate && pick === 'coin_red' && !(t >= gate[i])) node.visible = false;
       if (node.userData.shineMode === 'demo' && !$('optShines').checked) {   // only once it has appeared
         const sp = g && g.shineSpawn ? g.shineSpawn.get(objectsKey) : null;
-        if (!sp || !(t >= sp[i])) node.visible = false;
+        const bwq = chompShineAt(i);
+        if (bwq !== null ? !(t >= bwq) : !sp || !(t >= sp[i])) node.visible = false;
       }
       if (/^shine/.test(pick) && !$('optShines').checked && g && g.finalShine) {   // only the one it collects
         const keep = g.finalShine.get(objectsKey);
