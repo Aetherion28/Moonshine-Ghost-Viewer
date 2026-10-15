@@ -238,7 +238,11 @@
   const A_SINGLE = 0, A_DOUBLE = 1, A_UNISON = 2, A_GUARD = 3, A_SKIP = 4, A_SHOOT = 5, A_CONTAINER = 6, A_ROLL = 7;
   const GRAVITY = 0.15, VEL_MIN_Y = -40;
   // The per-frame record (Float32Array of REC floats): see record().
-  const REC_T = 26, REC_TN = 22, REC = REC_T + 4 * REC_TN + 10;
+  const REC_T = 26, REC_TN = 22, REC_FX = REC_T + 4 * REC_TN + 10, REC_BLUR = REC_FX + 1, REC = REC_BLUR + 48;
+  // Effects on while their bit is (REC_FX): his tears (ms_boge_namida on both eyes: eye damage and
+  // tug), sweat (ms_boge_ase on his head: tug), the face wash (ms_boge_wash: washing goop off), the
+  // goop ball's trail (ms_boge_kiseki). The one-shots are events (S.ev).
+  const FX = { namida: 1, ase: 2, wash: 4, kiseki: 8 };
 
   // ---------------------------------------------------------------- the simulation
   // def: { anims (objects/bgeso.json), prm, tprm, pos, ry, map, stage, frames, container,
@@ -429,6 +433,9 @@
         S.ev.push({ k: S.k, e: 'beakDamage' });
       }
       if (t === 1) crushCork(S);
+      if (t === 12) S.ev.push({ k: S.k, e: 'hit' });          // ms_boge_hit_a/c/b on eff_mouth
+      if (t === 40) S.ev.push({ k: S.k, e: 'kizetsu' });      // seeing stars, on both eyes
+      if (t === 236 || t === 510) hitDown(S);
       if (S.bck.f.endsNext()) {
         forceAllTentacleState(S, T_WAIT);
         S.btk.f.rate = 0; S.btk.f.frame = 0;
@@ -439,6 +446,7 @@
     },
     tentacleDamage(S, t) {   // TNerveBGTentacleDamage
       if (t === 0) changeBck(S, BCK.damage);
+      if (t === 30 || t === 304) hitDown(S);
       if (S.bck.f.endsNext()) {
         if (!tentacleHeld(S)) return true;
         pushAfter(S, NERVE.tent);
@@ -493,7 +501,8 @@
         changeAllTentacleState(S, T_WAIT);
         setBtp(S, BTP.twait, 0);
       }
-      if (t === 226) S.alpha = 230;
+      if (t === 90) S.ev.push({ k: S.k, e: 'osen' });          // ms_boge_osen on eff_mouth
+      if (t === 226) { S.alpha = 230; S.ev.push({ k: S.k, e: 'jump', p: jointPos(S, 1) }); }
       if (S.bck.f.endsNext()) { S.dirty = false; return true; }
       return false;
     },
@@ -533,6 +542,11 @@
     },
   };
 
+  function hitDown(S) {   // ms_boge_hitdown: on the floor under his head
+    const p = jointPos(S, 47);
+    p[1] = S.def.ground(p[0], p[1] + 500, p[2]);
+    if (p[1] > -Infinity) S.ev.push({ k: S.k, e: 'hitdown', p });
+  }
   function crushCork(S) {   // TBGCork::crush (kolk_break from then on)
     if (S.cork.crushed) return;
     const a = S.def.anims.bck[BCK.kolkBreak];
@@ -951,8 +965,23 @@
       mMul(par[j] >= 0 ? T.guide.W[par[j]] : T.guide.M, _lm, T.guide.W[j]);
     }
   }
-  function atkEffects(S, T) {   // calcAtkParticleAndSE: where a strike hits the floor (for the dust)
+  const _hand = Array.from({ length: 17 }, () => m34()), _hn = new Float64Array(18);
+  function atkEffects(S, T) {   // calcAtkParticleAndSE: the dust where a strike hits the floor, the blur along it
     const g = T.guide.idx, f = T.guide.f.frame;
+    // unk50: bgeso_shand's joint 3 (times mSLBlurScale) at the tentacle's joint mSLBlurJoint (7 for
+    // the unison strike) - what the blur effects ride on.
+    const P = S.def.prm, bs = P.mSLBlurScale || 1, src = T.guide.W[3], B = T.blur || (T.blur = m34());
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) B[r * 4 + c] = src[r * 4 + c] * bs;
+    for (let i = 0; i < 6; i++) { _hn[i * 3] = T.p[i][0]; _hn[i * 3 + 1] = T.p[i][1]; _hn[i * 3 + 2] = T.p[i][2]; }
+    handMatrices(_hn, nodeLen(S, T), T.state, 17, _hand, T.hspline || (T.hspline = new Spline(6)));
+    const hj = _hand[g === BCK.shIssei ? 7 : Math.min(16, P.mSLBlurJoint === undefined ? 10 : P.mSLBlurJoint)];
+    B[3] = hj[3]; B[7] = hj[7]; B[11] = hj[11];
+    if (T.state !== T_UNKA && T.state !== T_SYNC) {
+      const fc = T.guide.f;
+      const kind = g === BCK.shJump ? (fc.checkPass(115) ? 'blur_j' : null) : g === BCK.shAttack ? (fc.checkPass(115) ? 'blur' : null)
+        : g === BCK.shIssei ? (fc.checkPass(86) ? 'blur' : null) : (fc.checkPass(81) ? 'blur_f' : null);
+      if (kind) S.ev.push({ k: S.k, e: 'blur', i: T.i, kind });
+    }
     if ((g === BCK.shAttack || g === BCK.shIssei) && T.unk4C === 0 && ((g === BCK.shAttack && f >= 118 && f <= 160) || (g === BCK.shIssei && f >= 75 && f <= 110))) {
       const l = T.p[T.n - 1], gy = S.def.ground(l[0], l[1] + 500, l[2]);
       if (l[1] < gy + 100) { T.unk4C = 1; S.ev.push({ k: S.k, e: 'slam', i: T.i, p: [l[0], gy + 5, l[2]] }); }
@@ -1169,6 +1198,7 @@
     polMove(S);
     if (calc && S.pol.st) S.pol.f.update();
     if (S.dead) return;
+    if (calc && S.unk194 > 0) { S.fxWash = true; S.unk194--; }   // ms_boge_wash on his body joint
     beakMove(S);
     S.bck.ratio = Math.max(0, S.bck.ratio - S.bck.rate);   // advanceMotionBlend(-unk188)
     if (calc) S.T.forEach((T) => { if (T.state !== T_AMPUTEE) T.p[0].set(jointPos(S, ROOT_JOINTS[T.i])); });
@@ -1200,6 +1230,10 @@
     const o = REC_T + 4 * REC_TN, pd = S.pol;
     r[o] = pd.st; r[o + 1] = pd.p[0]; r[o + 2] = pd.p[1]; r[o + 3] = pd.p[2]; r[o + 4] = pd.v[0]; r[o + 5] = pd.v[1]; r[o + 6] = pd.v[2];
     r[o + 7] = pd.idx; r[o + 8] = pd.f.frame; r[o + 9] = latestCode(S);
+    const l = latest(S);
+    r[REC_FX] = (l === NERVE.eye || l === NERVE.tug ? FX.namida : 0) | (l === NERVE.tug ? FX.ase : 0) | (S.fxWash ? FX.wash : 0) | (pd.st === 1 ? FX.kiseki : 0);
+    S.fxWash = false;
+    S.T.forEach((T, i) => { if (T.blur) r.set(T.blur, REC_BLUR + i * 12); });
     S.frames.push(r);
     if (S.def.keep && S.frames.length > 2 * S.def.keep) { S.frames = S.frames.slice(S.def.keep); S.base0 += S.def.keep; }   // (idle: only the latest)
   }
@@ -1264,7 +1298,7 @@
     return out;
   }
 
-  const api = { create, runTo, bodyMatrices, handMatrices, trackAt, Frame, Spline, m34, REC, REC_T, REC_TN, BCK, BTP, NERVE_CODES,
+  const api = { create, runTo, bodyMatrices, handMatrices, trackAt, Frame, Spline, m34, REC, REC_T, REC_TN, REC_FX, REC_BLUR, FX, BCK, BTP, NERVE_CODES,
     T_STATE: { WAIT: T_WAIT, ATTACK: T_ATTACK, REST: T_REST, HELD: T_HELD, AMPUTEE: T_AMPUTEE, STUN: T_STUN, HIDE: T_HIDE, SYNC: T_SYNC, GUARD: T_GUARD } };
   root.GessoSim = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

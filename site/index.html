@@ -3918,13 +3918,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // (light: the set of the floor under him, as his body has)
     if (bg.lit !== node.userData.gxKey) { const set = gxSet('object', lightSetAt(bg.start[0], bg.start[1], bg.start[2])); bg.parts.forEach((p) => gxApply(p, set)); bg.lit = node.userData.gxKey; }
     gessoDraw(node, bg, A, a, b === a ? a : b, b === a ? 0 : u);
+    node.userData.bgJpa = gessoFx(node, sim, Math.min(k, sim.k - 1));
+  }
+  // His body's animation state between frames a and b (records of gesso.js) at u.
+  function gessoState(a, b, u) {
+    const fl = a[20], lp = (i) => a[i] + (b[i] - a[i]) * u, dy = ((b[4] - a[4]) % 360 + 540) % 360 - 180;
+    return { pos: [lp(0), lp(1), lp(2)], rot: [a[3], a[4] + dy * u, a[5]], fly: fl & 4 ? [a[22], a[23], a[24]] : null,
+      idx: a[6], f: a[6] === b[6] && b[7] >= a[7] ? lp(7) : a[7], oldIdx: a[8], oldF: a[9], ratio: a[8] === b[8] ? lp(10) : a[10],
+      beak: a[16] ? [lp(17), lp(18), lp(19)] : null };
   }
   function gessoDraw(node, bg, A, a, b, u) {
     const fl = a[20], dead = fl & 1, cont = fl & 2, lp = (i) => a[i] + (b[i] - a[i]) * u;
-    const dy = ((b[4] - a[4]) % 360 + 540) % 360 - 180;
-    const st = { pos: [lp(0), lp(1), lp(2)], rot: [a[3], a[4] + dy * u, a[5]], fly: fl & 4 ? [a[22], a[23], a[24]] : null,
-      idx: a[6], f: a[6] === b[6] && b[7] >= a[7] ? lp(7) : a[7], oldIdx: a[8], oldF: a[9], ratio: a[8] === b[8] ? lp(10) : a[10],
-      beak: a[16] ? [lp(17), lp(18), lp(19)] : null };
+    const st = gessoState(a, b, u);
     node.visible = !dead && !cont;
     const W = GessoSim.bodyMatrices(A, st, bg.W);
     if (node.visible) {
@@ -3960,6 +3965,87 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         bg.ball.matrix.copy(_gsN); bg.ball.matrixWorldNeedsUpdate = true;
       }
     }
+  }
+  // His particles (TBossGessoManager::initJParticle: /scene/bgeso/jpa, objects/bgeso_jpa.js, only
+  // loaded where he is), rebuilt from his frames before f0 the way the chomp's are: those on while
+  // a bit is (gesso.js REC_FX) keep one emitter each; the one-shots (its events) each run their
+  // course from where they started: where on him or where on the floor, as the game puts them.
+  let bgJpaP = null;
+  function loadGessoJpa() {
+    if (bgJpaP || typeof JPA_RES === 'undefined') return;
+    bgJpaP = new Promise((res) => {
+      const sc = document.createElement('script');
+      sc.src = 'objects/bgeso_jpa.js';
+      sc.onload = () => { res(); update(); };
+      sc.onerror = () => res();
+      document.head.appendChild(sc);
+    });
+  }
+  const BG_HOLD = [
+    { res: 'bg_namida', bit: 1, at: 7 }, { res: 'bg_namida', bit: 1, at: 4 },   // emitAndBindToMtxPtr(namida, eye joints, 1)
+    { res: 'bg_ase', bit: 2, at: 47 }, { res: 'bg_wash', bit: 4, at: 0 }, { res: 'bg_kiseki', bit: 8, at: 'ball' },
+  ];
+  const BG_SHOT = {
+    hit: [['bg_hit_a', 27], ['bg_hit_c', 27], ['bg_hit_b', 27]], kizetsu: [['bg_kizetsu', 7], ['bg_kizetsu_r', 4]],
+    hitdown: [['bg_hitdown', 'p']], osen: [['bg_osen', 27]], jump: [['bg_jump', 'p']],
+    amputee: [['bg_damage_a', 'semi'], ['bg_damage_b', 'semi']],
+    slam: [['bg_attack_a', 'p'], ['bg_attack_b', 'p'], ['bg_attack_c', 'p'], ['bg_attack_d', 'p']],
+    shoot: [['bg_canon_b', 27], ['bg_canon_a', 27]], splat: [['bg_odanhit_a', 'p'], ['bg_odanhit_b', 'p']],
+    blur: [['', 'blur']],
+  };
+  const BG_SHOT_SPAN = 150;   // frames a one-shot is followed for (longer than its particles live)
+  const m34To16 = (m) => [m[0], m[4], m[8], 0, m[1], m[5], m[9], 0, m[2], m[6], m[10], 0, m[3], m[7], m[11], 1];
+  function gessoFx(node, sim, f0) {
+    if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined') return [];
+    if (!JPA_RES.bg_wash) { loadGessoJpa(); return []; }
+    if (sim.fxAt === f0) return sim.fxList;
+    const A = GESSO_ANIMS, rec = (e) => sim.frames[Math.max(0, Math.min(e - sim.base0, sim.frames.length - 1))];
+    const Wc = sim.fxW || (sim.fxW = new Map());
+    const jointM = (e, j) => {
+      let W = Wc.get(e);
+      if (!W) {
+        W = GessoSim.bodyMatrices(A, gessoState(rec(e), rec(e), 0), Array.from({ length: 51 }, () => GessoSim.m34()));
+        Wc.set(e, W);
+        if (Wc.size > 300) Wc.delete(Wc.keys().next().value);
+      }
+      return m34To16(W[j]);
+    };
+    const ballM = (e) => { const r = rec(e), o = GessoSim.REC_T + 4 * GessoSim.REC_TN; return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, r[o + 1], r[o + 2], r[o + 3], 1]; };
+    const blurM = (e, i) => m34To16(rec(e).subarray(GessoSim.REC_BLUR + i * 12, GessoSim.REC_BLUR + i * 12 + 12));
+    const runs = sim.fxRuns || (sim.fxRuns = { hold: BG_HOLD.map(() => null), shots: new Map() });
+    const all = [];
+    BG_HOLD.forEach((slot, si) => {
+      const res = JPA_RES[slot.res];
+      if (!res) return;
+      const on = (e) => e >= sim.base0 && e < sim.k && !!(rec(e)[GessoSim.REC_FX] & slot.bit);
+      const seed = (c) => Math.imul(si + 31, 0x9e3779b1) ^ Math.imul(c + 1, 0x85ebca6b);
+      const r = runs.hold[si] = jpaHoldRun(runs.hold[si], f0, on, (c) => JPA.makeEmitter(res, seed(c)), (e) => (slot.at === 'ball' ? ballM(e) : jointM(e, slot.at)));
+      all.push(...r.dying);
+      if (r.em) all.push(r.em);
+    });
+    const R = runs.shots;
+    R.forEach((b, key) => { if (b.c < f0 - BG_SHOT_SPAN || b.e > f0) R.delete(key); });   // (out of reach, or scrubbed back past)
+    sim.ev.forEach((ev, ei) => {
+      const list = BG_SHOT[ev.e];
+      if (!list || ev.k > f0 || ev.k < f0 - BG_SHOT_SPAN) return;
+      list.forEach(([name, at], n) => {
+        const res = JPA_RES[name || 'bg_' + ev.kind];
+        if (!res) return;
+        const key = ei + ':' + n, fixed = at === 'p' ? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ev.p[0], ev.p[1], ev.p[2], 1] : null;
+        const M = (e) => fixed || (at === 'semi' ? jointM(e, [8, 14, 28, 34][ev.i]) : at === 'blur' ? blurM(e, ev.i) : jointM(e, at));
+        let b = R.get(key);
+        if (!b) R.set(key, b = { em: JPA.makeEmitter(res, Math.imul(ei + 7, 0x9e3779b1) ^ Math.imul(n + 1, 0x85ebca6b)), e: ev.k - 1, c: ev.k });
+        for (let e = b.e + 1; e <= f0 && b.em; e++) {
+          const m = M(e);
+          for (let i = 0; i < 2 && b.em; i++) if (!JPA.calc(b.em, m)) b.em = null;
+          if (b.em) JPA.drawStep(b.em);
+        }
+        b.e = f0;
+        if (b.em) all.push(b.em);
+      });
+    });
+    sim.fxAt = f0; sim.fxList = all;
+    return all;
   }
   // His eyes (BTP: TEX1 index by frame on _mat_eye's texmap 0), the goop on his face (_mat_body's
   // KCOLOR0 = unk190: alpha 230 gooped up, 0 clean) and bgeso_hit.btk on _mat_body's texture
@@ -6170,17 +6256,20 @@ void main() {
     const list = [];
     ghosts.forEach((g) => { if (g.visible && g.jpa && g.jpa.length) list.push(...g.jpa); });
     objNodes.forEach((o) => { if (o.visible && o.userData.bwJpa && o.userData.bwJpa.length) list.push(...o.userData.bwJpa); });
+    objNodes.forEach((o) => { if (o.userData.bg && o.userData.bgJpa && o.userData.bgJpa.length) list.push(...o.userData.bgJpa); });
     if (!list.length && !jpaBatches) return;
     if (!jpaBatches) {
       jpaScreen = new THREE.DataTexture(new Uint8Array(3), 1, 1, THREE.RGBFormat);
       jpaScene1 = new THREE.Scene(); jpaScene3 = new THREE.Scene();
       jpaBatches = new Map();
-      Object.keys(JPA_RES).forEach((k) => {
-        const b = new JPA.Batch(JPA_RES[k], k.startsWith('bw_') ? 2000 : 6000, jpaScreen);
-        jpaBatches.set(JPA_RES[k], b);
-        (JPA_GROUP3.has(k) ? jpaScene3 : jpaScene1).add(b.mesh);
-      });
     }
+    // (a batch per effect; effects loaded later, e.g. Gooper Blooper's, get theirs when they come)
+    if (jpaBatches.size !== Object.keys(JPA_RES).length) Object.keys(JPA_RES).forEach((k) => {
+      if (jpaBatches.has(JPA_RES[k])) return;
+      const b = new JPA.Batch(JPA_RES[k], k.startsWith('bw_') || k.startsWith('bg_') ? 2000 : 6000, jpaScreen);
+      jpaBatches.set(JPA_RES[k], b);
+      (JPA_GROUP3.has(k) ? jpaScene3 : jpaScene1).add(b.mesh);
+    });
     camera.updateMatrixWorld();
     const V = camera.matrixWorldInverse.elements;
     jpaBatches.forEach((b) => b.begin());
