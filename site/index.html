@@ -3273,12 +3273,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return i === bw.shineIdx && Number.isFinite(bw.shineAt) ? bw.shineAt : null;   // (else as before)
   }
   // Its animation at frame k: hopping (bwanwan_wait) until it jumps for the bath; from then held
-  // still (TNerveBWDie holds frame 0 while it cools); cooled, bwanwan_down once (changeBck(1)),
-  // staying on its last frame.
+  // still while it cools (TNerveBWDie holds the animation), on the hop's ground contact (frame 9,
+  // its root at 0 like bwanwan_down's: frame 0 is 167 up, which left it sticking out of the bath
+  // and then snapping down); cooled, bwanwan_down once (changeBck(1)), staying on its last frame.
+  const BW_REST_FRAME = 9;
   function chompPose(bw, rg, k) {
     const st = bw.sim && bw.sim.st;
     if (st && st.goldK !== undefined && k >= st.goldK && rg.idle) return { anim: rg.idle, f: Math.min(rg.idle.d - 1, (k - st.goldK) * rg.ar) };
-    if (st && st.jumpK !== undefined && k >= st.jumpK) return { anim: rg.anim, f: 0 };
+    if (st && st.jumpK !== undefined && k >= st.jumpK) return { anim: rg.anim, f: BW_REST_FRAME };
     return { anim: rg.anim, f: bw.hopFrame(k) };
   }
   // The chomp's body and each chain link get materials of their own, so each can show its heat.
