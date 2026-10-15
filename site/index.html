@@ -2626,20 +2626,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const vmax = Math.min(60, Math.max(BW.looseRate * hv * 6, sp * 1.25));
           const base = { x, z, yaw, from: st.from, to: st.to };
           const hx = m.x, hy = m.y + 60, hz = m.z;
-          // Where along the rail the ball leaves the heavy chain, dragged on from its head the way the
-          // game's rope is (ropeTrial), ending in his hands: a few tries, then a closer look at the
-          // best (of two about as good, the further: it runs until the chain is out).
-          const tryAt = (ds) => {
-            const c = chompRailAdvance(bw, st, base, ds, k, m, mario);
-            c.ds = ds;
-            c.e = ropeTrial(bw, st, k + 1, c.x, chompGroundY(bw, c.x, c.z, S.y[k], m, c.from, c.to), c.z, c.yaw, [hx, hy, hz]);
-            return c;
+          // Where along the rail: the heavy chain lies along the ball's track behind it, so the ball
+          // is a chain's length ahead of him measured along its rail (and the chain bends with it),
+          // never further than the chain reaches in a straight line.
+          const CH = bw.len * (bw.n - 1), Q = chompRailPoint(bw, m.x, m.z);
+          const over = (c) => {   // how far past full stretch the ball there is (< 0: slack)
+            const yg2 = chompGroundY(bw, c.x, c.z, S.y[k], m, c.from, c.to);
+            const straight = Math.hypot(c.x - Math.sin(c.yaw) * 551 - hx, yg2 + 182 - hy, c.z - Math.cos(c.yaw) * 551 - hz) - CH;
+            const along = Q ? chompRailBetween(bw, { a: c.from, b: c.to, px: c.x, pz: c.z }, Q) - 551 - CH - Q.d * 0.5 : straight;
+            return Math.max(straight, along);
           };
-          const better = (a, b) => !b || a.e < b.e - 10 || (a.e <= b.e + 10 && a.ds > b.ds);
-          let best = null;
-          for (let i = 0; i <= 8; i++) { const c = tryAt(-vmax / 4 + (vmax * 1.25) * i / 8); if (better(c, best)) best = c; }
-          for (let step = vmax * 1.25 / 16; step > 0.5; step /= 2) {
-            for (const ds of [best.ds - step, best.ds + step]) { const c = tryAt(ds); if (better(c, best)) best = c; }
+          let lo = -vmax, hi = vmax, best;
+          if (over(chompRailAdvance(bw, st, base, hi, k, m, mario)) <= 0) best = { ds: hi };
+          else if (over(chompRailAdvance(bw, st, base, lo, k, m, mario)) >= 0) best = { ds: lo };
+          else {
+            for (let it = 0; it < 12; it++) { const mid = (lo + hi) / 2; if (over(chompRailAdvance(bw, st, base, mid, k, m, mario)) > 0) hi = mid; else lo = mid; }
+            best = { ds: lo };
           }
           // The ball rolls on at an even pace: Mario is yanked in pulses, once a hop (the head
           // lifting with the hop drags the heavy chain's end in, then lets it go slack; ghosts show
@@ -2840,6 +2842,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function chompRvBranch(bw, node, from, nb, r) {   // the link from a node that leads there soonest
     return chompRvOn(bw, node, from, r).j;
+  }
+  // The distance along the rail between two rail points ({a, b, px, pz}: on the link a-b).
+  function chompRailBetween(bw, A, B) {
+    const G = bw.graph, n = G.length, D = chompGraph(bw);
+    if ((A.a === B.a && A.b === B.b) || (A.a === B.b && A.b === B.a)) return Math.hypot(A.px - B.px, A.pz - B.pz);
+    let best = Infinity;
+    for (const ea of [A.a, A.b]) for (const eb of [B.a, B.b]) {
+      if (ea < 0 || eb < 0 || !G[ea] || !G[eb]) continue;
+      const d = Math.hypot(A.px - G[ea][0], A.pz - G[ea][2]) + D[ea * n + eb] + Math.hypot(B.px - G[eb][0], B.pz - G[eb][2]);
+      if (d < best) best = d;
+    }
+    return best;
   }
   // A point on the rail `len` on from rail point p, heading for (tx, tz) by the shortest way.
   function chompRailAhead(bw, p, len, tx, tz) {
@@ -3149,19 +3163,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (gy > -Infinity && p[1] < gy) p[1] = gy;
       if (C) { const w = colWallPush(C, p[0], p[1], p[2], BW_ROPE.rad); if (w) { p[0] = w[0]; p[2] = w[1]; } }
     }
-  }
-  // How far the rope's end would be from `to` with the ball there this frame: the rope stepped
-  // from its head as ropeStep does (gravity, chained on from the head, the floor and walls), then
-  // put back as it was.
-  function ropeTrial(bw, st, k, x, yg, z, yaw, to) {
-    const R = st.rope, n = bw.n, sp = R.p.map((p) => p.slice());
-    const hop = bw.hop ? bw.hop(k) : 0;
-    for (let i = 0; i < n; i++) { const p = R.p[i], v = R.v[i]; p[1] += BW_ROPE.g; p[0] += v[0]; p[1] += v[1]; p[2] += v[2]; }
-    R.p[0][0] = x - Math.sin(yaw) * 551; R.p[0][1] = yg + 500 - 318 + hop; R.p[0][2] = z - Math.cos(yaw) * 551;
-    ropeChainFrom(bw, R, 0, 1);
-    const t = R.p[n - 1], e = Math.hypot(t[0] - to[0], t[1] - to[1], t[2] - to[2]);
-    for (let i = 0; i < n; i++) { R.p[i][0] = sp[i][0]; R.p[i][1] = sp[i][1]; R.p[i][2] = sp[i][2]; }
-    return e;
   }
   function ropeStep(bw, st, k, x, yg, z, yaw, m, holding, inBath) {
     const R = st.rope, n = bw.n;
