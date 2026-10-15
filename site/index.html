@@ -2522,6 +2522,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         // comes down to its height (SMSCalcJumpVelocityY). The gravity it falls with is a guess:
         // the ghost has Mario standing on it in the bath within about two seconds.
         if (st.bath === 1) {
+          st.jumpK = k + 1;   // from here its hop stops (chompPose)
           st.by = S.y[k];
           let yv = BW.jumpV, yy = st.by, ticks = 1;
           for (;;) { yy += yv; if (yv < 0 && yy <= BW_BATH[1]) break; yv = Math.max(-40, yv - BW.jumpG); if (++ticks > 600) break; }
@@ -3271,6 +3272,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     return i === bw.shineIdx && Number.isFinite(bw.shineAt) ? bw.shineAt : null;   // (else as before)
   }
+  // Its animation at frame k: hopping (bwanwan_wait) until it jumps for the bath; from then held
+  // still (TNerveBWDie holds frame 0 while it cools); cooled, bwanwan_down once (changeBck(1)),
+  // staying on its last frame.
+  function chompPose(bw, rg, k) {
+    const st = bw.sim && bw.sim.st;
+    if (st && st.goldK !== undefined && k >= st.goldK && rg.idle) return { anim: rg.idle, f: Math.min(rg.idle.d - 1, (k - st.goldK) * rg.ar) };
+    if (st && st.jumpK !== undefined && k >= st.jumpK) return { anim: rg.anim, f: 0 };
+    return { anim: rg.anim, f: bw.hopFrame(k) };
+  }
   // The chomp's body and each chain link get materials of their own, so each can show its heat.
   function chompMats(root) {
     const out = [];
@@ -3311,7 +3321,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const bw = node.userData.bw, rg = node.userData.rig;
     if (!bw.hop && rg && rg.anim) {
       bw.hopFrame = (k) => { const a = rg.anim; return ((k * rg.ar + rg.phase) % a.d + a.d) % a.d; };
-      bw.hop = (k) => { const j = rg.anim.j[0]; return j ? bckSample(j[7], bw.hopFrame(k)) : 0; };
+      bw.hop = (k) => { const p = chompPose(bw, rg, k), j = p.anim.j[0]; return j ? bckSample(j[7], p.f) : 0; };
     }
     // The ghost's FLUDD water by frame of this visit: the droplets it puts out (as the spray is drawn).
     let water = null;
@@ -3348,7 +3358,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const y = yg + BW_RADIUS;
     placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
     node.visible = true;
-    poseRig(node, f);
+    if (rg && camera.position.distanceToSquared(node.position) < 9000 * 9000) { const p = chompPose(bw, rg, Math.max(0, f)); poseBck(rg.bones, p.anim, p.f); }
     if (!pts) { bw.links.forEach((lk) => { lk.visible = false; }); if (bw.pkNode) bw.pkNode.visible = false; return; }
     // The links sit on rope points 0..n-2 facing the next point, every other one turned 90
     // degrees (TBWLeashNode::calcMatrix); the picket is the last point, facing away from the

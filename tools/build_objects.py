@@ -1074,6 +1074,9 @@ def main(argv):
                             if anim:
                                 sidx = len(lib) - 1   # lib[skey] already holds its slot
                                 idle = walk_anim(arc, mpath, bind, IDLE_ANIM_WORDS[:4]) if wk else None
+                                if typ == "BossWanwan" and "bwanwan/bwanwan_down.bck" in arc:
+                                    # TNerveBWDie: cooled off in the bath it plays bwanwan_down (changeBck(1)) once.
+                                    idle = parse_bck(arc["bwanwan/bwanwan_down.bck"])
                                 add_skinned(w, bind, f"m{sidx}", anim, idle)
                                 lib[skey] = sidx
                         except Exception as exc:
