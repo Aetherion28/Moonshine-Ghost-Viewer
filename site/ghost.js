@@ -1,4 +1,4 @@
-// Parser for Moonshine .smsghost files (canonical SGHF, versions 3 to 7).
+// Parser for Moonshine .smsghost files (canonical SGHF, versions 3 to 8).
 // Spec: moonshine/doc/ghost_format.md. All integers are big endian.
 
 const GHOST_CRC_TABLE = (() => {
@@ -59,7 +59,7 @@ function parseSmsGhost(buffer) {
   const magic = String.fromCharCode(...bytes.subarray(0, 4));
   if (magic !== 'SGHF') fail('Not a Moonshine ghost (missing SGHF header).');
   const version = dv.getUint16(4);
-  if (version < 3 || version > 7) fail(`Ghost version ${version} is newer than this viewer supports (3–7). The viewer needs an update for it.`);
+  if (version < 3 || version > 8) fail(`Ghost version ${version} is newer than this viewer supports (3–8). The viewer needs an update for it.`);
   const fileSize = dv.getUint32(8);
   if (fileSize !== bytes.length) fail('Ghost file is truncated or has extra bytes.');
 
@@ -187,7 +187,7 @@ function parseSmsGhost(buffer) {
           const f = r + 16;
           inputs.fluddMode[i] = bytes[f];
           inputs.yoshiAnim[i] = bytes[f + 1];
-          inputs.yoshiFrame[i] = dv.getUint16(f + 2) / 32;
+          inputs.yoshiFrame[i] = dv.getUint16(f + 2) / 16;
           inputs.yoshiBlend[i] = bytes[f + 4];
           // The animation it blends from: the last different one before this record.
           if (i && (inputs.fluddMode[i - 1] & 0x80)) {
@@ -224,7 +224,36 @@ function parseSmsGhost(buffer) {
     }
   }
 
-  return { header, segments, qf, pos, yaw, anim, phase, yoshi, held, attachments, segIndex, inputs, splits, warnings };
+  // V8: the camera the run was seen through (an SGCA chunk after the inputs and splits; Moonshine
+  // doc/timewarp-ghost-camera-v8.md), the game's rendered view: a key at least 15 QF after the
+  // last, sooner at a cut. Each 24 bytes: >I absolute QF; three signed 24-bit positions in
+  // quarter units; the view matrix's rotation as a quaternion, x y z w as s16 / 32767; >H the
+  // vertical FOV in 1/256 degree; the pose segment in bits 0-5 and a cut in bit 6.
+  let camera = null;
+  if (version >= 8 && inputs) {
+    const off = sampleOff + sampleSize, hs = dv.getUint16(off + 6) || 32;
+    const co = off + hs + dv.getUint32(off + 8) * 24 + dv.getUint32(off + 12) * 12;
+    if (co + 32 <= bytes.length && dv.getUint32(co) === 0x53474341) {
+      let n = dv.getUint32(co + 8);
+      const max = Math.floor((bytes.length - co - 32) / 24);
+      if (n > max) { warnings.push('Camera data is shorter than its header says; showing what is there.'); n = max; }
+      camera = { count: n, truncated: !!(dv.getUint32(co + 12) & 1), qf: new Float64Array(n), pos: new Float32Array(n * 3),
+        quat: new Float32Array(n * 4), fov: new Float32Array(n), tag: new Uint8Array(n) };
+      for (let i = 0; i < n; i++) {
+        const r = co + 32 + i * 24;
+        camera.qf[i] = dv.getUint32(r) - header.startQf;
+        for (let k = 0; k < 3; k++) camera.pos[i * 3 + k] = be24s(r + 4 + k * 3) / 4;
+        let l = 0;
+        for (let k = 0; k < 4; k++) { const v = dv.getInt16(r + 13 + k * 2) / 32767; camera.quat[i * 4 + k] = v; l += v * v; }
+        l = Math.sqrt(l) || 1;
+        for (let k = 0; k < 4; k++) camera.quat[i * 4 + k] /= l;
+        camera.fov[i] = dv.getUint16(r + 21) / 256;
+        camera.tag[i] = bytes[r + 23];
+      }
+    } else warnings.push('The camera data this ghost should have is missing; it plays with the viewer\'s own follow camera.');
+  }
+
+  return { header, segments, qf, pos, yaw, anim, phase, yoshi, held, attachments, segIndex, inputs, splits, camera, warnings };
 }
 
 // Interpolated pose at time t (QF from ghost start). Matches Moonshine's playback:
@@ -291,7 +320,7 @@ function ghostFluddAt(g, t) {
 }
 
 // V7, riding Yoshi: the FLUDD observation slot holds Yoshi's own pose (mode bit 0x80; 0x10 while
-// he spits juice): byte 1 his BCK index (yoshi.szs, alphabetical), bytes 2-3 the frame x 32,
+// he spits juice): byte 1 his BCK index (yoshi.szs, alphabetical), bytes 2-3 the frame x 16,
 // byte 4 the walk blend weight (0-255), bytes 5-6 his upper body (not used yet).
 function ghostYoshiAt(g, t) {
   const inp = g.inputs;
@@ -303,4 +332,34 @@ function ghostYoshiAt(g, t) {
     prevAnim: inp.yoshiPrev[lo], prevFrame: inp.yoshiPrevFrame[lo] };
 }
 
-if (typeof module !== 'undefined') module.exports = { parseSmsGhost, ghostSampleAt, ghostFluddAt, ghostYoshiAt, ghostAnimAt, ghostFormatTime, ghostRouteLabel, ghostQfToSeconds };
+// V8: the recorded camera at time t (QF from the ghost's start) in pose segment seg, the way
+// Moonshine's Watch plays it (GhostCamera::evaluate): the last key at or before t (the segment's
+// first, before that), its position and FOV carried linearly to the next key's and its rotation
+// the shortest way round (normalized), unless the next key is a cut or in another segment; past the
+// last key of a track that ran out of room, nothing. { pos, quat (the view matrix's rotation,
+// x y z w), fov } or null.
+function ghostCameraAt(g, t, seg) {
+  const c = g.camera;
+  if (!c || !c.count) return null;
+  let lo = 0, hi = c.count;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (c.qf[mid] <= t) lo = mid + 1; else hi = mid; }
+  let i = lo ? lo - 1 : 0;
+  if ((c.tag[i] & 63) !== seg) {
+    if (i + 1 >= c.count || (c.tag[i + 1] & 63) !== seg) return null;
+    i++;
+  }
+  if (c.truncated && i + 1 === c.count && t > c.qf[i]) return null;
+  const out = { pos: [c.pos[i * 3], c.pos[i * 3 + 1], c.pos[i * 3 + 2]], quat: [c.quat[i * 4], c.quat[i * 4 + 1], c.quat[i * 4 + 2], c.quat[i * 4 + 3]], fov: c.fov[i] };
+  if (i + 1 === c.count || t <= c.qf[i] || c.tag[i + 1] !== seg) return out;
+  const j = i + 1, f = (t - c.qf[i]) / (c.qf[j] - c.qf[i]);
+  for (let k = 0; k < 3; k++) out.pos[k] += (c.pos[j * 3 + k] - out.pos[k]) * f;
+  out.fov += (c.fov[j] - out.fov) * f;
+  let dot = 0, l = 0;
+  for (let k = 0; k < 4; k++) dot += out.quat[k] * c.quat[j * 4 + k];
+  for (let k = 0; k < 4; k++) { out.quat[k] += ((dot < 0 ? -c.quat[j * 4 + k] : c.quat[j * 4 + k]) - out.quat[k]) * f; l += out.quat[k] * out.quat[k]; }
+  l = Math.sqrt(l) || 1;
+  for (let k = 0; k < 4; k++) out.quat[k] /= l;
+  return out;
+}
+
+if (typeof module !== 'undefined') module.exports = { parseSmsGhost, ghostSampleAt, ghostFluddAt, ghostYoshiAt, ghostCameraAt, ghostAnimAt, ghostFormatTime, ghostRouteLabel, ghostQfToSeconds };
