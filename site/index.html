@@ -2624,7 +2624,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, barkHot: 280,
     barkFrames: 214 / 2, shakeAfter: 600, shakeFrames: 55 / 2, downDemoFrames: 199 / 2, shineAfter: 61,
     dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.15, fallMax: 40, rvMax: 70, looseM: 7.5,
-    coolNear: 800, spamWithin: 90, spamLate: 15, spamEvery: 5, spamLand: 3 };
+    coolNear: 800, spamWithin: 90, spamLate: 36, spamEvery: 5, spamLand: 3, spamCount: 6, spamArrive: 8 };
   function chompSim(bw, f, mario, key, water, bursts, ev) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
@@ -2702,18 +2702,28 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const m = mario ? mario(k) : null;
       const heat0 = st.heat;
       let hits = chompWaterStep(bw, st, S, k, water);
-      // A ghost from before Moonshine V5 records neither FLUDD nor its inputs, so how the run
-      // cooled the chomp for the take into the bath can't be seen. It is taken to be spam sprayed
-      // cold right next to the bath before that take: from when it comes within BW.coolNear of the
-      // bath in the last BW.spamWithin frames (or BW.spamLate frames before the take, wherever it
-      // is), a burst every BW.spamEvery frames, as the V5 ghosts space theirs, its 127 droplets
-      // (NozzleDeformBomb) all on the ball over BW.spamLand frames, until it has no heat left.
+      // The take that sends it into the bath needs it cold (TBWPicket::moveRequest won't move the
+      // picket otherwise), and runs get it there with as many spam sprays as it takes, usually 5-7.
+      // So it is cold by then: with the run's own spam sprays (V5 on) in the BW.spamWithin frames
+      // before that take, each also lands its share of the heat still left BW.spamArrive frames on,
+      // on top of whatever of its droplets hit the simulated ball (a V5 ghost's aim is a guess). A
+      // ghost from before Moonshine V5 records neither FLUDD nor inputs: it is taken to be
+      // BW.spamCount spam sprays right next to the bath, BW.spamEvery frames apart, from when the
+      // chomp comes within BW.coolNear of it (or BW.spamLate frames before the take, wherever it
+      // is). Each lands over BW.spamLand frames.
       const BT = st.bathTake;
-      if (ev && ev.blind && BT && k < BT.k && !st.bath) {
-        if (st.spam === undefined && st.heat > 0 && k >= BT.k - BW.spamWithin && (Math.hypot(x - BW_BATH[0], z - BW_BATH[2]) < BW.coolNear || k >= BT.k - BW.spamLate)) st.spam = k;
-        const a = st.spam === undefined ? -1 : (k - st.spam) % BW.spamEvery;
-        if (a >= 0 && a < BW.spamLand && st.heat > 0) {
-          const dh = Math.min(st.heat, Math.round(BOMB.num * (a + 1) / BW.spamLand) - Math.round(BOMB.num * a / BW.spamLand));
+      if (ev && BT && k < BT.k && !st.bath) {
+        if (!st.spam) {
+          const own = ev.blind ? [] : (bursts || []).filter((b) => b >= BT.k - BW.spamWithin && b + BW.spamArrive + BW.spamLand <= BT.k);
+          if (own.length) st.spam = own.map((b) => b + BW.spamArrive);
+          else if (st.heat > 0 && k >= BT.k - BW.spamWithin && (Math.hypot(x - BW_BATH[0], z - BW_BATH[2]) < BW.coolNear || k >= BT.k - BW.spamLate))
+            st.spam = Array.from({ length: BW.spamCount }, (_, i) => k + i * BW.spamEvery);
+        }
+        const i = st.spam ? st.spam.findIndex((s) => k >= s && k < s + BW.spamLand) : -1;
+        if (i >= 0 && st.heat > 0) {
+          const a = k - st.spam[i];
+          if (a === 0 || st.spamShare === undefined) st.spamShare = Math.ceil(st.heat / (st.spam.length - i));   // (of what's left)
+          const dh = Math.min(st.heat, Math.round(st.spamShare * (a + 1) / BW.spamLand) - Math.round(st.spamShare * a / BW.spamLand));
           st.heat -= dh; hits += dh;
         }
       }
@@ -3049,14 +3059,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     for (let k = 0; k < 30 * 60 * 10; k++) {
       const m = mario(k);
       if (!m) { if (k > 30 * 60 && !was) break; was = null; continue; }
-      // Landing on the ball: touching down 500-1150 over the floor below him - the landing (laend),
-      // or the air pose giving way to anything else with him no longer dropping. (The air pose,
-      // "land", starts wherever a fall or a hover does, high over the floor, not where he comes down.)
-      let down = false;
-      if (was && !m.hold) {
-        if (m.anim === 87 || m.anim === 214) down = was.anim !== 87 && was.anim !== 214;
-        else if (was.anim === 86 && m.anim !== 86) { const nx = mario(k + 1); down = !!nx && Math.abs(nx.y - m.y) < 12; }
-      }
+      // Landing on the ball: touching down (the landing, laend) 500-1150 over the floor below him.
+      // (Not the air pose, "land": that starts wherever a fall or a hover does, high over the floor,
+      // and gives way to a dive or a pound in the air as often as to the ground.)
+      const down = !!was && !m.hold && (m.anim === 87 || m.anim === 214) && was.anim !== 87 && was.anim !== 214;
       if (down) {
         const gy = groundY(m.x, m.y + 10, m.z), above = gy > -Infinity ? m.y - gy : 0;
         if (above > 500 && above < 1150) out.push({ k, x: m.x, z: m.z, r: 350, kind: 'land' });
