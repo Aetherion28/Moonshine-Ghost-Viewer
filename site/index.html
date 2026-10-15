@@ -2444,7 +2444,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_BATH = [-1000, 4.5, -6217];
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.5, looseRate: 6, rvMax: 70, rvAcc: 4 };
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.5, looseRate: 6, rvMax: 70 };
   function chompSim(bw, f, mario, key, water, bursts) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
@@ -2634,12 +2634,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             else if (d < st.park.best) st.park.best = d;
             else if (st.park.best < 900 && d > st.park.best + 50) { st.park.stop = true; parked = true; }
           }
-          // Loose and hot, where the ghost says it was next (chompRendezvous) sets its pace and way.
+          // Loose and hot, where the ghost says it was next (chompRendezvous) sets its way.
           // (Only places ahead of it on its rail: one it could only reach by going round, or not in
           // time at any believable pace, is passed by.)
           const rvs = !st.staked && !holding && st.heat > 0 && !st.ridden ? st.rv.filter((r) => {
-            if (!(r.k > k && r.k - k < 600)) return false;
+            if (r.done || !(r.k > k && r.k - k < 600)) return false;
             const D = chompRvDist(bw, st, x, z, r);
+            if (D < r.r) { r.done = true; return false; }   // been there (early): done with it
             return D < 1.6 * Math.hypot(r.p.px - x, r.p.pz - z) + 500 && (D - r.r) / (r.k - k) < BW.rvMax;
           }) : [];
           if (!parked && Math.hypot(tn[0] - x, tn[2] - z) < BW.node) {   // at the node: pick the next link
@@ -2690,16 +2691,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             rate = Math.max(0, Math.min(1.5, 1 - (m.mag / 32) * 0.75 * -((fx / fl) * Math.sin(m.yaw) + (fz / fl) * Math.cos(m.yaw))));
           }
           let v = (st.shake ? 0 : dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : hv * 6 + 0.2) * loose;
-          if (!parked && !st.shake && rvs.length) {
-            // The pace that gets it to the next place it has to be just in time (once there, its
-            // walking pace). Speeding up and slowing down a little a frame.
-            const r = rvs[0], D = chompRvDist(bw, st, x, z, r), dt = r.k - k;
-            const walk = hv * 6 + 0.2;
-            let want = D > r.r * 0.5 ? (D - r.r * 0.5) / dt : Math.min(walk, D / dt);
-            want = Math.min(BW.rvMax, Math.max(0, want));
-            st.v = st.v === undefined ? want : st.v + Math.max(-BW.rvAcc, Math.min(BW.rvAcc, want - st.v));
-            v = st.v;
-          } else st.v = v;
+          // (Its pace is the fully hot one, 6 x heat x the off-stake factor, slowing as it cools; the
+          // places the ghost pins it down only decide which way it goes at a junction.)
+          st.v = v;
           // slideToCurPathNode heads straight for the node, and TBWBinder::bind keeps the move
           // along the link, so its track is the rail itself, corners and all (the facing just
           // lags behind).
@@ -2711,7 +2705,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const gm = groundY(m.x, m.y + 10, m.z), above = gm > -Infinity ? m.y - gm : 0;
           const level = pm && Math.abs(m.y - pm.y) < 6;   // standing, not jumping past
           // On its back: standing exactly a ball's height (1000) over the floor, right over it, not hovering.
-          if (level && !m.spray && Math.abs(above - 1000) < 80 && Math.hypot(m.x - x, m.z - z) < (st.ridden ? 700 : 450)) { x += (m.x - x) * 0.5; z += (m.z - z) * 0.5; st.ridden = 8; }
+          // (It isn't moved to him: in the game he lands on the ball where it is.)
+          if (level && !m.spray && Math.abs(above - 1000) < 80 && Math.hypot(m.x - x, m.z - z) < (st.ridden ? 700 : 450)) st.ridden = 8;
           else if (st.ridden) st.ridden--;
           // Carried off its rail by that: back onto the graph at the nearest node
           // (goToShortestNextGraphNode), heading on to the one after it.
@@ -2744,9 +2739,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     chompChainTemp(bw, S, k);
     return [S.x[k], S.z[k], S.yaw[k], S.heat[k], S.bark[k], S.px[k], S.pz[k], S.held[k], S.bath[k], S.y[k], S.rope[k], S.lt[k]];
   }
-  // ---- Where the ghost says the loose chomp was. Its speed off the stake isn't explained yet (the
-  // code's 6 x heat is far slower than runs show), so between the moments the ghost pins it down it
-  // takes whatever pace gets it to the next one along its rail in time:
+  // ---- Where the ghost says the loose chomp was. At a junction it takes the way that leads to the
+  // next of these along its rail:
   //  - Mario lands on it (a landing well above the floor): it is under him;
   //  - a spam spray: it is in front of him, in reach of the burst;
   //  - a ground pound on its picket: the picket is there, so the ball is on along its rail by
@@ -3248,6 +3242,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     G.forEach((n, j) => { if (best < 0 || Math.hypot(n[0] - x, n[2] - z) < Math.hypot(G[best][0] - x, G[best][2] - z)) best = j; });
     if (best < 0) return;
     st.from = best; st.to = chompHaulBranch(bw, st, best, -1, k, m, mario);
+  }
+  // Cooled in the bath the Chain Chomp is solid (takeBath: its map collision at its centre, 1.1 x
+  // its size), and its Shine comes down onto it: the top of the ball under (x, z), if it's there.
+  // Its height over the bath is where Mario stands on it in ghosts (1033.75 at the centre).
+  const BW_BATH_TOP = 1033.75;
+  function chompBathTop(x, y, z) {
+    if (!objNodes.some((o) => o.userData.bw)) return -Infinity;
+    const c = BW_BATH[1] + BW_RADIUS, r = BW_BATH_TOP - c, d = Math.hypot(x - BW_BATH[0], z - BW_BATH[2]);
+    if (d >= r) return -Infinity;
+    const top = c + Math.sqrt(r * r - d * d);
+    return top <= y + 1 ? top : -Infinity;
   }
   // The Chain Chomp's Shine: the demo shine nearest the bath, once its simulation has it cooled there.
   function chompShineAt(i) {
@@ -3842,7 +3847,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         // He lands on the nearest floor under the Shine: the stage's, or a map object's.
         const top = Math.max(y, it[4]);
         if (objectsGroup) objectsGroup.updateMatrixWorld(true);
-        const floorAt = (yy) => Math.max(C ? colGround(C, x, yy, z) : -Infinity, objGround(x, yy, z));   // objects' own collision too
+        const floorAt = (yy) => Math.max(C ? colGround(C, x, yy, z) : -Infinity, objGround(x, yy, z), chompBathTop(x, yy, z));   // objects' own collision too
         let floor = floorAt(top);
         if (floor > y + 1) floor = floorAt(y);   // touched from below it: the floor under him
         if (floor > -Infinity) {
@@ -5727,7 +5732,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), rv: st && st.rv && st.rv.map((r) => r.kind + '@' + (r.k / 30).toFixed(2) + ':' + Math.round(r.p.px) + ',' + Math.round(r.p.pz)), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.hauling), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
