@@ -421,8 +421,37 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const GHOST_COLORS = ['#e8402a', '#2f7de1', '#2aa36b', '#a35ad8', '#e07b1c', '#0fa3a3'];
   const $ = (id) => document.getElementById(id);
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  // DOM writes only when something changes: these run every frame, and every write makes the
+  // browser restyle (and lay out again when something reads a size).
+  const setText = (el, s) => { if (el.textContent !== s) el.textContent = s; };
+  const setAttr = (el, k, v) => { v = String(v); if (el.getAttribute(k) !== v) el.setAttribute(k, v); };
+  const setHidden = (el, h) => { h = !!h; if (el.hidden !== h) el.hidden = h; };
+  const setValue = (el, v) => { v = String(v); if (el.value !== v) el.value = v; };
+  const setMax = (el, v) => { v = String(v); if (el.max !== v) el.max = v; };
 
   // ---------------------------------------------------------------- three.js scene
+  // three brings every skinned mesh's skeleton up to date (its bone matrices, and a bone texture
+  // upload) on every render, on screen or not: a stage has dozens of skinned characters, and the
+  // comparison view renders twice a frame. Here a skeleton is brought up to date just before one
+  // of its meshes is drawn (once a render), and its texture is sent again only when it changed.
+  (() => {
+    const upd = THREE.Skeleton.prototype.update;
+    THREE.Skeleton.prototype.update = function () {};   // (three's own call, from every render)
+    THREE.SkinnedMesh.prototype.onBeforeRender = function (r) {
+      const sk = this.skeleton, f = r.info.render.frame;
+      if (!sk || sk.drawnAt === f) return;
+      sk.drawnAt = f;
+      const tex = sk.boneTexture;
+      if (!tex) { upd.call(sk); return; }   // (its texture is made at its first draw, from these)
+      sk.boneTexture = null; upd.call(sk); sk.boneTexture = tex;   // the matrices, without flagging an upload
+      const M = sk.boneMatrices;
+      if (!sk.sentM || sk.sentM.length !== M.length) sk.sentM = new Float32Array(M.length).fill(NaN);
+      const P = sk.sentM;
+      let i = 0;
+      while (i < M.length && M[i] === P[i]) i++;
+      if (i < M.length) { P.set(M); tex.needsUpdate = true; }
+    };
+  })();
   const stageEl = $('stage');
   const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -795,12 +824,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // TSky's blue GXDrawSphere is not drawn in the normal scene. Others use the page's scene colour.
   const SKY_BACKDROP = new THREE.Color(0, 0, 0);
   let skyBackdrop = false;
+  let sceneBg = null;   // the theme's background colour, read again when the theme changes
   function applySceneTheme() {
-    scene.background = skyBackdrop ? SKY_BACKDROP : new THREE.Color(css('--scene-bg') || '#cfdde6');
+    if (!sceneBg) sceneBg = new THREE.Color(css('--scene-bg') || '#cfdde6');
+    scene.background = skyBackdrop ? SKY_BACKDROP : sceneBg;
   }
   applySceneTheme();
-  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applySceneTheme);
-  new MutationObserver(applySceneTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  const themeChanged = () => { sceneBg = null; applySceneTheme(); };
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', themeChanged);
+  new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   function resize() {
     const w = stageEl.clientWidth, h = stageEl.clientHeight;
@@ -1425,8 +1457,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     for (let i = 0; i < nv; i++) { x0 = Math.min(x0, v[i * 3]); x1 = Math.max(x1, v[i * 3]); z0 = Math.min(z0, v[i * 3 + 2]); z1 = Math.max(z1, v[i * 3 + 2]); }
     const gw = Math.max(1, Math.ceil((x1 - x0) / COL_CELL) + 1), gh = Math.max(1, Math.ceil((z1 - z0) / COL_CELL) + 1);
     const ranges = new Int32Array(nt * 4), counts = new Int32Array(gw * gh + 1);
+    const tb = new Float32Array(nt * 6);   // each triangle's box: min x y z, max x y z
     for (let k = 0; k < nt; k++) {
       const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
+      for (let i = 0; i < 3; i++) { tb[k * 6 + i] = Math.min(v[a + i], v[b + i], v[c + i]); tb[k * 6 + 3 + i] = Math.max(v[a + i], v[b + i], v[c + i]); }
       const cx0 = Math.floor((Math.min(v[a], v[b], v[c]) - x0) / COL_CELL), cx1 = Math.floor((Math.max(v[a], v[b], v[c]) - x0) / COL_CELL);
       const cz0 = Math.floor((Math.min(v[a + 2], v[b + 2], v[c + 2]) - z0) / COL_CELL), cz1 = Math.floor((Math.max(v[a + 2], v[b + 2], v[c + 2]) - z0) / COL_CELL);
       ranges.set([cx0, cx1, cz0, cz1], k * 4);
@@ -1440,7 +1474,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     let y0 = Infinity;
     for (let i = 1; i < v.length; i += 3) y0 = Math.min(y0, v[i]);
-    return { v, t, nt, x0, z0, y0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0, light, types, lastTri: -1 };
+    return { v, t, nt, tb, x0, z0, y0, gw, gh, start: counts, cells, stamp: new Uint32Array(nt), mark: 0, light, types, lastTri: -1 };
   }
   function colCellRange(C, xa, xb, za, zb, fn) {
     const cx0 = Math.max(0, Math.floor((Math.min(xa, xb) - C.x0) / COL_CELL)), cx1 = Math.min(C.gw - 1, Math.floor((Math.max(xa, xb) - C.x0) / COL_CELL));
@@ -1478,12 +1512,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // (|normal y| under 0.2) spanning height y that a circle of `radius` at (x, z) touches pushes it
   // out along the wall's normal until it is `radius` clear. Returns [x, z] moved, or null.
   function colWallPush(C, x, y, z, radius) {
-    const v = C.v, t = C.t;
+    const v = C.v, t = C.t, tb = C.tb;
     let out = null;
     colCellRange(C, x - radius, x + radius, z - radius, z + radius, (k) => {
-      if (out) return;
+      if (out || tb[k * 6 + 1] > y || tb[k * 6 + 4] < y) return;   // (spanning height y)
       const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
-      if (Math.min(v[a + 1], v[b + 1], v[c + 1]) > y || Math.max(v[a + 1], v[b + 1], v[c + 1]) < y) return;
       const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
       let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
       const nl = Math.hypot(nx, ny, nz);
@@ -1533,8 +1566,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const WATER_THROUGH = new Set([0x401, 0x801, 0x10a, 0x8400]);
   const WATER_SURFACE = new Set([0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x4104]);
   const WATER_SLIP = new Set([0x500, 0x4004, 0x8004, 0xc004]);
-  function waterSegment(p, q) {
-    const o = objSegment(p, q);
+  function waterSegment(p, q, cand) {   // cand: objCandidates for a box holding p -> q
+    const o = objSegment(p, q, cand);
     const st = waterStageSegment(p, q);
     if (o && (!st || o.f < st.f)) {
       const ty = o.ty || 0;
@@ -1549,9 +1582,13 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       return h ? { f: h.f, n: [0, 1, 0], ground: h.ny > 0.2, roof: false, water: false, slip: false } : null;
     }
     let best = null, bk = -1, bn = null;
-    const v = C.v, t = C.t;
+    const v = C.v, t = C.t, tb = C.tb;
     const dx = q[0] - p[0], dy = q[1] - p[1], dz = q[2] - p[2];
+    const x0 = Math.min(p[0], q[0]), x1 = Math.max(p[0], q[0]), y0 = Math.min(p[1], q[1]), y1 = Math.max(p[1], q[1]);
+    const z0 = Math.min(p[2], q[2]), z1 = Math.max(p[2], q[2]);
     colCellRange(C, p[0], q[0], p[2], q[2], (k) => {
+      const o = k * 6;
+      if (tb[o + 4] < y0 || tb[o + 1] > y1 || tb[o + 3] < x0 || tb[o] > x1 || tb[o + 5] < z0 || tb[o + 2] > z1) return;   // (boxes apart)
       if (C.types && WATER_THROUGH.has(C.types[k])) return;
       const a = t[k * 3] * 3, b = t[k * 3 + 1] * 3, c = t[k * 3 + 2] * 3;
       const e1x = v[b] - v[a], e1y = v[b + 1] - v[a + 1], e1z = v[b + 2] - v[a + 2];
@@ -1590,7 +1627,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (stageCol === C) return;
       stageCol = C;
       // Re-run physics that may have used the drawn geometry before the collision arrived.
-      ghosts.forEach((g) => { if (g.carry) g.carry.forEach((pl) => { pl.ready = false; }); if (g.sprayHits) g.sprayHits.clear(); });
+      ghosts.forEach((g) => { if (g.carry) g.carry.forEach((pl) => { pl.ready = false; }); if (g.sprayHits) { g.sprayHits.clear(); g.sprayGen = (g.sprayGen || 0) + 1; } });
       update();
     } finally { back(); }
   }
@@ -1638,52 +1675,151 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     return c.mesh;
   }
-  const _ocInv = new THREE.Matrix4(), _ocA = new THREE.Vector3(), _ocB = new THREE.Vector3(), _ocC = new THREE.Vector3(), _ocN = new THREE.Vector3();
-  // First object collision along p -> q: { f, n (world, facing back along it), ty } or null.
-  function objSegment(p, q) {
-    let best = null;
-    const dx = q[0] - p[0], dy = q[1] - p[1], dz = q[2] - p[2], len = Math.hypot(dx, dy, dz) || 1;
+  const _ocA = new THREE.Vector3(), _ocB = new THREE.Vector3(), _ocC = new THREE.Vector3(), _ocN = new THREE.Vector3();
+  // An object's collision meshes as bounding spheres in world space for its current matrix (and
+  // that matrix's inverse when needed), kept until the matrix changes: water and the chain test
+  // every object many times a frame.
+  const objBoundsOf = new WeakMap();
+  // While nothing moves (objStillDo: a simulation looking at the objects over and over), each
+  // object's matrix is checked once, and the objects are gone through as one list (objStillAll).
+  // A segment within one OBJ_CELL square (across the ground) only looks at the objects that
+  // reach into that square (objStillCells: worked out the first time one is asked for).
+  let objStill = 0, objStillN = 0, objStillAll = null, objStillCells = null;
+  const OBJ_CELL = 512;
+  function objStillDo(fn) {
+    if (objStill) return fn();
+    objStill = ++objStillN; objStillAll = objStillCells = null;
+    try { return fn(); } finally { objStill = 0; objStillAll = objStillCells = null; }
+  }
+  function objStillCand(sg) {
+    const all = objStillAll || (objStillAll = objCandidates(-Infinity, -Infinity, -Infinity, Infinity, Infinity, Infinity));
+    const cx = Math.floor(sg.x0 / OBJ_CELL), cz = Math.floor(sg.z0 / OBJ_CELL);
+    if (cx !== Math.floor(sg.x1 / OBJ_CELL) || cz !== Math.floor(sg.z1 / OBJ_CELL)) return all;
+    const key = (cx + 32768) * 65536 + (cz + 32768), cells = objStillCells || (objStillCells = new Map());
+    let c = cells.get(key);
+    if (!c) {
+      const x0 = cx * OBJ_CELL, x1 = x0 + OBJ_CELL, z0 = cz * OBJ_CELL, z1 = z0 + OBJ_CELL;
+      c = [];
+      for (let j = 0; j < all.length; j += 3) {
+        const S = all[j + 1].sph, i = all[j + 2] * 4, R = S[i + 3];
+        if (S[i] + R < x0 || S[i] - R > x1 || S[i + 2] + R < z0 || S[i + 2] - R > z1) continue;
+        c.push(all[j], all[j + 1], all[j + 2]);
+      }
+      cells.set(key, c);
+    }
+    return c;
+  }
+  function objBounds(node, cols) {
+    const e = node.matrixWorld.elements;
+    let ob = objBoundsOf.get(node);
+    if (ob && ob.cols === cols) {
+      if (objStill && ob.still === objStill) return ob;
+      const k = ob.key;
+      let i = 0;
+      while (i < 16 && k[i] === e[i]) i++;
+      if (i === 16) { ob.still = objStill; return ob; }
+    }
+    if (!ob) objBoundsOf.set(node, ob = { key: new Float64Array(16), inv: new THREE.Matrix4(), invOk: false, sph: null, cols: null });
+    const M = node.matrixWorld, sc = Math.max(Math.hypot(e[0], e[1], e[2]), Math.hypot(e[4], e[5], e[6]), Math.hypot(e[8], e[9], e[10]));
+    const S = new Float64Array(cols.length * 4);
+    cols.forEach((m, i) => {
+      _ocC.set(m.cen[0], m.cen[1], m.cen[2]).applyMatrix4(M);
+      S[i * 4] = _ocC.x; S[i * 4 + 1] = _ocC.y; S[i * 4 + 2] = _ocC.z; S[i * 4 + 3] = m.r * sc;
+    });
+    ob.cols = cols; ob.key.set(e); ob.sph = S; ob.invOk = false; ob.still = objStill;
+    return ob;
+  }
+  // A mesh's triangles' boxes (object space), to pass over the ones a segment can't reach.
+  function objTriBoxes(m) {
+    if (m.tb) return m.tb;
+    const v = m.v, t = m.t, tb = new Float32Array(t.length * 2);
+    for (let k = 0, o = 0; k < t.length; k += 3, o += 6) {
+      const a = t[k] * 3, b = t[k + 1] * 3, c = t[k + 2] * 3;
+      for (let i = 0; i < 3; i++) { tb[o + i] = Math.min(v[a + i], v[b + i], v[c + i]); tb[o + 3 + i] = Math.max(v[a + i], v[b + i], v[c + i]); }
+    }
+    return (m.tb = tb);
+  }
+  // Collision meshes of the visible objects whose bounding sphere reaches the box
+  // [x0, x1] x [y0, y1] x [z0, z1], as (node, bounds, mesh) triples in objSegment's order: for
+  // many segments inside that box (a water drop's whole flight).
+  function objCandidates(x0, y0, z0, x1, y1, z1) {
+    const out = [];
     for (const node of objNodes) {
       const cols = node.userData.cols;
       if (!cols || !cols.length || !node.visible) continue;
-      const M = node.matrixWorld, e = M.elements, sc = Math.max(Math.hypot(e[0], e[1], e[2]), Math.hypot(e[4], e[5], e[6]), Math.hypot(e[8], e[9], e[10]));
-      let inv = null;
-      for (const m of cols) {
-        // the segment against the mesh's bounding sphere, in world space
-        _ocC.set(m.cen[0], m.cen[1], m.cen[2]).applyMatrix4(M);
-        const R = m.r * sc, cx = _ocC.x - p[0], cy = _ocC.y - p[1], cz = _ocC.z - p[2];
-        const along = Math.max(0, Math.min(len, (cx * dx + cy * dy + cz * dz) / len));
-        if (Math.hypot(cx - dx / len * along, cy - dy / len * along, cz - dz / len * along) > R) continue;
-        if (!inv) inv = _ocInv.copy(M).invert();
-        _ocA.set(p[0], p[1], p[2]).applyMatrix4(inv); _ocB.set(q[0], q[1], q[2]).applyMatrix4(inv);
-        const ox = _ocA.x, oy = _ocA.y, oz = _ocA.z, ex = _ocB.x - ox, ey = _ocB.y - oy, ez = _ocB.z - oz;
-        const v = m.v, t = m.t;
-        for (let k = 0; k < t.length; k += 3) {
-          const a = t[k] * 3, b = t[k + 1] * 3, c = t[k + 2] * 3;
-          const e1x = v[b] - v[a], e1y = v[b + 1] - v[a + 1], e1z = v[b + 2] - v[a + 2];
-          const e2x = v[c] - v[a], e2y = v[c + 1] - v[a + 1], e2z = v[c + 2] - v[a + 2];
-          const px = ey * e2z - ez * e2y, py = ez * e2x - ex * e2z, pz = ex * e2y - ey * e2x;
-          const det = e1x * px + e1y * py + e1z * pz;
-          if (Math.abs(det) < 1e-9) continue;
-          const id = 1 / det, sx = ox - v[a], sy = oy - v[a + 1], sz = oz - v[a + 2];
-          const u = (sx * px + sy * py + sz * pz) * id;
-          if (u < 0 || u > 1) continue;
-          const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
-          const w = (ex * qx + ey * qy + ez * qz) * id;
-          if (w < 0 || u + w > 1) continue;
-          const f = (e2x * qx + e2y * qy + e2z * qz) * id;
-          if (f < 0 || f > 1 || (best && f >= best.f)) continue;
-          // the triangle's normal in world space (inverse transpose), facing back along the segment
-          _ocN.set(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
-          _ocN.set(_ocN.x * inv.elements[0] + _ocN.y * inv.elements[1] + _ocN.z * inv.elements[2],
-            _ocN.x * inv.elements[4] + _ocN.y * inv.elements[5] + _ocN.z * inv.elements[6],
-            _ocN.x * inv.elements[8] + _ocN.y * inv.elements[9] + _ocN.z * inv.elements[10]).normalize();
-          if (_ocN.x * dx + _ocN.y * dy + _ocN.z * dz > 0) _ocN.negate();
-          best = { f, n: [_ocN.x, _ocN.y, _ocN.z], ty: m.ty ? m.ty[k / 3] : 0 };
-        }
+      const ob = objBounds(node, cols), S = ob.sph;
+      for (let mi = 0; mi < cols.length; mi++) {
+        const wx = S[mi * 4], wy = S[mi * 4 + 1], wz = S[mi * 4 + 2], R = S[mi * 4 + 3];
+        if (wx + R < x0 || wx - R > x1 || wy + R < y0 || wy - R > y1 || wz + R < z0 || wz - R > z1) continue;
+        out.push(node, ob, mi);
       }
     }
-    return best;
+    return out;
+  }
+  // First object collision along p -> q: { f, n (world, facing back along it), ty } or null.
+  // cand: objCandidates for a box holding the segment (else every object is looked at).
+  function objSegment(p, q, cand) {
+    const sg = _ocSeg;
+    sg.p = p; sg.q = q; sg.best = null;
+    sg.dx = q[0] - p[0]; sg.dy = q[1] - p[1]; sg.dz = q[2] - p[2]; sg.len = Math.hypot(sg.dx, sg.dy, sg.dz) || 1;
+    sg.x0 = Math.min(p[0], q[0]); sg.x1 = Math.max(p[0], q[0]); sg.y0 = Math.min(p[1], q[1]); sg.y1 = Math.max(p[1], q[1]);
+    sg.z0 = Math.min(p[2], q[2]); sg.z1 = Math.max(p[2], q[2]);
+    if (!cand && objStill) cand = objStillCand(sg);
+    if (cand) {
+      for (let j = 0; j < cand.length; j += 3) objSegMesh(sg, cand[j], cand[j + 1], cand[j + 2]);
+      return sg.best;
+    }
+    for (const node of objNodes) {
+      const cols = node.userData.cols;
+      if (!cols || !cols.length || !node.visible) continue;
+      const ob = objBounds(node, cols);
+      for (let mi = 0; mi < cols.length; mi++) objSegMesh(sg, node, ob, mi);
+    }
+    return sg.best;
+  }
+  const _ocSeg = { p: null, q: null, best: null, dx: 0, dy: 0, dz: 0, len: 1, x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
+  function objSegMesh(sg, node, ob, mi) {
+    const S = ob.sph, m = ob.cols[mi], p = sg.p, q = sg.q, dx = sg.dx, dy = sg.dy, dz = sg.dz, len = sg.len;
+    // the segment against the mesh's bounding sphere, in world space (first its box: a sphere
+    // further than its radius off the segment's box is no nearer to the segment itself)
+    const wx = S[mi * 4], wy = S[mi * 4 + 1], wz = S[mi * 4 + 2], R = S[mi * 4 + 3];
+    if (wx + R < sg.x0 || wx - R > sg.x1 || wy + R < sg.y0 || wy - R > sg.y1 || wz + R < sg.z0 || wz - R > sg.z1) return;
+    const cx = wx - p[0], cy = wy - p[1], cz = wz - p[2];
+    const along = Math.max(0, Math.min(len, (cx * dx + cy * dy + cz * dz) / len));
+    if (Math.hypot(cx - dx / len * along, cy - dy / len * along, cz - dz / len * along) > R) return;
+    if (!ob.invOk) { ob.inv.copy(node.matrixWorld).invert(); ob.invOk = true; }
+    const inv = ob.inv;
+    _ocA.set(p[0], p[1], p[2]).applyMatrix4(inv); _ocB.set(q[0], q[1], q[2]).applyMatrix4(inv);
+    const ox = _ocA.x, oy = _ocA.y, oz = _ocA.z, ex = _ocB.x - ox, ey = _ocB.y - oy, ez = _ocB.z - oz;
+    const bx0 = Math.min(ox, _ocB.x), bx1 = Math.max(ox, _ocB.x), by0 = Math.min(oy, _ocB.y), by1 = Math.max(oy, _ocB.y);
+    const bz0 = Math.min(oz, _ocB.z), bz1 = Math.max(oz, _ocB.z);
+    const v = m.v, t = m.t, tb = objTriBoxes(m);
+    let best = sg.best;
+    for (let k = 0, o = 0; k < t.length; k += 3, o += 6) {
+      if (tb[o + 3] < bx0 || tb[o] > bx1 || tb[o + 4] < by0 || tb[o + 1] > by1 || tb[o + 5] < bz0 || tb[o + 2] > bz1) continue;   // (boxes apart)
+      const a = t[k] * 3, b = t[k + 1] * 3, c = t[k + 2] * 3;
+      const e1x = v[b] - v[a], e1y = v[b + 1] - v[a + 1], e1z = v[b + 2] - v[a + 2];
+      const e2x = v[c] - v[a], e2y = v[c + 1] - v[a + 1], e2z = v[c + 2] - v[a + 2];
+      const px = ey * e2z - ez * e2y, py = ez * e2x - ex * e2z, pz = ex * e2y - ey * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (Math.abs(det) < 1e-9) continue;
+      const id = 1 / det, sx = ox - v[a], sy = oy - v[a + 1], sz = oz - v[a + 2];
+      const u = (sx * px + sy * py + sz * pz) * id;
+      if (u < 0 || u > 1) continue;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const w = (ex * qx + ey * qy + ez * qz) * id;
+      if (w < 0 || u + w > 1) continue;
+      const f = (e2x * qx + e2y * qy + e2z * qz) * id;
+      if (f < 0 || f > 1 || (best && f >= best.f)) continue;
+      // the triangle's normal in world space (inverse transpose), facing back along the segment
+      _ocN.set(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+      _ocN.set(_ocN.x * inv.elements[0] + _ocN.y * inv.elements[1] + _ocN.z * inv.elements[2],
+        _ocN.x * inv.elements[4] + _ocN.y * inv.elements[5] + _ocN.z * inv.elements[6],
+        _ocN.x * inv.elements[8] + _ocN.y * inv.elements[9] + _ocN.z * inv.elements[10]).normalize();
+      if (_ocN.x * dx + _ocN.y * dy + _ocN.z * dz > 0) _ocN.negate();
+      best = { f, n: [_ocN.x, _ocN.y, _ocN.z], ty: m.ty ? m.ty[k / 3] : 0 };
+    }
+    sg.best = best;
   }
   // Highest object floor at or below y (+1) at (x, z), or -Infinity.
   function objGround(x, y, z) {
@@ -2492,7 +2628,11 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
     let P = bw.p;
-    if (!bw.sim || bw.simKey !== key) {
+    // One simulation per ghost visit (key), kept: the comparison view poses the same chomp for
+    // two ghosts every frame, and a single slot would rebuild each one from the start each time.
+    if (!bw.sims) bw.sims = new Map();
+    if (bw.simKey !== key || !bw.sim) { bw.simKey = key; bw.sim = bw.sims.get(key) || null; }
+    if (!bw.sim) {
       bw.simKey = key;
       let to = -1, best = Infinity;
       (G || []).forEach((n, k) => { const d = Math.hypot(n[0] - bw.start[0], n[2] - bw.start[2]); if (d < best) { best = d; to = k; } });
@@ -2502,6 +2642,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         st: { from, to, heat: BW.heatMax, warm: 0, cold: 0, bark: 0, px: P[0], pz: P[2], bath: 0, bx: 0, bz: 0, staked: true, tick: 0,
           rope: ropeInit(bw.n, bw.start[0], bw.start[1] + 182, bw.start[2]), drops: [],
           bathNode: (G || []).reduce((b, n, k) => (b < 0 || Math.hypot(n[0] - BW_BATH[0], n[2] - BW_BATH[2]) < Math.hypot(G[b][0] - BW_BATH[0], G[b][2] - BW_BATH[2]) ? k : b), -1) } };
+      if (bw.sims.size >= 8) bw.sims.delete(bw.sims.keys().next().value);   // (the oldest visit)
+      bw.sims.set(key, bw.sim);
     }
     const S = bw.sim, st = S.st, N = Math.min(Math.max(0, Math.floor(f)) + 2, 60 * 60 * 30);
     // Until Mario first takes the picket, the chomp strains at the end of its chain the way it
@@ -2932,6 +3074,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             if (live && st.heat > 0) st.heat--;
             hits++;
             dr.pt.bwHit = a + 1;   // the drawn spray ends it there too
+            waterMarks++;
             continue;
           }
         }
@@ -3016,54 +3159,39 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function chompFx(bw, f0) {
     const S = bw.sim;
     if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined' || !S || !S.fx) return [];
-    if (bw.fxAt === f0 && bw.fxKey === bw.simKey) return bw.fxList;
+    if (S.fxAt === f0) return S.fxList;   // (kept with its simulation, one per ghost visit)
     const all = [], on = (e, bit) => e >= 0 && !!(S.fx[e] & bit);
+    // Each slot's emitters as they stand after the frame last asked for, kept with the simulation:
+    // playing on, they are carried on from there a frame at a time.
+    const runs = S.fxRuns || (S.fxRuns = BW_FX.map((slot) => (slot.hold ? null : new Map())));
     BW_FX.forEach((slot, si) => {
       const res = JPA_RES[slot.res];
       if (!res) return;
       const seed = (c) => Math.imul(si + 11, 0x9e3779b1) ^ Math.imul(c + 1, 0x85ebca6b);
       const M = (e) => chompFxMatrix(bw, S, Math.min(e, S.x.length - 1), slot.at);
       if (slot.hold) {
-        const S0 = Math.max(0, f0 - JPA_SIM_FRAMES), dying = [];
-        let em = null, prev = false;
-        if (S0 > 0 && on(S0 - 1, slot.bit)) {
-          let c = S0 - 1;
-          while (c > 0 && S0 - c < 900 && on(c - 1, slot.bit)) c--;
-          em = JPA.makeEmitter(res, seed(c));
-          JPA.advanceTo(em, 2 * (S0 - c));
-          prev = true;
-        }
-        for (let e = S0; e <= f0; e++) {
-          const cur = on(e, slot.bit);
-          if (cur && !em) em = JPA.makeEmitter(res, seed(e));
-          if (!em && !dying.length) { prev = cur; continue; }
-          const m = M(e);
-          for (let i = 0; i < 2; i++) {
-            if (em && !JPA.calc(em, m)) em = null;
-            for (let j = dying.length - 1; j >= 0; j--) if (!JPA.calc(dying[j], m)) dying.splice(j, 1);
-          }
-          if (prev && !cur && em) { JPA.invalidate(em); dying.push(em); em = null; }
-          prev = cur;
-          if (em) JPA.drawStep(em);
-          dying.forEach(JPA.drawStep);
-        }
-        all.push(...dying);
-        if (em) all.push(em);
+        const r = runs[si] = jpaHoldRun(runs[si], f0, (e) => on(e, slot.bit), (c) => JPA.makeEmitter(res, seed(c)), M);
+        all.push(...r.dying);
+        if (r.em) all.push(r.em);
       } else {
+        // One emitter from each frame c the bit is on, run on from c: c -> { em, e (its last frame) }.
+        const R = runs[si];
+        R.forEach((b, c) => { if (c < f0 - slot.span || b.e > f0) R.delete(c); });   // (out of reach, or scrubbed back past)
         for (let c = Math.max(0, f0 - slot.span); c <= f0; c++) {
           if (!on(c, slot.bit)) continue;
-          let em = JPA.makeEmitter(res, seed(c));
-          const fixed = slot.at === 'pos' ? M(c) : null;
-          for (let e = c; e <= f0 && em; e++) {
-            const m = fixed || M(e);
-            for (let i = 0; i < 2 && em; i++) if (!JPA.calc(em, m)) em = null;
-            if (em) JPA.drawStep(em);
+          let b = R.get(c);
+          if (!b) R.set(c, b = { em: JPA.makeEmitter(res, seed(c)), e: c - 1, fixed: slot.at === 'pos' ? M(c) : null });
+          for (let e = b.e + 1; e <= f0 && b.em; e++) {
+            const m = b.fixed || M(e);
+            for (let i = 0; i < 2 && b.em; i++) if (!JPA.calc(b.em, m)) b.em = null;
+            if (b.em) JPA.drawStep(b.em);
           }
-          if (em) all.push(em);
+          b.e = f0;
+          if (b.em) all.push(b.em);
         }
       }
     });
-    bw.fxAt = f0; bw.fxKey = bw.simKey; bw.fxList = all;
+    S.fxAt = f0; S.fxList = all;
     return all;
   }
   // A .brk colour track at frame f: keys [time, value, in, out], Hermite between them.
@@ -3499,7 +3627,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     }
     // Spam sprays by frame of this visit (the chomp should be in front of Mario for them).
     const bk = mario ? burstFrames(g).map((e) => e - Math.round(base / QF_PER_FRAME)).filter((k) => k >= 0) : [];
-    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = chompSim(bw, f, mario, key, water, bk);
+    // (Nothing else moves while it runs: placeChomp places only the chomp, after it.)
+    const [x, z, yaw, heat, bark, spx, spz, held, bath, yg, pts, lt] = objStillDo(() => chompSim(bw, f, mario, key, water, bk));
     const kf = Math.max(0, Math.floor(f)), st = bw.sim && bw.sim.st;
     const gold = bw.brkGold && st && st.goldK !== undefined && kf >= st.goldK;
     if (gold) brkApply(bw.brkGold, bw.bodyMats || (bw.bodyMats = chompMats(node)), Math.min(1, (kf - st.goldK) * BW_GOLD_RATE / (bw.brkGold.dur - 1)));
@@ -4166,6 +4295,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return { o, alpha };
   }
   function drawShineOverlay(dm, time) {
+    if ((!dm || time < dm.land) && sgCanvas.hidden) return;   // (cleared when it was hidden)
     const r = sgCanvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
     const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
     if (sgCanvas.width !== W || sgCanvas.height !== H) { sgCanvas.width = W; sgCanvas.height = H; }
@@ -4212,12 +4342,23 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         m.gx.pos.copy(set.pos); m.gx.col.copy(set.col); m.gx.amb.copy(set.amb);
       });
     }
+    const lightSet = (node) => {   // light set from the floor under the object (once collision is in)
+      if (node.userData.gxKey === colKey) return;
+      const b = node.userData.base;
+      node.userData.gxKey = colKey;
+      gxApply(node, gxSet('object', lightSetAt(b.p[0], b.p[1], b.p[2])));
+    };
+    // The Chain Chomp first: the boss Shine's timing further on comes from this view's run of it.
+    objNodes.forEach((node) => {
+      if (!node.userData.bw) return;
+      lightSet(node);
+      const wc = walkClock(g, t);
+      placeChomp(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc);
+    });
     objNodes.forEach((node, i) => {
       const b = node.userData.base;
-      if (node.userData.gxKey !== colKey) {   // light set from the floor under the object (once collision is in)
-        node.userData.gxKey = colKey;
-        gxApply(node, gxSet('object', lightSetAt(b.p[0], b.p[1], b.p[2])));
-      }
+      lightSet(node);
+      if (node.userData.bw) return;   // (placed above)
       if (node.userData.carry) {
         const holds = plan ? plan.placed.get(i) : null;
         const st = holds ? carryState(node, holds, t) : { pos: b.p, shrink: 0 };
@@ -4252,7 +4393,6 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         }
         return;
       }
-      if (node.userData.bw) { const wc = walkClock(g, t); placeChomp(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc); return; }
       if (node.userData.walk && node.userData.walk.bird && ghosts.length) { placeBird(node, g, t); return; }
       if (node.userData.walk) { placeWalker(node, walkClock(g, t) / QF_PER_FRAME); return; }
       if (node.userData.rig) { poseRig(node, walkClock(g, t) / QF_PER_FRAME); return; }
@@ -4901,11 +5041,17 @@ void main() {
       // (without the stage's collision, rays against its meshes, a few frames per ray)
       let px = p0[0], py = p0[1], pz = p0[2], a0 = 0;
       const col = activeCol(), floorY = col ? col.y0 - 500 : -1e9, step = col ? 1 : 4;
+      // the objects the whole flight could reach (its box: x, z straight; y up to the arc's top)
+      const xe = p0[0] + v[0] * W.alive, ze = p0[2] + v[2] * W.alive;
+      let y0 = Math.min(p0[1], p0[1] + v[1] * W.alive + W.g * W.alive * (W.alive + 1) / 2), y1 = Math.max(p0[1], p0[1] + v[1] * W.alive + W.g * W.alive * (W.alive + 1) / 2);
+      const top = W.g ? -(v[1] + W.g / 2) / W.g : -1;
+      if (top > 0 && top < W.alive) { const yt = p0[1] + v[1] * top + W.g * top * (top + 1) / 2; y0 = Math.min(y0, yt); y1 = Math.max(y1, yt); }
+      const cand = objCandidates(Math.min(p0[0], xe) - 1, y0 - 1, Math.min(p0[2], ze) - 1, Math.max(p0[0], xe) + 1, y1 + 1, Math.max(p0[2], ze) + 1);
       for (let a = 1; a <= W.alive; a++) {
         if (a % step && a < W.alive) continue;
         const qy = p0[1] + v[1] * a + W.g * a * (a + 1) / 2;
         const q = [p0[0] + v[0] * a, qy, p0[2] + v[2] * a];
-        const hseg = waterSegment([px, py, pz], q);
+        const hseg = waterSegment([px, py, pz], q, cand);
         if (hseg) {
           pt.hit = a0 + (a - a0) * hseg.f;
           pt.at = [px + (q[0] - px) * hseg.f, py + (q[1] - py) * hseg.f, pz + (q[2] - pz) * hseg.f];
@@ -4968,11 +5114,16 @@ void main() {
   // slots, and wet spots hold theirs until they dry. Walked oldest first, as the particle array is.
   // (A drop lives at most 255 ticks and a wet spot 256 more: 130 frames back is all there can be.)
   const WATER_SLOTS = 256;
+  let waterMarks = 0;   // drops the Chain Chomp has stopped so far (chompWaterStep): the water drawn changes with them
   function updateSpray(g, s) {
     const T = t, eTop = Math.floor((T + QF_PER_FRAME - 1) / QF_PER_FRAME);
     g.sprayHits = g.sprayHits || new Map();
     const colKey = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
-    if (g.sprayHits.mapId !== colKey) { g.sprayHits.clear(); g.sprayHits.mapId = colKey; }
+    if (g.sprayHits.mapId !== colKey) { g.sprayHits.clear(); g.sprayHits.mapId = colKey; g.sprayGen = (g.sprayGen || 0) + 1; }
+    // Asked again for the same tick (a paused view; the comparison view poses both halves every
+    // frame), what was built last time still stands - unless the Chain Chomp has stopped drops since.
+    const memo = T + '|' + colKey + '|' + (g.sprayGen || 0) + '|' + waterMarks;
+    if (g.sprayMemo === memo) { g.water.visible = g.sprayVis[0]; g.puddles.visible = g.sprayVis[1]; return; }
     const L = g.water.userData.list;
     L.drops.length = 0; L.splashes.length = 0;
     const tmp = [0, 0, 0];
@@ -4997,9 +5148,16 @@ void main() {
       ems.forEach(([em, key0]) => {
         const tk = em.e;
         if (tk > T) return;
-        live = live.filter((x) => x.end > tk);
+        // Slots whose particle ended by this tick are free again. (Only looked for once the slots
+        // run out: until then nothing depends on it. Ones taken in this same tick stay taken.)
+        let mark = live.length;
         em.parts.forEach((pt, k) => {
-          if (live.length >= WATER_SLOTS) return;
+          if (live.length >= WATER_SLOTS) {
+            let w = 0, m = 0;
+            for (let i = 0; i < live.length; i++) if (i >= mark || live[i].end > tk) { if (i < mark) m++; live[w++] = live[i]; }
+            live.length = w; mark = m;
+            if (live.length >= WATER_SLOTS) return;
+          }
           const key = key0 + k * 0.25, land = tk + pt.hit;
           let end = tk + Math.min(pt.hit, pt.W.alive, pt.bwHit !== undefined ? pt.bwHit : Infinity);
           if (pt.kind === 'ground' && pt.stay && land <= T) {
@@ -5085,10 +5243,10 @@ void main() {
       ns++;
     });
     sp.geometry.setDrawRange(0, ns * 6);
-    sp.geometry.attributes.position.needsUpdate = true;
-    sp.geometry.attributes.uv.needsUpdate = true;
+    if (ns) waterUpload(sp.geometry, ns, [['position', 12], ['uv', 8]]);
     sp.visible = ns > 0;
     g.water.visible = L.drops.length > 0 || L.splashes.length > 0;
+    g.sprayMemo = memo; g.sprayVis = [g.water.visible, sp.visible];
   }
 
   // Spam spray (Jump pressed while digital R is fully held): FLUDD fires one burst instead of a jet.
@@ -5160,8 +5318,7 @@ void main() {
         n++;
       }
       dm.geometry.setDrawRange(0, n * 6);
-      dm.geometry.attributes.position.needsUpdate = true;
-      dm.geometry.attributes.uv.needsUpdate = true;
+      if (n) waterUpload(dm.geometry, n, [['position', 12], ['uv', 8]]);
       const SP = sm.geometry.attributes.position.array, SU = sm.geometry.attributes.uv.array, SA = sm.geometry.attributes.alpha.array;
       let m = 0;
       for (const s of L.splashes) {
@@ -5178,12 +5335,11 @@ void main() {
         m++;
       }
       sm.geometry.setDrawRange(0, m * 6);
-      sm.geometry.attributes.position.needsUpdate = true;
-      sm.geometry.attributes.uv.needsUpdate = true;
-      sm.geometry.attributes.alpha.needsUpdate = true;
+      if (m) waterUpload(sm.geometry, m, [['position', 12], ['uv', 8], ['alpha', 4]]);
     });
     if (!any) return;
     renderer.getDrawingBufferSize(_wsz);
+    if (!_wsz.x || !_wsz.y) return;   // (no stage on screen)
     if (!waterScreen || waterScreen.image.width !== _wsz.x || waterScreen.image.height !== _wsz.y) {
       if (waterScreen) waterScreen.dispose();
       waterScreen = new THREE.DataTexture(null, _wsz.x, _wsz.y, THREE.RGBFormat);
@@ -5191,13 +5347,28 @@ void main() {
       waterScreen.generateMipmaps = false;
       dropMat.uniforms.tScreen.value = waterScreen;
     }
-    renderer.copyFramebufferToTexture(_wz0, waterScreen);
+    copyViewTo(waterScreen);
     dropMat.uniforms.uView.value.copy(_wsz);
     renderer.autoClear = false;
     renderer.render(waterScene, camera);
     renderer.autoClear = true;
   }
-  const _wz0 = new THREE.Vector2(0, 0);
+  const _wz0 = new THREE.Vector2(0, 0), _wvp = new THREE.Vector4();
+  // What's been drawn under the view being drawn, into tex (the drawing buffer's size, at the same
+  // place): one half of the comparison view copies its own half. The first copy (re)makes it whole.
+  function copyViewTo(tex) {
+    const P = renderer.properties.get(tex);
+    if (!P.__webglTexture || P.viewCopy !== tex) { renderer.copyFramebufferToTexture(_wz0, tex); P.viewCopy = tex; return; }
+    const gl = renderer.getContext();
+    renderer.getCurrentViewport(_wvp);
+    renderer.state.activeTexture(gl.TEXTURE0);
+    renderer.state.bindTexture(gl.TEXTURE_2D, P.__webglTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, _wvp.x, _wvp.y, _wvp.x, _wvp.y, _wvp.z, _wvp.w);
+    renderer.state.unbindTexture();
+  }
+  function waterUpload(geo, n, parts) {   // the first n quads only (n > 0: a count of 0 means all to WebGL)
+    parts.forEach(([k, w]) => { const a = geo.attributes[k]; a.updateRange.offset = 0; a.updateRange.count = n * w; a.needsUpdate = true; });
+  }
 
   // Applies FLUDD state to a ghost's model and water stream. Returns the state for the readout.
   // Ghosts before Moonshine V6 don't record FLUDD. The game takes it away in secret stages whose
@@ -5621,44 +5792,69 @@ void main() {
   function updateJpa(g) {
     if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined') return;
     const f0 = Math.floor(t / QF_PER_FRAME), key = (mapGroup && mapGroup.uuid) + (activeCol() ? ':col' : '');
-    if (!g.visible) { g.jpa = []; g.jpaAt = null; return; }
+    // Hidden (in the comparison view: shown only in its own half), it keeps what it last built.
+    if (!g.visible) return;
     if (g.jpaAt === f0 && g.jpaKey === key) return;
+    if (g.jpaKey !== key) g.jpaRuns = null;   // another stage: its effects start over
     g.jpaAt = f0; g.jpaKey = key;
-    const S = Math.max(0, f0 - JPA_SIM_FRAMES), all = [];
+    const all = [], runs = g.jpaRuns || (g.jpaRuns = []);
     JPA_SLOTS.forEach((slot, si) => {
       const res = JPA_RES[slot.res];
       if (!res) return;
       const seed = (c) => Math.imul(si + 1, 0x9e3779b1) ^ Math.imul(c + 1, 0x85ebca6b);
-      let em = null, prev = false, last = null;
-      const dying = [];
-      // An emitter already running at S (its run started at c): its frame count and spawn timer.
-      if (S > 0 && slot.on(g, S - 1)) {
-        let c = S - 1;
-        while (c > 0 && S - c < 900 && slot.on(g, c - 1)) c--;
-        em = JPA.makeEmitter(res, seed(c));
-        JPA.advanceTo(em, 2 * (S - c));
-        prev = true;
-      }
-      for (let e = S; e <= f0; e++) {
-        const cur = slot.on(g, e);
-        if (cur && !em) em = JPA.makeEmitter(res, seed(e));
-        if (!em && !dying.length) { prev = cur; continue; }
-        const M = slot.mat(g, e) || last;
-        if (!M) { prev = cur; continue; }
-        last = M;
-        for (let k = 0; k < 2; k++) {
-          if (em && !JPA.calc(em, M)) em = null;
-          for (let i = dying.length - 1; i >= 0; i--) if (!JPA.calc(dying[i], M)) dying.splice(i, 1);
-        }
-        if (prev && !cur && em) { JPA.invalidate(em); dying.push(em); em = null; }
-        prev = cur;
-        if (em) JPA.drawStep(em);
-        dying.forEach(JPA.drawStep);
-      }
-      all.push(...dying);
-      if (em) all.push(em);
+      const r = runs[si] = jpaHoldRun(runs[si], f0, (e) => slot.on(g, e), (c) => JPA.makeEmitter(res, seed(c)), (e) => slot.mat(g, e));
+      all.push(...r.dying);
+      if (r.em) all.push(r.em);
     });
     g.jpa = all;
+  }
+  // An effect that is on while its bit is (one emitter at a time; turned off, it fades out with
+  // its particles): run from a start 40 to 59 frames back (longer than any effect's particles
+  // live), on a 20-frame grid, with an emitter already going there started part-way in, at the
+  // count of calcs it has had since it came on (so its particles are the ones of one unbroken run,
+  // wherever the start is). Frames sharing a start carry the run on a frame at a time as it plays;
+  // anywhere else it is run again. r: the run so far (after frame r.e).
+  function jpaHoldRun(r, f0, on, make, mat) {
+    const B = JPA_SIM_FRAMES, G = B / 2, S0 = Math.max(0, Math.floor((f0 - B) / G) * G);
+    if (!r || r.S0 !== S0 || r.e > f0) {
+      // (where the bit was last seen coming on, and how far it has stayed on since: frames [c0, c1])
+      const seen = r ? r.seen : null;
+      r = { S0, e: S0 - 1, em: null, prev: false, last: null, dying: [], seen };
+      if (S0 > 0 && on(S0 - 1)) {   // an emitter already running at S0 (on since frame c): its frame count and spawn timer
+        let c;
+        if (seen && seen.c0 <= S0 - 1 && S0 - 1 - seen.c1 <= 4 * B) {
+          let k = seen.c1;
+          while (k < S0 - 1 && on(k + 1)) k++;
+          if (k >= S0 - 1) { c = seen.c0; seen.c1 = Math.max(seen.c1, k); }
+        }
+        if (c === undefined) {
+          c = S0 - 1;
+          while (c > 0 && on(c - 1)) c--;
+          r.seen = { c0: c, c1: S0 - 1 };
+        }
+        r.em = make(c);
+        JPA.advanceTo(r.em, 2 * (S0 - c));
+        r.prev = true;
+      }
+    }
+    for (let e = r.e + 1; e <= f0; e++) {
+      const cur = on(e);
+      if (cur && !r.em) r.em = make(e);
+      if (!r.em && !r.dying.length) { r.prev = cur; continue; }
+      const M = mat(e) || r.last;
+      if (!M) { r.prev = cur; continue; }
+      r.last = M;
+      for (let k = 0; k < 2; k++) {
+        if (r.em && !JPA.calc(r.em, M)) r.em = null;
+        for (let i = r.dying.length - 1; i >= 0; i--) if (!JPA.calc(r.dying[i], M)) r.dying.splice(i, 1);
+      }
+      if (r.prev && !cur && r.em) { JPA.invalidate(r.em); r.dying.push(r.em); r.em = null; }
+      r.prev = cur;
+      if (r.em) JPA.drawStep(r.em);
+      r.dying.forEach(JPA.drawStep);
+    }
+    r.e = f0;
+    return r;
   }
   // Draws the ghosts' particles over the frame: groups 0 / 1 as they are, then group 3 (the
   // water slide's wake, ms_m_watslide_a) refracting a copy of the screen (gpScreenTexture).
@@ -5689,15 +5885,14 @@ void main() {
     if (!any1 && !any3) return;
     renderer.autoClear = false;
     if (any1) renderer.render(jpaScene1, camera);
-    if (any3) {
-      renderer.getDrawingBufferSize(_wsz);
+    if (any3 && renderer.getDrawingBufferSize(_wsz).x && _wsz.y) {
       if (jpaScreen.image.width !== _wsz.x || jpaScreen.image.height !== _wsz.y) {
         jpaScreen.dispose();
         jpaScreen = new THREE.DataTexture(null, _wsz.x, _wsz.y, THREE.RGBFormat);
         jpaScreen.minFilter = jpaScreen.magFilter = THREE.LinearFilter;
         jpaScreen.generateMipmaps = false;
       }
-      renderer.copyFramebufferToTexture(_wz0, jpaScreen);
+      copyViewTo(jpaScreen);
       jpaScene3.children.forEach((m) => { m.material.uniforms.tMain.value = jpaScreen; m.material.uniforms.uView.value.copy(_wsz); });
       renderer.render(jpaScene3, camera);
     }
@@ -5929,12 +6124,26 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), v: st && st.v !== undefined ? Math.round(st.v * 10) / 10 : null, parked: !!(st && st.park && st.park.stop), fromTo: st && [st.from, st.to], chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), v: st && st.v !== undefined ? Math.round(st.v * 10) / 10 : null, parked: !!(st && st.park && st.park.stop), fromTo: st && [st.from, st.to], chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)),
+    water: ghosts.map((g) => { const L = g.water && g.water.userData.list; if (!L) return null; let h = 0;
+      L.drops.forEach((p) => { h = (h * 31 + Math.round(p.x * 10) + Math.round(p.y * 10) * 7 + Math.round(p.z * 10) * 13) | 0; });
+      L.splashes.forEach((p) => { h = (h * 31 + Math.round(p.p[0] * 10) + Math.round(p.b * 100)) | 0; });
+      return [L.drops.length, L.splashes.length, h, g.puddles ? g.puddles.geometry.drawRange.count : 0, !!g.water.visible]; }),
+    jpa: ghosts.map((g) => (g.jpa || []).reduce((n, e) => n + (e.ptcl ? e.ptcl.length : 0), 0)) });
+  let hudKey = null;   // what the readout shows
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
     ghosts.forEach((g) => { if (g.visible || ghosts.length === 1) ensureSims(g); });
     ghosts.forEach((g) => {
+      if (!g.visible) {   // hidden (in the comparison view, the other half's ghost): nothing of it shows, so nothing is posed
+        g.marker.visible = false;
+        if (g.yoshiNode) g.yoshiNode.root.visible = false;
+        if (g.water) g.water.visible = false;
+        if (g.puddles) g.puddles.visible = false;
+        if (g.appear) g.appear.visible = false;
+        return;
+      }
       updateJpa(g);   // poses Mario at earlier frames: before this frame's pose
       const s = ghostSampleAt(g.data, t);
       g.marker.position.set(s.x, s.y, s.z);
@@ -5956,38 +6165,42 @@ void main() {
         hud = { s, hs, fludd, anim: d.anim[s.i], yoshi: d.yoshi[s.i], seg: d.segments[d.segIndex[s.i]], name: d.header.name, gap: s.gap };
       }
     });
-    const hudEl = $('hud');
-    if (hud) {
-      const yawDeg = (((hud.s.yaw % 65536) + 65536) % 65536) / 65536 * 360;
-      hudEl.innerHTML = '';
-      const rows = [['X', hud.s.x.toFixed(2)], ['Y', hud.s.y.toFixed(2)], ['Z', hud.s.z.toFixed(2)],
-        ['Yaw', `${Math.round(hud.s.yaw)} (${yawDeg.toFixed(1)}°)`], ['HSpd', hud.hs.toFixed(2)],
-        ['Anim', hud.yoshi ? `riding Yoshi (0x${hud.anim.toString(16).toUpperCase()})` : `${(typeof MARIO_ANIM_NAMES !== 'undefined' && MARIO_ANIM_NAMES[hud.anim]) || 'unnamed'} (0x${hud.anim.toString(16).toUpperCase()})`], ['Area', hud.gap ? 'loading' : hud.seg.routeLabel]];
-      if (hud.fludd) rows.splice(6, 0, ['FLUDD', hud.fludd.yoshi ? 'on his back (riding Yoshi)' : !hud.fludd.present ? 'none' : `${hud.fludd.nozzleName}${hud.fludd.spraying ? ` · spraying, power ${hud.fludd.power}` : ''}`]);
-      rows.forEach(([k, v]) => { const d = document.createElement('div'); const b = document.createElement('b'); b.textContent = k; d.append(b, ' ' + v); hudEl.append(d); });
-      hudEl.hidden = false;
-    } else hudEl.hidden = true;
-
     updateInputDisplay();
     followGhostStage();
     const counts = updateObjects();
-    if (counts && hud) {
-      const parts = [];
-      if (counts.coin) parts.push(`${counts.coin} coin${counts.coin === 1 ? '' : 's'}`);
-      if (counts.coin_red) parts.push(`${counts.coin_red} red`);
-      if (counts.coin_blue) parts.push(`${counts.coin_blue} blue`);
-      if (counts['1up']) parts.push(`${counts['1up']} 1-up`);
-      if (counts.shine) parts.push(`${counts.shine} shine`);
-      const d = document.createElement('div'); const b = document.createElement('b'); b.textContent = 'Got';
-      d.append(b, ' ' + (parts.join(', ') || 'nothing yet'));
-      $('hud').append(d);
+    // The readout, clock, seek bar and splits follow the left view (the comparison view's right
+    // half is posed first, and the left one writes them after it).
+    if (splitNoStage) return;
+    const rows = [];
+    if (hud) {
+      const yawDeg = (((hud.s.yaw % 65536) + 65536) % 65536) / 65536 * 360;
+      rows.push(['X', hud.s.x.toFixed(2)], ['Y', hud.s.y.toFixed(2)], ['Z', hud.s.z.toFixed(2)],
+        ['Yaw', `${Math.round(hud.s.yaw)} (${yawDeg.toFixed(1)}°)`], ['HSpd', hud.hs.toFixed(2)],
+        ['Anim', hud.yoshi ? `riding Yoshi (0x${hud.anim.toString(16).toUpperCase()})` : `${(typeof MARIO_ANIM_NAMES !== 'undefined' && MARIO_ANIM_NAMES[hud.anim]) || 'unnamed'} (0x${hud.anim.toString(16).toUpperCase()})`], ['Area', hud.gap ? 'loading' : hud.seg.routeLabel]);
+      if (hud.fludd) rows.splice(6, 0, ['FLUDD', hud.fludd.yoshi ? 'on his back (riding Yoshi)' : !hud.fludd.present ? 'none' : `${hud.fludd.nozzleName}${hud.fludd.spraying ? ` · spraying, power ${hud.fludd.power}` : ''}`]);
+      if (counts) {
+        const parts = [];
+        if (counts.coin) parts.push(`${counts.coin} coin${counts.coin === 1 ? '' : 's'}`);
+        if (counts.coin_red) parts.push(`${counts.coin_red} red`);
+        if (counts.coin_blue) parts.push(`${counts.coin_blue} blue`);
+        if (counts['1up']) parts.push(`${counts['1up']} 1-up`);
+        if (counts.shine) parts.push(`${counts.shine} shine`);
+        rows.push(['Got', parts.join(', ') || 'nothing yet']);
+      }
     }
-    $('clockNow').textContent = ghostFormatTime(Math.round(t));
-    $('clockSub').textContent = `frame ${Math.floor(t / QF_PER_FRAME)} · ${ghostFormatTime(duration)} total`;
-    $('scrub').max = String(Math.max(1, Math.round(duration)));
+    const hudEl = $('hud'), key = rows.join('\n');
+    if (hudKey !== key) {
+      hudKey = key;
+      hudEl.innerHTML = '';
+      rows.forEach(([k, v]) => { const d = document.createElement('div'); const b = document.createElement('b'); b.textContent = k; d.append(b, ' ' + v); hudEl.append(d); });
+    }
+    setHidden(hudEl, !hud);
+    setText($('clockNow'), ghostFormatTime(Math.round(t)));
+    setText($('clockSub'), `frame ${Math.floor(t / QF_PER_FRAME)} · ${ghostFormatTime(duration)} total`);
+    setMax($('scrub'), Math.max(1, Math.round(duration)));
     drawSplitTicks();
     updateSplitTable();
-    $('scrub').value = String(Math.round(t));
+    setValue($('scrub'), Math.round(t));
   }
 
   // ---------------------------------------------------------------- split comparison
@@ -6067,10 +6280,15 @@ void main() {
   }
 
   // Split endpoints (Moonshine V5+), as dots over the seek bar (the leading ghost's).
-  let splitTickKey = '';
+  // The dots line up with the seek bar, which moves when the buttons beside it come and go or the
+  // page resizes: watched (and placed again then), so the seek bar is measured only when it moved
+  // (a measure is a layout).
+  let splitTickKey = '', splitTickLayout = 0;
+  const splitTickWatch = new ResizeObserver(() => { splitTickLayout++; drawSplitTicks(); });
+  ['rowA', 'tagA', 'backA', 'fwdA', 'scrub', 'clockA'].forEach((id) => splitTickWatch.observe($(id)));
   function drawSplitTicks() {
     const g = leadGhost(), sp = g && g.data.splits || [], box = $('splitTicks'), sc = $('scrub');
-    const key = (g ? g.fileName : '') + '|' + duration + '|' + sp.length + '|' + sc.offsetLeft + '|' + sc.offsetWidth;
+    const key = (g ? g.fileName : '') + '|' + duration + '|' + sp.length + '|' + splitTickLayout;
     if (key === splitTickKey) return;
     splitTickKey = key;
     box.textContent = '';
@@ -6113,17 +6331,17 @@ void main() {
     const home = right ? (onStage ? $('inputsStageB') : $('inputsBox')) : onStage ? $('inputsStage') : $('inputsBox');
     if (el.parentNode !== home) { if (right && !onStage) home.append(el); else home.prepend(el); }
     if (!right) {
-      $('inputsBox').hidden = !$('optInputs').checked || (onStage);
-      $('inputsStage').hidden = !$('optInputs').checked || !onStage || !has;
+      setHidden($('inputsBox'), !$('optInputs').checked || (onStage));
+      setHidden($('inputsStage'), !$('optInputs').checked || !onStage || !has);
       // Side by side: the left view's display sits in its own half.
       $('inputsStage').classList.toggle('splitA', sp && !tall);
       $('inputsStage').classList.toggle('splitTop', tall);
       $('inputsStageB').classList.toggle('splitB', sp && !tall);
-      if (!sp) { $('inputsStageB').hidden = true; if (inputDisplayB && inputDisplayB.parentNode) inputDisplayB.remove(); }
-      $('inputsNone').hidden = has;
-      $('inputsNone').textContent = g ? 'This ghost has no recorded inputs.' : 'Add a ghost to see its inputs.';
-    } else $('inputsStageB').hidden = !$('optInputs').checked || !onStage || !has;
-    if (has) el.removeAttribute('hidden'); else el.setAttribute('hidden', '');
+      if (!sp) { setHidden($('inputsStageB'), true); if (inputDisplayB && inputDisplayB.parentNode) inputDisplayB.remove(); }
+      setHidden($('inputsNone'), has);
+      setText($('inputsNone'), g ? 'This ghost has no recorded inputs.' : 'Add a ghost to see its inputs.');
+    } else setHidden($('inputsStageB'), !$('optInputs').checked || !onStage || !has);
+    if (el.hasAttribute('hidden') === has) el.toggleAttribute('hidden', !has);   // (an svg: no .hidden)
     if (!has) return;
     let lo = 0, hi = inp.count - 1;
     if (t < inp.qf[0]) lo = -1;
@@ -6134,9 +6352,9 @@ void main() {
     const tl = lo < 0 || !inp.trig ? 0 : inp.trig[lo * 2], tr = lo < 0 || !inp.trig ? 0 : inp.trig[lo * 2 + 1];
     Object.entries(IN_BITS).forEach(([id, bit]) => q(id).classList.toggle('on', !!(b & bit)));
     const clamp = (v) => Math.max(-1, Math.min(1, v / 100));
-    q('in_main').setAttribute('cx', 67 + clamp(sx) * 28); q('in_main').setAttribute('cy', 92 - clamp(sy) * 28);
-    q('in_c').setAttribute('cx', 182 + clamp(cx) * 24); q('in_c').setAttribute('cy', 92 - clamp(cy) * 24);
-    const trig = (id, v, digital) => q(id).setAttribute('width', digital ? 108 : Math.min(108, 108 * v / 200));
+    setAttr(q('in_main'), 'cx', 67 + clamp(sx) * 28); setAttr(q('in_main'), 'cy', 92 - clamp(sy) * 28);
+    setAttr(q('in_c'), 'cx', 182 + clamp(cx) * 24); setAttr(q('in_c'), 'cy', 92 - clamp(cy) * 24);
+    const trig = (id, v, digital) => setAttr(q(id), 'width', digital ? 108 : Math.min(108, 108 * v / 200));
     trig('in_Lf', tl, b & 0x40); trig('in_Rf', tr, b & 0x20);
   }
   (() => {
@@ -6296,7 +6514,7 @@ void main() {
   // offset from the left, 0 = both from their start) and its own camera. Each half poses the
   // world at its own time; the stage follows the left ghost.
   // A phone held upright stacks the views; turned on its side (or any wider screen) they sit side by side.
-  function splitTall() { return matchMedia('(orientation: portrait) and (max-width: 760px)').matches; }
+  function splitTall() { return (splitTall.mq || (splitTall.mq = matchMedia('(orientation: portrait) and (max-width: 760px)'))).matches; }
   function splitOn() { return !!(split && ghosts.includes(split.a) && ghosts.includes(split.b)); }
   const camSave = () => ({ p: camera.position.clone(), q: controls.target.clone(), at: gameCam.at && gameCam.at.clone(),
     dist: gameCam.dist, lastT: gameCam.lastT, key: gameCam.key, user: userCamUntil });
@@ -6337,36 +6555,46 @@ void main() {
     });
     if (!ov && $('rowBoth').nextElementSibling !== $('rowA')) $('rowBoth').after($('rowA'));
     if (!ov && $('rowA').nextElementSibling !== $('rowB')) $('rowA').after($('rowB'));
-    $('clockA').hidden = !ov;
+    setHidden($('clockA'), !ov);
     document.body.classList.toggle('tlOverlay', ov);
   }
+  let splitUiKey = '', splitLblKey = '';   // (runs every frame: writes only what changed)
   function splitUi() {
     const on = splitOn();
     placeTimelines(on);
-    $('rowB').hidden = !on; $('tagA').hidden = !on; $('splitLbl').hidden = !on;
-    $('rowBoth').hidden = !on; $('backA').hidden = $('fwdA').hidden = !on;
+    setHidden($('rowB'), !on); setHidden($('tagA'), !on); setHidden($('splitLbl'), !on);
+    setHidden($('rowBoth'), !on); setHidden($('backA'), !on); setHidden($('fwdA'), !on);
     document.body.classList.toggle('splitTall', on && splitTall());
-    $('optSplit').disabled = ghosts.length < 2;
-    if (!on) { if (split && !splitOn()) split = null; $('optSplit').checked = false; return; }
+    if ($('optSplit').disabled !== ghosts.length < 2) $('optSplit').disabled = ghosts.length < 2;
+    if (!on) { if (split && !splitOn()) split = null; $('optSplit').checked = false; splitUiKey = splitLblKey = ''; return; }
     const nm = (g) => g.data.header.name || g.fileName;
-    $('tagA').style.background = split.a.color; $('tagB').style.background = split.b.color;
-    $('lblA').style.setProperty('--c', split.a.color); $('lblB').style.setProperty('--c', split.b.color);
-    const tb = splitTB();
-    $('lblA').textContent = `${nm(split.a)} · ${ghostFormatTime(Math.round(t))}`;
-    $('lblB').textContent = `${nm(split.b)} · ${ghostFormatTime(Math.round(tb))}`;
-    const sd = splitDeltaText();
-    if (sd) {
-      const sp = document.createElement('b');   // (not a span: .splitLbl spans are the positioned labels)
-      sp.className = 'splitDelta ' + (sd.dq > 0 ? 'behind' : 'ahead');
-      sp.textContent = ` · ${fmtDelta(sd.dq)} at split ${sd.k + 1}`;
-      $('lblB').append(sp);
+    const ck = split.a.color + '|' + split.b.color;
+    if (splitUiKey !== ck) {
+      splitUiKey = ck;
+      $('tagA').style.background = split.a.color; $('tagB').style.background = split.b.color;
+      $('lblA').style.setProperty('--c', split.a.color); $('lblB').style.setProperty('--c', split.b.color);
     }
-    $('scrubB').max = String(Math.max(1, Math.round(ghostEnd(split.b))));
-    $('scrubB').value = String(Math.round(tb));
-    $('clockB').textContent = ghostFormatTime(Math.round(tb));
-    $('clockA').textContent = ghostFormatTime(Math.round(t));
-    $('scrubBoth').max = String(Math.max(1, Math.round(duration)));
-    $('scrubBoth').value = String(Math.round(t));
+    const tb = splitTB();
+    setText($('lblA'), `${nm(split.a)} · ${ghostFormatTime(Math.round(t))}`);
+    const sd = splitDeltaText();
+    const lb = `${nm(split.b)} · ${ghostFormatTime(Math.round(tb))}`, dl = sd ? ` · ${fmtDelta(sd.dq)} at split ${sd.k + 1}` : '';
+    const lk = lb + '|' + dl + '|' + (sd && sd.dq > 0);
+    if (splitLblKey !== lk) {
+      splitLblKey = lk;
+      $('lblB').textContent = lb;
+      if (sd) {
+        const sp = document.createElement('b');   // (not a span: .splitLbl spans are the positioned labels)
+        sp.className = 'splitDelta ' + (sd.dq > 0 ? 'behind' : 'ahead');
+        sp.textContent = dl;
+        $('lblB').append(sp);
+      }
+    }
+    setMax($('scrubB'), Math.max(1, Math.round(ghostEnd(split.b))));
+    setValue($('scrubB'), Math.round(tb));
+    setText($('clockB'), ghostFormatTime(Math.round(tb)));
+    setText($('clockA'), ghostFormatTime(Math.round(t)));
+    setMax($('scrubBoth'), Math.max(1, Math.round(duration)));
+    setValue($('scrubBoth'), Math.round(t));
   }
   function renderSplit(dt, now) {
     // Side by side, or one above the other when the stage is taller than wide (a phone upright).

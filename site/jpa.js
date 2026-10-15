@@ -547,10 +547,12 @@ const JPA = (() => {
       this.I.set([a, b, c, a, c, d], this.ni); this.ni += 6;
     }
     end() {
-      const g = this.mesh.geometry;
+      const g = this.mesh.geometry, A = g.attributes, n = this.n;
       g.setDrawRange(0, this.ni);
-      ['position', 'uv', 'c0', 'c1'].forEach((k) => { g.attributes[k].needsUpdate = true; });
-      g.index.needsUpdate = true;
+      if (this.ni) {   // upload only the part written this time (never a count of 0: WebGL reads that as all)
+        [['position', 3], ['uv', 2], ['c0', 4], ['c1', 3]].forEach(([k, w]) => { A[k].updateRange.offset = 0; A[k].updateRange.count = n * w; A[k].needsUpdate = true; });
+        g.index.updateRange.offset = 0; g.index.updateRange.count = this.ni; g.index.needsUpdate = true;
+      }
       this.mesh.visible = this.ni > 0;
     }
     // JPADraw::drawParticle for one emitter. V: the camera's view matrix elements.
