@@ -752,9 +752,13 @@ def walk_anim(arc: dict, model_path: str, model: bmd.Model, words=None):
     return None
 
 
-def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict, idle: dict | None = None) -> None:
+def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict, idle: dict | None = None,
+                btk_anim: dict | None = None) -> None:
     """A skinned library model (bind pose, joints "<name>_j<i>") with its walking animation in
-    the scene's extras (anims[name]: BCK tracks, as the viewer's Mario rig uses them)."""
+    the scene's extras (anims[name]: BCK tracks, as the viewer's Mario rig uses them).
+    btk_anim: a parsed .btk whose texture matrices the viewer drives itself (gxTev texgen
+    "anim" with "manual": the object sets the frame, not the clock)."""
+    tex_anims = {(an["mat"], an["tm"]): {**an, "duration": btk_anim["duration"]} for an in btk_anim["anims"]} if btk_anim else None
     holder = {"name": name, "children": []}
     w.gltf["nodes"].append(holder)
     hi = len(w.gltf["nodes"]) - 1
@@ -777,7 +781,11 @@ def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict, idle: dic
     skin = len(w.gltf["skins"]) - 1
     for mesh in model.meshes:
         mat = model.materials[mesh["material"]] if 0 <= mesh["material"] < len(model.materials) else None
-        mi, entry = material_for(w, model, mat, name, gx=True)
+        mi, entry = material_for(w, model, mat, name, gx=True, anims=tex_anims)
+        if tex_anims:
+            for g in (w.gltf["materials"][mi].get("extras", {}).get("gxTev") or {}).get("gen") or []:
+                if g and g.get("anim"):
+                    g["anim"]["manual"] = 1
         uv = uv_for(mesh, entry) if entry is not None else None
         color = mesh.get("color") if mat is not None and (mat.use_vertex_color or any(c and (c[1] == 1 or c[5] == 1) for c in (mat.gx or {}).get("chans") or [])) else None
         n = len(mesh["pos"])
@@ -790,7 +798,7 @@ def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict, idle: dic
         weights /= np.maximum(weights.sum(1, keepdims=True), 1e-6)
         _add_mesh(w, f"{name}_s{mesh['shape']}", mesh["pos"], mesh["tris"], mi, uv, color, joints, weights, normal=mesh.get("nrm"))
         prim = w.gltf["meshes"][-1]["primitives"][0]
-        for k, v in (gx_tev_uvs(mesh, mat) if mat is not None and mat.lit else {}).items():
+        for k, v in (gx_tev_uvs(mesh, mat, tex_anims) if mat is not None and mat.lit else {}).items():
             prim["attributes"][k] = w.accessor(np.ascontiguousarray(v, np.float32), "VEC2", 5126, 34962)
         node = w.gltf["nodes"].pop()
         w.gltf["scenes"][0]["nodes"].pop()
@@ -801,6 +809,142 @@ def add_skinned(w: GlbWriter, model: bmd.Model, name: str, anim: dict, idle: dic
     anims[name] = anim
     if idle is not None:   # a walker's idle, for when it waits (birds on their perch)
         anims[name + "~idle"] = idle
+
+
+def parse_btp(data: bytes) -> dict | None:
+    """J3D texture pattern animation (.btp, TPT1): per material texmap, the TEX1 index each frame."""
+    if data[:8] != b"J3D1btp1":
+        return None
+    o = 0x20
+    while o < len(data) and data[o:o + 4] != b"TPT1":
+        o += struct.unpack_from(">I", data, o + 4)[0]
+    c = data[o:]
+    loop, dur, n = c[8], struct.unpack_from(">H", c, 0x0A)[0], struct.unpack_from(">H", c, 0x0C)[0]
+    tab_o, idx_o, _mat_o, names_o = struct.unpack_from(">IIII", c, 0x10)
+    names = [btk._names(c, names_o)[i] for i in range(n)]
+    anims = []
+    for i in range(n):
+        cnt, first = struct.unpack_from(">HH", c, tab_o + i * 8)
+        anims.append({"mat": names[i], "tm": c[tab_o + i * 8 + 4],
+                      "t": [struct.unpack_from(">H", c, idx_o + (first + k) * 2)[0] for k in range(cnt)]})
+    return {"d": dur, "l": loop, "anims": anims}
+
+
+# Gooper Blooper (TBossGesso, src/Enemy/bossgesso.cpp in the decomp). Its TMActorKeeper loads every
+# animation in /scene/bgeso, numbered in the folder's order (MActorAnmData::init), and the code
+# picks them by number: changeBck(25) is bgeso_wait, setBtpFromIndex(2) bgeso_twait and so on.
+# TBGTentacle draws bgeso_hand along a spline through its six nodes and steers them with the
+# invisible bgeso_shand; TBGCork is the plug in its mouth (bgeso_kolk, then bgeso_kolk_break);
+# TBGPolDrop the goop ball it spits (bgeso_osenball_white is what's drawn; bgeso_osenball and
+# bgeso_dirty_white are only stamped into the goop, which the viewer doesn't change).
+GESSO_DIR = "bgeso/"
+
+
+def gesso_files(arc: dict, ext: str) -> list[str]:
+    return [k for k in arc if k.startswith(GESSO_DIR) and k.count("/") == 1 and k.endswith(ext)]
+
+
+def gesso_anims(arc: dict) -> dict:
+    """objects/bgeso.json: the folder's BCK / BTP / BTK by MActor index, and bgeso_shand's skeleton."""
+    def skel(name):
+        m = bmd.parse(arc[GESSO_DIR + name + ".bmd"], decode_textures=False)
+        return {"parent": list(m.joint_parent),
+                "trs": [[[round(float(v), 5) for v in part] for part in trs] for trs in m.joint_trs]}
+    out = {"bck": [], "names": [], "btp": [parse_btp(arc[k]) for k in gesso_files(arc, ".btp")],
+           "btk": [btk.parse(arc[k]) for k in gesso_files(arc, ".btk")],
+           "shand": skel("bgeso_shand"), "body": skel("bgeso_body")}
+    for k in gesso_files(arc, ".bck"):
+        a = parse_bck(arc[k])
+        out["names"].append(k.split("/")[-1][:-4])
+        # (bgeso_body_fly is the 44-joint body of nothing here, and bgeso_dirty_osen moves the
+        # goop stamp: neither is ever drawn)
+        out["bck"].append(None if k.endswith(("bgeso_body_fly.bck", "bgeso_dirty_osen.bck")) else a)
+    return out
+
+
+def gesso_body(w: GlbWriter, lib: dict, arc: dict) -> int:
+    """The body, skinned, with bgeso_hit.btk's texture matrix left to the viewer (TNerveBGBeakDamage
+    plays it once; it stays on its first frame afterwards) and the eye's other textures for the BTPs
+    (extras.texAlt on _mat_eye: the sampler slot of texmap 0 and glTF texture by TEX1 index)."""
+    raw = arc[GESSO_DIR + "bgeso_body.bmd"]
+    key = "bgbody:" + hashlib.sha1(raw).hexdigest()
+    if key in lib:
+        return lib[key]
+    idx = len(lib)
+    lib[key] = idx
+    try:
+        model = bmd.parse(raw)
+        hit = btk.parse(arc[GESSO_DIR + "bgeso_hit.btk"]) if GESSO_DIR + "bgeso_hit.btk" in arc else None
+        add_skinned(w, model, f"m{idx}", parse_bck(arc[GESSO_DIR + "bgeso_wait2.bck"]), btk_anim=hit)
+        eye = next((m for m in model.materials if m.name == "_mat_eye"), None)
+        if eye is not None and eye.gx:
+            texnos, slots = eye.gx["texnos"], []
+            for _tc, tm in eye.gx["orders"]:
+                if tm < 8 and texnos[tm] >= 0 and tm not in slots:
+                    slots.append(tm)
+            alt = {}
+            for ti in sorted({v for b in gesso_files(arc, ".btp") for a in parse_btp(arc[b])["anims"] for v in a["t"]}):
+                tx = model.textures[ti] if ti < len(model.textures) else None
+                if tx is None or tx[1] is None:
+                    continue
+                ref = w.texture_rgba(f"tex:{tx[0]}:{hashlib.sha1(tx[1].tobytes()).hexdigest()[:10]}", tx[1], tx[2], tx[3])
+                if ref:
+                    alt[str(ti)] = ref[0]
+            for m in w.gltf["materials"]:
+                if m.get("name", "") == f"m{idx} _mat_eye" and 0 in slots:
+                    m.setdefault("extras", {})["texAlt"] = {"slot": slots.index(0), "idx": alt}
+    except Exception as exc:
+        print("  skip Gooper Blooper body", exc)
+        lib[key] = -1
+    return lib[key]
+
+
+def gesso_part(w: GlbWriter, lib: dict, arc: dict, name: str, skinned_bck: str | None = None) -> int:
+    """One of Gooper Blooper's other models: skinned (with a BCK of its own, "" for none: the viewer
+    sets its joints itself) or static."""
+    path = GESSO_DIR + name + ".bmd"
+    if path not in arc:
+        return -1
+    key = "bgpart:" + name + ":" + hashlib.sha1(arc[path]).hexdigest()
+    if key in lib:
+        return lib[key]
+    idx = len(lib)
+    lib[key] = idx
+    try:
+        model = bmd.parse(arc[path])
+        if skinned_bck is not None:
+            anim = parse_bck(arc[GESSO_DIR + skinned_bck + ".bck"]) if skinned_bck else {"d": 1, "l": 0, "j": []}
+            add_skinned(w, model, f"m{idx}", anim)
+        else:
+            add_models(w, [model], f"m{idx}")
+    except Exception as exc:
+        print("  skip Gooper Blooper part", name, exc)
+        lib[key] = -1
+    return lib[key]
+
+
+# TBossGessoParams and TBGTentacle::TTentacleParams defaults (the stage's /map/params file first,
+# then params.szs, TParams::load); /enemy/tentacle.prm exists in neither.
+GESSO_TENTACLE = {"mNodeLength": 130.0, "mNodeLenLimit": 1000.0, "mTotalLenLimit": 800.0, "mSpeedProp": 1.4,
+                  "mInertiaProp": 0.6, "mReflectProp": 0.1, "mSpeedMax": 50.0, "mVibrationForce": 6.0,
+                  "mVibrationSpeed": 3.0, "mDamagePropF": 4.0, "mDamagePropS": 2.0, "mDamageCountMax": 256,
+                  "mDamageReflectProp": 1.5, "mDamageNodeLength": 100.0, "mAttackRadius": 80.0,
+                  "mAttackHeight": 120.0, "mDamageRadius": 150.0, "mDamageHeight": 200.0, "mAtkSoundTime": 120.0}
+
+
+def gesso_extra(w: GlbWriter, lib: dict, arc: dict) -> dict:
+    prm_raw = arc.get("map/params/enemy/bossgesso.prm")
+    params = prm.parse(prm_raw) if prm_raw else global_params("enemy/bossgesso.prm")
+    tent = dict(GESSO_TENTACLE)
+    traw = arc.get("map/params/enemy/tentacle.prm")
+    tent.update(prm.parse(traw) if traw else global_params("enemy/tentacle.prm"))
+    return {"anims": "objects/bgeso.json",
+            "hand": gesso_part(w, lib, arc, "bgeso_hand", ""),   # (joints from its spline: TBGTentacleMtxCalc)
+            "kolk": gesso_part(w, lib, arc, "bgeso_kolk"),
+            "kolkBreak": gesso_part(w, lib, arc, "bgeso_kolk_break", "bgeso_kolk_break"),
+            "ball": gesso_part(w, lib, arc, "bgeso_osenball_white"),
+            "prm": {k: round(v, 5) if isinstance(v, float) else v for k, v in params.items()},
+            "tprm": tent}
 
 
 def add_models(w: GlbWriter, models, name: str) -> None:
@@ -862,6 +1006,9 @@ def add_goop(w: GlbWriter, raw: bytes, img, anim: bytes | None, name: str) -> No
     del roots[s0:]
     w.gltf["nodes"].append({"name": name, "children": kids})
     roots.append(len(w.gltf["nodes"]) - 1)
+
+
+WRITTEN: set = set()   # shared files this run has written
 
 
 def lib_add(w: GlbWriter, lib: dict, key: str, build) -> int:
@@ -1056,6 +1203,13 @@ def main(argv):
                         mv = {"orbit": o["orbit"]}
                     if mv:
                         extra = {**(extra or {}), **mv}
+                elif typ == "BossGesso" and GESSO_DIR + "bgeso_body.bmd" in arc:
+                    sk = gesso_body(w, lib, arc)
+                    if sk >= 0:
+                        extra = {**(extra or {}), "skin": sk, "ar": 2.0, "bg": gesso_extra(w, lib, arc)}
+                        if "bgeso.json" not in WRITTEN:   # (the same in every scene that has it)
+                            (site / "objects" / "bgeso.json").write_text(json.dumps(gesso_anims(arc), separators=(",", ":")))
+                            WRITTEN.add("bgeso.json")
                 elif mpath and is_spine(o["payload"]):
                     # Enemies, NPCs and animals: walkers walk their graph playing their walking
                     # animation; the rest stand where they were placed playing their idle one.

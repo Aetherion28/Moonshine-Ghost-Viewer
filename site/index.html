@@ -414,6 +414,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
 <script src="shine_get.js"></script>
 <script src="jpa_data.js"></script>
 <script src="jpa.js"></script>
+<script src="gesso.js"></script>
 <script>
 (() => {
   const QF_PER_FRAME = 4;
@@ -613,8 +614,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     sh.uniforms.gxR = { value: (m.gxRegs || T.regs).map(v4) };
     m.gxRU = sh.uniforms.gxR;   // kept so animated registers (.brk) can change it every frame
     sh.uniforms.gxK = { value: (m.gxKRegs || T.k).map(v4) };
+    m.gxKU = sh.uniforms.gxK;   // (and these: for objects that change them as they go, e.g. Gooper Blooper)
     const texs = m.gxTevTex || [];
     texs.forEach((tx, i) => { sh.uniforms['gxTex' + i] = { value: tx }; });
+    m.gxTexU = texs.map((tx, i) => sh.uniforms['gxTex' + i]);
     const gens = T.gen || [];
     let vs = 'uniform vec3 gxLightPos;\nuniform vec3 gxLightCol;\nuniform vec3 gxAmbCol;\nuniform vec4 gxMatC[2];\nuniform vec4 gxAmbC[2];\n'
       + 'varying vec4 vGxC0;\nvarying vec4 vGxC1;\nvarying vec3 vGxN;\n';
@@ -627,7 +630,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         m.gxTmU = m.gxTmU || {};
         m.gxTmU[j] = m.gxTmU[j] || { value: new THREE.Matrix3() };
         sh.uniforms['gxTm' + j] = m.gxTmU[j];
-        if (!GX_ANIM_MATS.includes(m)) GX_ANIM_MATS.push(m);
+        if (!g.anim.manual && !GX_ANIM_MATS.includes(m)) GX_ANIM_MATS.push(m);   // (manual: its object sets the frame)
       }
     });
     let vbody = `
@@ -745,6 +748,23 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       } catch (e) { m.gxTevTex = null; }
     }));
   }
+  // A material's other textures for a texture-pattern animation (extras.texAlt: its sampler
+  // slot and the glTF texture for each TEX1 index it shows, e.g. Gooper Blooper's eyes).
+  async function gxAltTextures(gltf) {
+    const mats = [];
+    gltf.scene.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => { if (m.userData.texAlt && !mats.includes(m)) mats.push(m); }); });
+    await Promise.all(mats.map(async (m) => {
+      const out = {};
+      await Promise.all(Object.entries(m.userData.texAlt.idx).map(async ([ti, i]) => {
+        try {
+          let tx = await gltf.parser.getDependency('texture', i);
+          if (tx.encoding !== THREE.LinearEncoding) { tx = tx.clone(); tx.encoding = THREE.LinearEncoding; tx.needsUpdate = true; }
+          out[ti] = tx;
+        } catch (e) { /* (that one stays as it is) */ }
+      }));
+      m.texAltTex = out;
+    }));
+  }
   // GX samples textures as stored and the frame is shown as is, so texels go through untouched:
   // GLTFLoader marks base colour textures sRGB (decoded darker and more saturated), undone here.
   // (Checked against a Dolphin recording: a secret course's wood planks keep the texture's hue.)
@@ -774,6 +794,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     n.name = m.name; n.userData = m.userData; n.skinning = m.skinning; n.onBeforeCompile = gxClamp; n.customProgramCacheKey = gxCacheKey;
     if (m.gxEnvTex) n.gxEnvTex = m.gxEnvTex;
     if (m.userData.gxTev && m.gxTevTex) { n.gxTevTex = m.gxTevTex; gxTevSetup(n); }
+    if (m.texAltTex) n.texAltTex = m.texAltTex;
     return n;
   }
   // Point a model's lit materials at a light set (materials are per placed object after cloning).
@@ -805,6 +826,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (src.onBeforeCompile === gxClamp) { this.onBeforeCompile = gxClamp; this.customProgramCacheKey = gxCacheKey; if (src.gxEnvTex) this.gxEnvTex = src.gxEnvTex; }
     if (src.onBeforeCompile === gxTevCompile) {
       this.onBeforeCompile = gxTevCompile; this.customProgramCacheKey = gxTevKey; this.gxTevTex = src.gxTevTex;
+      if (src.texAltTex) this.texAltTex = src.texAltTex;
       if (src.gxRegs) this.gxRegs = src.gxRegs.map((r) => r.slice());
       if (src.gxMatC) this.gxMatC = src.gxMatC.map((r) => r.slice());
       if (src.gxKRegs) this.gxKRegs = src.gxKRegs.map((r) => r.slice());
@@ -1238,7 +1260,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!lib) {
       lib = fetchBinary(info.lib).then((buf) => new Promise((res, rej) => new THREE.GLTFLoader().parse(buf, '', async (g) => {
         rawTextures(g);
-        await gxEnvTextures(g); await gxTevTextures(g); gxLight(g.scene); res(g.scene);
+        await gxEnvTextures(g); await gxTevTextures(g); await gxAltTextures(g); gxLight(g.scene); res(g.scene);
       }, rej)));
       objLibCache.set(info.lib, lib);
     }
@@ -1324,6 +1346,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           [pk, ...links].forEach((o) => { if (o) { o.matrixAutoUpdate = false; group.add(o); } });
           node.userData.bw = { ...ex.bw, pkNode: pk, links, graph: ex.bw.g && data.g ? data.g[ex.bw.g] : null, start: [px, py, pz], ry: ry * D, sim: null };
         }
+        if (ex.bg && typeof GessoSim !== 'undefined') setupGesso(node, ex, protos, group, px, py, pz, ry);   // Gooper Blooper (placed each frame by placeGesso)
         node.userData.pick = pick;
         node.userData.spin = /^(coin|shine)/.test(pick);
         node.userData.faceCam = /^shine/.test(pick);   // shines: the glow card faces the camera
@@ -1900,6 +1923,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     Object.entries(holdRuns(d, a, e)).forEach(([att, list]) => {
       const desc = d.attachments[att - 1];
       if (isPicket(desc)) return;   // the Chain Chomp's stake: placeChomp moves it
+      if (desc && GS_HELD[desc.objectId]) return;   // Gooper Blooper's tentacles and beak: placeGesso draws them
       const dynDef = desc && objDyn[desc.objectId.toString(16).padStart(8, '0')];
       if (dynDef) {   // spawned at run time (bombs): every hold is a different actor
         list.forEach((r) => plan.dyn.push({ def: dynDef, hold: mk(r) }));
@@ -2488,7 +2512,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   }
   function updateWalkers() {
     objNodes.forEach((node) => {
-      if (node.userData.bw) placeChomp(node, idleClock / QF_PER_FRAME);
+      if (node.userData.bg) placeGesso(node, idleClock / QF_PER_FRAME);
+      else if (node.userData.bw) placeChomp(node, idleClock / QF_PER_FRAME);
       else if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME);
       else if (node.userData.rig) poseRig(node, idleClock / QF_PER_FRAME);
     });
@@ -3798,6 +3823,176 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (!rg || camera.position.distanceToSquared(node.position) > 9000 * 9000) return;
     poseBck(rg.bones, rg.anim, Math.max(0, f) * rg.ar + (node.userData.walk ? 0 : rg.phase));
   }
+
+  // ---------------------------------------------------------------- Gooper Blooper
+  // TBossGesso: gesso.js works his fight out from the ghost; this draws it the way the game does:
+  // his body on its joints (bodyMatrices, the same joints his tentacles hang from), the four
+  // tentacles (bgeso_hand along each one's spline: handMatrices), the cork in his mouth (TBGCork:
+  // from his first beak hit its pieces, bgeso_kolk_break, which the game leaves at the stage's
+  // origin), the goop ball (TBGPolDrop), his eyes (the BTP's texture), the goop on his face (TEV
+  // konst colour 0's alpha: washed off by water on his face, back when he goops himself up again)
+  // and bgeso_hit.btk (TNerveBGBeakDamage).
+  let GESSO_ANIMS = null, gessoAnimsP = null;
+  function loadGessoAnims(url) {
+    if (!gessoAnimsP) gessoAnimsP = fetch(url, { cache: 'no-cache' }).then((r) => r.json()).then((a) => { GESSO_ANIMS = a; update(); }).catch(() => { gessoAnimsP = null; });
+    return gessoAnimsP;
+  }
+  const GS_HELD = { 0x08000006: 'tentacle', 0x08000008: 'beak' };   // TBGTakeHit, TBGBeakHit (actor types)
+  // A skinned clone's joints moved straight under its root, so their matrices are set as world ones.
+  function flatBones(root, prefix) {
+    const bones = [], re = new RegExp('^' + prefix + '_j(\\d+)$');
+    root.traverse((o) => { const m = re.exec(o.name || ''); if (m) bones[+m[1]] = o; });
+    bones.forEach((b) => { if (b) { root.add(b); b.matrixAutoUpdate = false; } });
+    root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); root.scale.set(1, 1, 1);
+    root.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
+    return bones;
+  }
+  const setM34 = (m4, w) => m4.set(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], 0, 0, 0, 1);
+  const _gsM = new THREE.Matrix4(), _gsN = new THREE.Matrix4(), _gsE = new THREE.Euler(0, 0, 0, 'ZYX'), _gsQ = new THREE.Quaternion(), _gsP = new THREE.Vector3(), _gsS = new THREE.Vector3(1, 1, 1);
+  function setupGesso(node, ex, protos, group, px, py, pz, ry) {
+    const bg = node.userData.bg = { ...ex.bg, sims: new Map(), start: [px, py, pz], ry, hands: [], parts: [],
+      W: Array.from({ length: 51 }, () => GessoSim.m34()), H: Array.from({ length: 17 }, () => GessoSim.m34()), nodes: new Float64Array(18) };
+    bg.bones = node.userData.skin !== undefined ? flatBones(node, 'm' + node.userData.skin) : [];
+    node.userData.rig = null;   // (posed by placeGesso)
+    for (let i = 0; i < 4 && protos[ex.bg.hand]; i++) {
+      const h = THREE.SkeletonUtils.clone(protos[ex.bg.hand]);
+      bg.hands.push({ node: h, bones: flatBones(h, 'm' + ex.bg.hand) });
+      group.add(h); bg.parts.push(h);
+    }
+    if (protos[ex.bg.kolk]) { bg.kolk = protos[ex.bg.kolk].clone(true); bg.kolk.matrixAutoUpdate = false; group.add(bg.kolk); bg.parts.push(bg.kolk); }
+    if (protos[ex.bg.kolkBreak]) {
+      const kb = THREE.SkeletonUtils.clone(protos[ex.bg.kolkBreak]), bones = [], re = new RegExp('^m' + ex.bg.kolkBreak + '_j(\\d+)$');
+      kb.traverse((o) => { const m = re.exec(o.name || ''); if (m) bones[+m[1]] = o; if (o.isMesh) o.frustumCulled = false; });
+      bg.kolkBreak = { node: kb, bones };
+      group.add(kb); bg.parts.push(kb);
+    }
+    if (protos[ex.bg.ball]) { bg.ball = protos[ex.bg.ball].clone(true); bg.ball.matrixAutoUpdate = false; group.add(bg.ball); bg.parts.push(bg.ball); }
+    bg.parts.forEach((p) => { p.visible = false; p.traverse((o) => { if (o.isMesh) { o.material = [].concat(o.material).map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; }); if (o.material.length === 1) o.material = o.material[0]; } }); });
+    loadGessoAnims(ex.bg.anims);
+  }
+  // Mario at frame k of this visit, as gesso.js wants him: where, facing (degrees), on the floor,
+  // and what he holds of Gooper's (the take hit's / beak's actor type in the attachment table).
+  function gessoMario(g, base, frames) {
+    const d = g.data, cache = [];
+    return (k) => {
+      if (k < 0) k = 0;
+      if (k >= frames) return null;
+      if (cache[k] !== undefined) return cache[k];
+      const s = ghostSampleAt(d, base + k * QF_PER_FRAME);
+      let out = null;
+      if (!s.gap) {
+        const h = d.held ? d.held[s.i] : 0, at = h && h !== 15 ? d.attachments[h - 1] : null;
+        out = { x: s.x, y: s.y, z: s.z, yaw: s.yaw / 32768 * 180, ground: s.y - groundY(s.x, s.y + 50, s.z) < 4, roof: false,
+          held: at ? GS_HELD[at.objectId] || 'other' : 0 };
+      }
+      cache[k] = out;
+      return out;
+    };
+  }
+  function gessoSim(node, g, base) {
+    const bg = node.userData.bg, here = objectsKey.split('|').pop(), [area, ep] = here.split(':').map(Number), C = activeCol();
+    let key = 'idle|' + here + '|' + (C ? 1 : 0), mario = null, frames = 0;
+    if (g && base !== undefined) {
+      const d = g.data, seg = d.segments.find((sg) => Math.abs(sg.startQf - d.header.startQf - base) < 1 && `${sg.route.area}:${sg.route.episode}` === here);
+      frames = seg ? Math.floor((seg.endQf - seg.startQf) / QF_PER_FRAME) + 1 : 1;
+      key = (g.fileName || '') + '|' + base + '|' + here + '|' + (C ? 1 : 0);
+      mario = gessoMario(g, base, frames);
+    }
+    let sim = bg.sims.get(key);
+    if (!sim) {
+      sim = GessoSim.create({ anims: GESSO_ANIMS, prm: bg.prm, tprm: bg.tprm, pos: bg.start, ry: bg.ry, map: area, stage: ep,
+        frames, keep: mario ? 0 : 8, container: area === 3 && ep === 0, mario: mario || (() => null),
+        ground: (x, y, z) => groundY(x, y, z), wall: (x, y, z, r) => (C ? colWallPush(C, x, y, z, r) : null) });
+      if (bg.sims.size >= 8) bg.sims.delete(bg.sims.keys().next().value);
+      bg.sims.set(key, sim);
+    }
+    return sim;
+  }
+  function placeGesso(node, f, g, base) {
+    const bg = node.userData.bg, A = GESSO_ANIMS;
+    if (!A || typeof GessoSim === 'undefined') { node.visible = false; bg.parts.forEach((p) => { p.visible = false; }); return; }
+    const sim = gessoSim(node, g, base);
+    if (!g) { if (sim.f0 === undefined) sim.f0 = Math.floor(f); f = Math.max(0, f - sim.f0); }   // (idle: from when it was first shown)
+    const k = Math.max(0, Math.floor(f)), u = Math.min(1, Math.max(0, f - k));
+    const a = objStillDo(() => GessoSim.runTo(sim, k)), b = objStillDo(() => GessoSim.runTo(sim, k + 1));
+    // (light: the set of the floor under him, as his body has)
+    if (bg.lit !== node.userData.gxKey) { const set = gxSet('object', lightSetAt(bg.start[0], bg.start[1], bg.start[2])); bg.parts.forEach((p) => gxApply(p, set)); bg.lit = node.userData.gxKey; }
+    gessoDraw(node, bg, A, a, b === a ? a : b, b === a ? 0 : u);
+  }
+  function gessoDraw(node, bg, A, a, b, u) {
+    const fl = a[20], dead = fl & 1, cont = fl & 2, lp = (i) => a[i] + (b[i] - a[i]) * u;
+    const dy = ((b[4] - a[4]) % 360 + 540) % 360 - 180;
+    const st = { pos: [lp(0), lp(1), lp(2)], rot: [a[3], a[4] + dy * u, a[5]], fly: fl & 4 ? [a[22], a[23], a[24]] : null,
+      idx: a[6], f: a[6] === b[6] && b[7] >= a[7] ? lp(7) : a[7], oldIdx: a[8], oldF: a[9], ratio: a[8] === b[8] ? lp(10) : a[10],
+      beak: a[16] ? [lp(17), lp(18), lp(19)] : null };
+    node.visible = !dead && !cont;
+    const W = GessoSim.bodyMatrices(A, st, bg.W);
+    if (node.visible) {
+      bg.bones.forEach((bn, j) => { if (bn) { setM34(bn.matrix, W[j]); bn.matrixWorldNeedsUpdate = true; } });
+      gessoMaterials(node, bg, A, a);
+    }
+    // The tentacles (in the container, only the one sticking out; none once he's gone)
+    bg.hands.forEach((h, i) => {
+      const o = GessoSim.REC_T + i * GessoSim.REC_TN;
+      h.node.visible = !dead && a[o + 1] > 0;
+      if (!h.node.visible) return;
+      for (let n = 0; n < 18; n++) bg.nodes[n] = a[o + 4 + n] + (b[o + 4 + n] - a[o + 4 + n]) * u;
+      GessoSim.handMatrices(bg.nodes, a[o + 2], a[o], 17, bg.H, bg.spline || (bg.spline = new GessoSim.Spline(6)));
+      h.bones.forEach((bn, j) => { if (bn) { setM34(bn.matrix, bg.H[j]); bn.matrixWorldNeedsUpdate = true; } });
+    });
+    // The cork on the end of his mouth (eff_mouth), its pieces once crushed
+    if (bg.kolk) { bg.kolk.visible = !dead && !cont && !(fl & 8); if (bg.kolk.visible) { setM34(bg.kolk.matrix, W[27]); bg.kolk.matrixWorldNeedsUpdate = true; } }
+    if (bg.kolkBreak) {
+      bg.kolkBreak.node.visible = !dead && !cont && !!(fl & 8);
+      if (bg.kolkBreak.node.visible && A.bck[GessoSim.BCK.kolkBreak]) poseBck(bg.kolkBreak.bones, A.bck[GessoSim.BCK.kolkBreak], a[21]);
+    }
+    // The goop ball: flying, facing where it goes (stood up: RotX -90); landed, the splat
+    if (bg.ball) {
+      const o = GessoSim.REC_T + 4 * GessoSim.REC_TN, pst = a[o], an = a[o + 7] >= 0 ? A.bck[a[o + 7]] : null;
+      bg.ball.visible = !dead && pst > 0;
+      if (bg.ball.visible) {
+        if (pst === 1) {
+          const v = [a[o + 4], a[o + 5], a[o + 6]], l = Math.hypot(v[0], v[1], v[2]) || 1, yy = v[1] / l;
+          _gsE.set(-Math.asin(Math.max(-1, Math.min(1, yy))), v[2] === 0 && v[0] === 0 ? 0 : Math.atan2(v[0], v[2]), 0, 'ZYX');
+          _gsN.compose(_gsP.set(a[o + 1], a[o + 2], a[o + 3]), _gsQ.setFromEuler(_gsE), _gsS.set(1, 1, 1)).multiply(_gsM.makeRotationX(-Math.PI / 2));
+        } else _gsN.makeTranslation(a[o + 1], a[o + 2], a[o + 3]);
+        if (an) _gsN.multiply(bckJoint(an.j[0], a[o + 8], _gsM));
+        bg.ball.matrix.copy(_gsN); bg.ball.matrixWorldNeedsUpdate = true;
+      }
+    }
+  }
+  // His eyes (BTP: TEX1 index by frame on _mat_eye's texmap 0), the goop on his face (_mat_body's
+  // KCOLOR0 = unk190: alpha 230 gooped up, 0 clean) and bgeso_hit.btk on _mat_body's texture
+  // matrix 1 (from the first beak hit on; the material's own until then).
+  function gessoMaterials(node, bg, A, a) {
+    if (!bg.mats) {
+      bg.mats = { eye: [], body: [] };
+      node.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => {
+        if (/_mat_eye$/.test(m.name || '') && m.userData.texAlt) { bg.mats.eye.push(m); if (m.gxTevTex) m.gxTevTex = m.gxTevTex.slice(); }   // (its own: the eye changes)
+        if (/_mat_body$/.test(m.name || '') && m.userData.gxTev) bg.mats.body.push(m);
+      }); });
+    }
+    const tp = a[11] >= 0 ? A.btp[a[11]] : null, tt = tp && tp.anims[0] ? tp.anims[0].t : null;
+    const ti = tt ? tt[Math.max(0, Math.min(tt.length - 1, Math.floor(a[12])))] : -1;
+    bg.mats.eye.forEach((m) => {
+      const tx = ti >= 0 && m.texAltTex ? m.texAltTex[ti] : null, slot = m.userData.texAlt.slot;
+      if (!tx || !m.gxTevTex || m.gxTevTex[slot] === tx) return;
+      m.gxTevTex[slot] = tx;
+      if (m.gxTexU && m.gxTexU[slot]) m.gxTexU[slot].value = tx;
+    });
+    const al = a[15] / 255;
+    bg.mats.body.forEach((m) => {
+      if (!m.gxKRegs) m.gxKRegs = m.userData.gxTev.k.map((r) => r.slice());
+      m.gxKRegs[0] = [0, 0, 0, al];
+      if (m.gxKU) m.gxKU.value[0].set(0, 0, 0, al);
+      const gens = m.userData.gxTev.gen || [];
+      if (m.gxTmU) gens.forEach((gn, j) => {
+        if (!gn || !gn.anim || !m.gxTmU[j]) return;
+        if (a[13]) btkMatrix(gn.anim, a[14], m.gxTmU[j].value);
+        else m.gxTmU[j].value.identity();
+      });
+    });
+  }
   function poseBck(bones, anim, f) {
     const fr = ((f % anim.d) + anim.d) % anim.d;
     for (let i = 0; i < bones.length && i < anim.j.length; i++) {
@@ -4467,6 +4662,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       const b = node.userData.base;
       lightSet(node);
       if (node.userData.bw) return;   // (placed above)
+      if (node.userData.bg) { const wc = walkClock(g, t); placeGesso(node, wc / QF_PER_FRAME, ghosts.length ? g : null, t - wc); return; }
       if (node.userData.carry) {
         const holds = plan ? plan.placed.get(i) : null;
         const st = holds ? carryState(node, holds, t) : { pos: b.p, shrink: 0 };

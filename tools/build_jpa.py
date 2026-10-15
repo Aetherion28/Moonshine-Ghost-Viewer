@@ -5,9 +5,11 @@ following JSystem/JParticle's loaders) and its textures as raw RGBA (base64), de
 reads them (I: intensity in all four channels, IA: intensity in RGB, alpha in A). Raw rather than
 PNG so the browser can't premultiply away colour under zero alpha (the indirect texture uses both).
 
-The Chain Chomp's effects come from its stage archive (Pianta 4's monte1.szs, bwanwan/jpa/).
+The Chain Chomp's effects come from its stage archive (Pianta 4's monte1.szs, bwanwan/jpa/),
+Gooper Blooper's from his (Ricco's, bgeso/jpa/): those go to their own file, loaded only where he is
+(objects/bgeso_jpa.js, adding to JPA_RES).
 
-usage: build_jpa.py <particle.szs> <out.js> [<monte1.szs>]
+usage: build_jpa.py <particle.szs> <out.js> [<monte1.szs> [<ricco8.szs> <bgeso_jpa.js>]]
 """
 import base64
 import json
@@ -31,13 +33,14 @@ EFFECTS = {
 BW_EFFECTS = {f"bw_{n}": f"bwanwan/jpa/ms_bwan_{n}.jpa" for n in
               ("hityuge", "downyuge", "deadyuge", "kira", "jump_rock", "jump_smoke", "hibana", "yugami")}
 
+# TBossGessoManager::initJParticle (bossgesso.cpp): /scene/bgeso/jpa/ms_boge_*.jpa.
+BG_EFFECTS = {f"bg_{n}": f"bgeso/jpa/ms_boge_{n}.jpa" for n in
+              ("attack_a", "attack_b", "attack_c", "attack_d", "blur", "blur_f", "blur_j", "canon_a", "canon_b",
+               "damage_a", "damage_b", "hit_a", "hit_b", "hit_c", "hitdown", "jump", "kizetsu", "kizetsu_r",
+               "odanhit_a", "odanhit_b", "osen", "ase", "namida", "kiseki", "wash")}
 
-def main(szs, out, stage=None):
-    arc = rarc_files(yaz0_decompress(open(szs, "rb").read()))
-    todo = [(k, arc, f) for k, f in EFFECTS.items()]
-    if stage:
-        sarc = rarc_files(yaz0_decompress(open(stage, "rb").read()))
-        todo += [(k, sarc, f) for k, f in BW_EFFECTS.items() if f in sarc]
+
+def export(todo):
     res = {}
     for key, arc, fn in todo:
         r = parse(arc[fn])
@@ -54,11 +57,28 @@ def main(szs, out, stage=None):
             o["tex"].append({"name": t["name"], "w": t["w"], "h": t["h"], "wrapS": t["wrapS"], "wrapT": t["wrapT"],
                              "rgba": base64.b64encode(px.astype("uint8").tobytes()).decode()})
         res[key] = o
+    return res
+
+
+def main(szs, out, stage=None, bg_stage=None, bg_out=None):
+    arc = rarc_files(yaz0_decompress(open(szs, "rb").read()))
+    todo = [(k, arc, f) for k, f in EFFECTS.items()]
+    if stage:
+        sarc = rarc_files(yaz0_decompress(open(stage, "rb").read()))
+        todo += [(k, sarc, f) for k, f in BW_EFFECTS.items() if f in sarc]
+    res = export(todo)
     with open(out, "w") as f:
         f.write("// JPA particle effects from particle.szs (tools/build_jpa.py).\n")
         f.write("const JPA_RES = " + json.dumps(res, separators=(",", ":")) + ";\n")
     print({k: len(json.dumps(v)) for k, v in res.items()})
+    if bg_stage and bg_out:
+        barc = rarc_files(yaz0_decompress(open(bg_stage, "rb").read()))
+        bres = export([(k, barc, f) for k, f in BG_EFFECTS.items() if f in barc])
+        with open(bg_out, "w") as f:
+            f.write("// Gooper Blooper's JPA particle effects (tools/build_jpa.py), added to JPA_RES where he is.\n")
+            f.write("Object.assign(JPA_RES, " + json.dumps(bres, separators=(",", ":")) + ");\n")
+        print({k: len(json.dumps(v)) for k, v in bres.items()})
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+    main(*sys.argv[1:6])
