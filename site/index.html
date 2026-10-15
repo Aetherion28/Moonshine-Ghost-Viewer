@@ -2473,7 +2473,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_BATH = [-1000, 4.5, -6217];
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.8, looseRate: 6, rvMax: 70 };
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.8, looseRate: 6, rvMax: 70, haulSmooth: 0.12 };
   function chompSim(bw, f, mario, key, water, bursts) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
@@ -2641,8 +2641,15 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           for (let step = vmax * 1.25 / 16; step > 0.5; step /= 2) {
             for (const ds of [best.ds - step, best.ds + step]) { const c = tryAt(ds); if (better(c, best)) best = c; }
           }
-          x = best.x; z = best.z; yaw = best.yaw; st.from = best.from; st.to = best.to;
+          // The ball rolls on at an even pace: Mario is yanked in pulses, once a hop (the head
+          // lifting with the hop drags the heavy chain's end in, then lets it go slack; ghosts show
+          // him at ~11 to ~65 a frame every 12-13 frames). So the ball's advance is the best fit
+          // smoothed over about a hop, and the rope's own hop does the yanking.
+          st.hds = st.hds === undefined ? best.ds : st.hds + (best.ds - st.hds) * BW.haulSmooth;
+          const even = chompRailAdvance(bw, st, base, st.hds, k, m, mario);
+          x = even.x; z = even.z; yaw = even.yaw; st.from = even.from; st.to = even.to;
         } else {
+          st.hds = undefined;
           st.hauling = false;
           const tn = G[st.to];
           // The ghost's next grab or pound of the picket: the picket, trailing a chain behind the
