@@ -2444,7 +2444,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const BW_BATH = [-1000, 4.5, -6217];
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
   const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.5, looseRate: 6, rvMax: 70 };
+    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.8, looseRate: 6, rvMax: 70 };
   function chompSim(bw, f, mario, key, water, bursts) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
@@ -2519,8 +2519,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         st.hauling = false;
         // calcVelocityToJumpToY(BW_BATH_POS, 10, gravity): up at 10 a frame, falling faster by the
         // gravity each frame (down to -40), and across at the pace that lands it on the bath as it
-        // comes down to its height (SMSCalcJumpVelocityY). The gravity it falls with is a guess:
-        // the ghost has Mario standing on it in the bath within about two seconds.
+        // comes down to its height (SMSCalcJumpVelocityY). The gravity it falls with is from IL
+        // videos: about 1.6 s from the end of the bath path into the bath.
         if (st.bath === 1) {
           st.jumpK = k + 1;   // from here its hop stops (chompPose)
           st.by = S.y[k];
@@ -2926,7 +2926,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // 16 ms_bwan_jump_rock / _smoke  each hop landing (wait / wait2 passing frame 8), where it is
   // 32 ms_bwan_hibana    sparks off the hop (passing frames 6 and 12), on its body joint
   // 64 ms_bwan_yugami    the heat haze while it has any heat (not once cooled in the bath)
-  const BW_GOLD_RATE = 2;   // the gold animation's rate a frame (SMSGetAnmFrameRate)
+  const BW_GOLD_RATE = 4;   // the gold animation's rate a frame: from IL videos, cold blue to gold in ~2.5 s
   function chompFxBits(bw, st, S, k, hits, heat0) {
     let b = 0;
     const cooled = S.bath[k] && S.heat[k] <= 0;
