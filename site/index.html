@@ -2451,21 +2451,30 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     node.visible = true;
     poseRig(node, f);
   }
-  // The Chain Chomp (TBossWanwan, from the decompiled bosswanwan.cpp). TNerveBWGraphWander: it rides
-  // the "bwanwan" graph, pulled back onto the line between the node it came from and the one it
-  // heads for by up to 10 units a frame, at heat x mSLMarchSpeed (6) + 0.2 a frame, turning 1 degree
-  // a frame. Within 100 of a node: a neighbour flagged 1 is jumped to; a plain stretch goes straight
-  // on; at a junction it takes, of the links within 100 degrees of where it faces, the one leading
-  // farthest from Mario (none: it turns round). Heat (mHitPoints, 0-255): each water hit takes 1
-  // off; while it has any it gains 1 every 20 frames; cold for 2400 frames it barks (TNerveBWBark,
-  // which pulls the picket loose) and is hot again 280 frames in. Taking the picket pulls it out of
-  // the ground; it only moves with Mario when the chomp is cold, and then pulling the chain drags
-  // the chomp: the node behind becomes its goal, within 400 of it the link most toward Mario, and
-  // at the bath's node it jumps in (TNerveBWJumpToBath). Approximations here: water hits are one
-  // per frame of spray at it (within 1200 units and 30 degrees of Mario's facing), the rope is a
-  // length limit (n links of mSLLeashNodeLen), and the stick's direction (mIntendedYaw, which needs
-  // the camera) is taken as the way Mario faces. A ground pound on a loose picket stakes it again;
-  // once pulled and re-staked, a hot chomp shakes it loose after 600 frames.
+  // The Chain Chomp (TBossWanwan, src/Enemy/bosswanwan.cpp in the decomp). Its nerves, binder,
+  // leash and timers all run on every movement tick, four a frame (TMarDirector::direct), while its
+  // animations step once a frame; the numbers below are the code's, per tick. TNerveBWGraphWander:
+  // it rides the "bwanwan" graph (TBWBinder::bind keeps each move along the link it is on and pulls
+  // it back onto it by up to 10), turning toward the next node by mSLTurnSpeed (1 degree). Its pace
+  // is heat x mSLMarchSpeed (6) + 0.2 (off its stake, ghosts have it faster: see where the pace is
+  // worked out below); with the picket in Mario's hands, rate x heat x 6, the rate
+  // 1 - (stick tilt / 32) x 0.75 x (how much the stick points away from the chomp), 0 to 1.5: the
+  // stick toward it hurries it, away holds it back. Within 100 of a node: a neighbour flagged 1 is
+  // jumped to; at a junction it takes, of the links within 100 degrees of where it faces, the one
+  // leading farthest from Mario (getEscapeDirLimited; none: it turns round). Heat (mHitPoints,
+  // 0-255): each water hit takes 1 off; while it has any it gains 1 every 20 ticks; cold for 2400
+  // ticks it barks (TNerveBWBark, which pulls a once-pulled picket loose) and is fully hot 280 ticks
+  // in. Taking the picket pulls it out of the ground (releasePicket); it only moves with Mario when
+  // the chomp is cold (TBWPicket::moveRequest), and then his pull on the chain drags it (control()
+  // adds the chain's pull to its move): the node behind becomes its goal, within 400 of it the link
+  // most toward Mario, and at the bath's node it jumps in (TNerveBWJumpToBath). Staked, the chain
+  // holds it: the leash is chained from the picket, the ball pushed 20 toward the chain's head when
+  // more than 650 from it, and it turns to face away from it (1.5 and 4 degrees a tick). Re-staked
+  // after being pulled out, a hot chomp shakes it loose 600 ticks later (TNerveBWShake). In the
+  // bath (TNerveBWDie) it loses a point of heat a tick down to 0, then turns gold (takeBath, the
+  // bwanwan_down_camera demo) and, 60 ticks on and once that demo is over, the boss Shine appears.
+  // Approximation: the stick's direction (mIntendedYaw, which needs the camera) is taken as the way
+  // Mario faces.
   const BW_RADIUS = 500, _bwM = new THREE.Matrix4(), _bwQ = new THREE.Quaternion(), _bwE = new THREE.Euler(0, 0, 0, 'YXZ'), _bwS = new THREE.Vector3(1, 1, 1), _bwP = new THREE.Vector3();
   // The stake Mario grabs: a TBWPicket named "ボスワンワンつかみ" (key code 0xE417), actor type
   // 0x0800000D (TBossWanwan::init).
@@ -2473,8 +2482,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   const isPicket = (desc) => !!desc && (desc.nameKey === BW_PICKET_KEY || desc.objectId === BW_PICKET_TYPE);
   const BW_BATH = [-1000, 4.5, -6217];
   const SPRAY_BLOCK_ANIMS = new Set();   // animations where R doesn't spray (none known yet)
-  const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, bark: 280,
-    sprayR: 1200, sprayCone: 30 * Math.PI / 180, dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.8, looseRate: 6, rvMax: 70 };
+  // Per tick (BW_TICKS a frame), except the animation lengths (frames at 2 animation frames a frame):
+  // bwanwan_bark 214, bwanwan_shake 55, bwanwan_down_camera 199.
+  const BW_TICKS = QF_PER_FRAME;
+  const BW = { node: 100, turn: Math.PI / 180, cone: 100 * Math.PI / 180, heatMax: 255, reheat: 20, coldBark: 2400, barkHot: 280,
+    barkFrames: 214 / 2, shakeAfter: 600, shakeFrames: 55 / 2, downDemoFrames: 199 / 2, shineAfter: 61,
+    dragNode: 400, bathNode: 400, jumpV: 10, jumpG: 0.15, fallMax: 40, rvMax: 70, looseM: 7.5 };
   function chompSim(bw, f, mario, key, water, bursts) {
     // Taut, the chain spans its links (the head point is chain_null, 551 behind the ball's centre).
     const G = bw.graph, RT = bw.len * (bw.n - 1) + 551;
@@ -2547,24 +2560,31 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // TNerveBWJumpToBath / TNerveBWDie: it leaps to the bath, then cools off completely there.
       if (st.bath) {
         st.plan = null;
-        // calcVelocityToJumpToY(BW_BATH_POS, 10, gravity): up at 10 a frame, falling faster by the
-        // gravity each frame (down to -40), and across at the pace that lands it on the bath as it
-        // comes down to its height (SMSCalcJumpVelocityY). The gravity it falls with is from IL
-        // videos: about 1.6 s from the end of the bath path into the bath.
+        // calcVelocityToJumpToY(BW_BATH_POS, 10, mGravity 0.15): up at 10 a tick, falling faster by
+        // 0.15 a tick (to at most 40), and across at the pace that lands it on the bath as it comes
+        // down to its height (SMSCalcJumpVelocityY; TBWBinder moves it freely meanwhile). Landed
+        // (TNerveBWDie), it loses a point of heat a tick until it is cold.
         if (st.bath === 1) {
           st.jumpK = k + 1;   // from here its hop stops (chompPose)
           st.by = S.y[k];
           let yv = BW.jumpV, yy = st.by, ticks = 1;
-          for (;;) { yy += yv; if (yv < 0 && yy <= BW_BATH[1]) break; yv = Math.max(-40, yv - BW.jumpG); if (++ticks > 600) break; }
-          st.jumpT = ticks; st.jy = st.by; st.jv = BW.jumpV;
+          for (;;) { yy += yv; if (yv < 0 && yy <= BW_BATH[1]) break; yv = Math.max(-BW.fallMax, yv - BW.jumpG); if (++ticks > 6000) break; }
+          st.jumpT = ticks; st.jy = st.by; st.jv = BW.jumpV; st.jt = 0; st.jyaw = yaw;
         }
-        const u = Math.min(1, st.bath / st.jumpT);
+        // In the air it turns toward the bath 1 degree a tick (walkToCurPathNode with no pace);
+        // landed, it keeps that facing.
+        const want = Math.atan2(BW_BATH[0] - st.bx, BW_BATH[2] - st.bz);
+        for (let i = 0; i < BW_TICKS; i++) {
+          if (st.jy === null) { if (st.heat > 0) st.heat--; continue; }
+          st.jy += st.jv; st.jt++;
+          if (st.jv < 0 && st.jy <= BW_BATH[1]) { st.jy = null; st.landK = k + 1; continue; }
+          st.jv = Math.max(-BW.fallMax, st.jv - BW.jumpG);
+          st.jyaw = wrap(st.jyaw + Math.max(-BW.turn, Math.min(BW.turn, wrap(want - st.jyaw))));
+        }
+        const u = Math.min(1, st.jt / st.jumpT);
         x = st.bx + (BW_BATH[0] - st.bx) * u; z = st.bz + (BW_BATH[2] - st.bz) * u;
-        yaw = Math.atan2(BW_BATH[0] - st.bx, BW_BATH[2] - st.bz);
-        let yb;
-        if (st.jy === null) yb = BW_BATH[1];
-        else { st.jy += st.jv; st.jv = Math.max(-40, st.jv - BW.jumpG); if (st.jv < 0 && st.jy <= BW_BATH[1]) { st.jy = null; yb = BW_BATH[1]; st.landK = k + 1; } else yb = st.jy; }
-        if (st.jy === null && st.heat > 0) st.heat--;
+        yaw = st.jyaw;
+        const yb = st.jy === null ? BW_BATH[1] : st.jy;
         st.bath++;
         const rp = ropeStep(bw, st, k + 1, x, yb, z, yaw, m, false, true);
         S.x.push(x); S.z.push(z); S.y.push(yb); S.yaw.push(yaw); S.heat.push(st.heat); S.bark.push(0); S.px.push(st.px); S.pz.push(st.pz); S.held.push(0); S.bath.push(st.bath); S.rope.push(rp.pts);
@@ -2592,10 +2612,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       if (!holding && !st.staked && m && m.pound && Math.hypot(m.x - st.px, m.z - st.pz) < 600) {
         st.staked = true; st.stakeT = 0; st.px = m.x; st.pz = m.z;
       }
-      // A hot chomp that stays staked 600 frames after the picket was once pulled shakes it loose
-      // (TNerveBWShake, bwanwan_shake: 55 frames).
-      if (st.shake) { if (++st.shake > 55) { st.shake = 0; st.staked = false; } }
-      else if (st.staked && st.pulled && st.heat > 0 && !st.bark) { if (++st.stakeT > 600) { st.stakeT = 0; st.shake = 1; } }
+      // A hot chomp that stays staked 600 ticks after the picket was once pulled shakes it loose
+      // (TNerveBWShake: releasePicket as bwanwan_shake ends).
+      if (st.shake) { if (++st.shake > BW.shakeFrames) { st.shake = 0; st.staked = false; } }
+      else if (st.staked && st.pulled && st.heat > 0 && !st.bark) { st.stakeT += BW_TICKS; if (st.stakeT > BW.shakeAfter) { st.stakeT = 0; st.shake = 1; } }
       else st.stakeT = 0;
       // Mario is held to the picket (TBWPicket::perform: holder->moveRequest), so it is where he is.
       if (holding) { st.px = m.x; st.pz = m.z; }
@@ -2607,10 +2627,18 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       // Dragged: picket out, held, and the head pulled (the chain near full length).
       // (isHeadPulled only sees a pull when the picket can move, i.e. a cold chomp.)
       const dragging = holding && !st.staked && st.heat <= 0 && Math.hypot(x - st.px, z - st.pz) > RT - 150;
-      st.tick++;
-      if (st.bark) { if (++st.bark >= BW.bark) { st.bark = 0; st.heat = BW.heatMax; st.cold = 0; } }
-      else if (st.heat <= 0) { if (++st.cold > BW.coldBark) { st.bark = 1; st.staked = false; } }
-      else { st.cold = 0; if (st.tick % BW.reheat === 0 && st.heat < BW.heatMax) st.heat++; }
+      // TBossWanwan::perform, each tick: cold, the count to a bark; otherwise a point of heat back
+      // every 20 ticks. TNerveBWBark: fully hot 280 ticks in, wandering again when bwanwan_bark
+      // ends, and a picket that was ever pulled out comes out again.
+      for (let i = 0; i < BW_TICKS; i++) {
+        st.tick++;
+        if (st.heat <= 0 && !st.bark) { if (++st.cold > BW.coldBark) { st.bark = 1; st.cold = 0; if (st.pulled) st.staked = false; } }
+        else { st.cold = 0; if (st.tick % BW.reheat === 0 && st.heat < BW.heatMax) st.heat++; }
+      }
+      if (st.bark) {
+        if (st.bark * BW_TICKS >= BW.barkHot) st.heat = BW.heatMax;
+        if (++st.bark > BW.barkFrames) st.bark = 0;
+      }
       // Movement along the graph
       if (G && st.to >= 0 && !st.bark) {
         const hv = st.heat / BW.heatMax;
@@ -2622,7 +2650,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           // chomp has any heat), and the ball rolls on along its rail towing him. Its run for the
           // whole hold is planned as he takes hold (chompHaulPlan).
           if (!st.plan || k < st.plan.k0 || k > st.plan.k1) st.plan = chompHaulPlan(bw, st, S, k, x, z, yaw, mario);
-          const at = chompPlanAt(st.plan, st.plan.s[k - st.plan.k0]), turn = BW.turn * BW.looseRate;
+          const at = chompPlanAt(st.plan, st.plan.s[k - st.plan.k0]), turn = BW.turn * BW_TICKS;
           if (Math.hypot(at.x - x, at.z - z) > 0.5) yaw = wrap(yaw + Math.max(-turn, Math.min(turn, wrap(Math.atan2(at.tx - at.x, at.tz - at.z) - yaw))));
           x = at.x; z = at.z; st.from = at.from; st.to = at.to;
         } else {
@@ -2635,8 +2663,10 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           const goal = T ? (T.grab ? { x: T.bx, z: T.bz } : T) : null;
           // Once its rail has brought the picket as close as it will come to the spot (or it has
           // run out of rail), it waits there - the video shows it standing by until Mario comes
-          // for the picket; the game's own reason is unknown. For a grab it stops as soon as the
-          // chain would be taut from there to his hands, so the haul starts with the chain tight.
+          // for the picket. The decomp has no such wait (at the end of a rail it turns straight
+          // round: getEscapeDirLimited's one link), so this stands in for whatever the pace here
+          // still gets wrong. For a grab it stops as soon as the chain would be taut from there
+          // to his hands, so the haul starts with the chain tight.
           let parked = false;
           if (T && !st.ridden) {
             if (!st.park || st.park.k !== T.k) st.park = { k: T.k, best: Infinity, stop: false };
@@ -2690,11 +2720,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
           if (dragging && st.bathNode >= 0 && Math.hypot(G[st.bathNode][0] - x, G[st.bathNode][2] - z) < BW.bathNode) {
             st.bath = 1; st.bx = x; st.bz = z;
           }
-          // Off its stake and hot it tears along at about five times its walking pace (IL videos:
-          // 25-40 units a frame hauling Mario; the code's 6 x heat can't be the whole story yet),
-          // the facing turning faster with it.
-          const loose = parked ? 0 : !st.staked && st.heat > 0 ? BW.looseRate : 1;
-          const t2 = G[st.to], turn = BW.turn * Math.max(1, loose);
+          // slideToCurPathNode each tick: toward the node at its pace, the facing turning 1 degree.
+          const t2 = G[st.to], turn = BW.turn * BW_TICKS;
           const tdx = t2[0] - x, tdz = t2[2] - z, tdl = Math.hypot(tdx, tdz);
           if (!parked) yaw = wrap(yaw + Math.max(-turn, Math.min(turn, wrap(Math.atan2(tdx, tdz) - yaw))));
           // Holding the picket: leaning the stick away from the chomp holds it back, toward it hurries it.
@@ -2703,9 +2730,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
             const fx = x - m.x, fz = z - m.z, fl = Math.hypot(fx, fz) || 1;
             rate = Math.max(0, Math.min(1.5, 1 - (m.mag / 32) * 0.75 * -((fx / fl) * Math.sin(m.yaw) + (fz / fl) * Math.cos(m.yaw))));
           }
-          let v = (st.shake ? 0 : dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : hv * 6 + 0.2) * loose;
-          // (Its pace is the fully hot one, 6 x heat x the off-stake factor, slowing as it cools; the
-          // places the ghost pins it down only decide which way it goes at a junction.)
+          // (Its pace slows as it cools; the places the ghost pins it down only decide which way it
+          // goes at a junction, and where it waits for Mario.) Loose and not held, the decomp's pace
+          // is heat x 6 + 0.2 a tick (25 a frame fully hot), but ghosts have it faster: in the PAL
+          // Pianta 4 ghost the dropped picket is dragged 2400 units in the 336 ticks before Mario
+          // takes it again (over 7 a tick), and the chomp only gets to the end of the bath path in
+          // time for his last grab at about 7.5 a tick. The decomp is of JP 1.0: whether the other
+          // versions differ here is not known yet. Until then, heat x 7.5 + 0.2.
+          const v = parked || st.shake ? 0 : (dragging ? 3 * hv * 6 : holding ? rate * hv * 6 : st.staked ? hv * 6 + 0.2 : hv * BW.looseM + 0.2) * BW_TICKS;
           st.v = v;
           // slideToCurPathNode heads straight for the node, and TBWBinder::bind keeps the move
           // along the link, so its track is the rail itself, corners and all (the facing just
@@ -2918,8 +2950,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   function chompChainTemp(bw, S, k) {
     while (S.lt.length <= k) {
       const j = S.lt.length, n = bw.n, T = S.temp, hv = S.heat[j] / BW.heatMax;
-      {   // (cooled in the bath the body stops setting the first one; the links go on creeping)
-        if (S.heat[j] <= 0 || (S.heat[j] >= BW.heatMax && !S.bath[j])) T[0] = hv;   // (cold in the bath: the last value it set)
+      // The body sets the first link once a frame (CUE_CALC_ANIM); each link creeps every tick.
+      if (S.heat[j] <= 0 || (S.heat[j] >= BW.heatMax && !S.bath[j])) T[0] = hv;   // (cold in the bath: the last value it set)
+      for (let t = 0; t < BW_TICKS; t++) {
         for (let i = 1; i < n; i++) {
           const d = T[i - 1] - T[i];
           T[i] = Math.max(0, Math.min(1, T[i] + (d < 0 ? (d < -0.1 ? -0.02 : -0.005) : (d > 0.1 ? 0.02 : 0.005))));
@@ -3097,10 +3130,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return gy > -Infinity && Math.abs(gy - ref) < 600 ? gy : ref;
   }
   // The leash is the game's TRope (MtxUtil.cpp): 15 points a link (mSLLeashNodeLen) apart, each
-  // falling 2 a frame with 0.7 of its last move, chained from the head every frame and kept
-  // above the floor (radius mSLChainGroundRadius, +3), then from the tail when the picket is
-  // staked or in Mario's hands (TBWLeash::pullTail, TBWPicket::moveRequest). The head is the
-  // ball's chain_null joint; points inside the ball are pushed out to its surface.
+  // falling 2 more a tick with 0.7 of its last move, chained from the head every tick (four a
+  // frame: a heavy chain, quick to drop back to the floor) and kept above the floor (radius
+  // mSLChainGroundRadius, +3), then from the tail when the picket is staked or in Mario's hands
+  // (TBWLeash::pullTail, TBWPicket::moveRequest). The head is the ball's chain_null joint, which
+  // only moves once a frame (with the ball's animation); points inside the ball are pushed out to
+  // its surface (once a frame, on CUE_CALC_ANIM).
   const BW_ROPE = { g: -2, damp: 0.7, rad: 60, reach: 650, push: 20 };
   function ropeInit(n, x, y, z) {
     const p = [], o = [], v = [];
@@ -3134,10 +3169,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     // The head: chain_null (0, -318, -551) under the ball's centre, which the hop animation lifts.
     const hop = bw.hop ? bw.hop(k) : 0;
     const hx = x - Math.sin(yaw) * 551, hz = z - Math.cos(yaw) * 551, hy = yg + 500 - 318 + hop;
-    for (let i = 0; i < n; i++) { const p = R.p[i], v = R.v[i]; p[1] += BW_ROPE.g; p[0] += v[0]; p[1] += v[1]; p[2] += v[2]; }
-    R.p[0][0] = hx; R.p[0][1] = hy; R.p[0][2] = hz;
-    ropeChainFrom(bw, R, 0, 1);
-    for (let i = 0; i < n; i++) { const p = R.p[i], o = R.o[i], v = R.v[i]; v[0] = (p[0] - o[0]) * BW_ROPE.damp; v[1] = (p[1] - o[1]) * BW_ROPE.damp; v[2] = (p[2] - o[2]) * BW_ROPE.damp; o[0] = p[0]; o[1] = p[1]; o[2] = p[2]; }
+    for (let t = 0; t < BW_TICKS; t++) {   // TRope::moveHead, each tick
+      for (let i = 0; i < n; i++) { const p = R.p[i], v = R.v[i]; p[1] += BW_ROPE.g; p[0] += v[0]; p[1] += v[1]; p[2] += v[2]; }
+      R.p[0][0] = hx; R.p[0][1] = hy; R.p[0][2] = hz;
+      ropeChainFrom(bw, R, 0, 1);
+      for (let i = 0; i < n; i++) { const p = R.p[i], o = R.o[i], v = R.v[i]; v[0] = (p[0] - o[0]) * BW_ROPE.damp; v[1] = (p[1] - o[1]) * BW_ROPE.damp; v[2] = (p[2] - o[2]) * BW_ROPE.damp; o[0] = p[0]; o[1] = p[1]; o[2] = p[2]; }
+    }
     const out = { x, z, pts: null };
     let tail = null;
     if (inBath) tail = null;
@@ -3155,12 +3192,14 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         // along its links rather than by pulling its head off the ball.
         for (let i = 0; i < n - 1; i++) { const w = 1 - i / (n - 1); R.p[i][0] -= pull[0] * w; R.p[i][1] -= pull[1] * w; R.p[i][2] -= pull[2] * w; }
       }
-      if (st.staked) {   // TBWLeash::perform: kept within reach of the head, turned to face away from it
+      if (st.staked) {
+        // TBWLeash::perform, each tick: pushed 20 toward the chain's head while more than 650 from
+        // it; turned to face away from the chain, 1.5 degrees there and 4 in control().
         const tx = R.p[0][0] - out.x, ty = R.p[0][1] - (yg + 500), tz = R.p[0][2] - out.z, d = Math.hypot(tx, ty, tz);
-        if (d > BW_ROPE.reach) { out.x += tx / d * BW_ROPE.push; out.z += tz / d * BW_ROPE.push; }
-        const want = Math.atan2(tx, tz);
+        if (d > BW_ROPE.reach) { const s = Math.min(BW_ROPE.push * BW_TICKS, d - BW_ROPE.reach) / d; out.x += tx * s; out.z += tz * s; }
+        const want = Math.atan2(tx, tz) + Math.PI, tr = 5.5 * BW.turn * BW_TICKS;
         let dy = Math.atan2(Math.sin(want - yaw), Math.cos(want - yaw));
-        out.yaw = yaw + Math.max(-1.5 * BW.turn, Math.min(1.5 * BW.turn, dy));
+        out.yaw = yaw + Math.max(-tr, Math.min(tr, dy));
       }
     }
     // CUE_CALC_ANIM: no point inside the ball.
@@ -3261,8 +3300,9 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       smax[i] = Math.min(sA, sB, sEnd);
     }
     // Evened out: the furthest point averaged over 13 frames (about a hop), twice - so over about
-    // 0.4 s either way - carried on at its loose pace past the ends.
-    const v = (st.heat / BW.heatMax * 6 + 0.2) * BW.looseRate, W = 6, E = new Float64Array(n + 8 * W);
+    // 0.4 s either way - carried on past the ends at its pace held with the stick toward it
+    // (rate 1.5 x heat x 6 a tick: the 36 a frame ghosts show it hauling at, fully hot).
+    const v = 1.5 * (st.heat / BW.heatMax) * 6 * BW_TICKS, W = 6, E = new Float64Array(n + 8 * W);
     for (let i = 0; i < E.length; i++) { const j = i - 4 * W; E[i] = j < 0 ? smax[0] + v * j : j >= n ? smax[n - 1] + v * (j - n + 1) : smax[j]; }
     const box = (A) => {
       const B = new Float64Array(A.length);
@@ -3465,16 +3505,20 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (gold) brkApply(bw.brkGold, bw.bodyMats || (bw.bodyMats = chompMats(node)), Math.min(1, (kf - st.goldK) * BW_GOLD_RATE / (bw.brkGold.dur - 1)));
     else if (bw.brkBody) brkApply(bw.brkBody, bw.bodyMats || (bw.bodyMats = chompMats(node)), heat / BW.heatMax);
     node.userData.bwJpa = chompFx(bw, kf);
-    // TNerveBWDie: 60 frames after it has cooled off in the bath, the boss Shine appears
-    // (makeShineAppearWithDemo) - the stage's demo shine over the bath.
-    bw.shineAt = mario && st && st.goldK !== undefined ? base + (st.goldK + 61) * QF_PER_FRAME : Infinity;
+    // TNerveBWDie: cooled off in the bath it starts the bwanwan_down_camera demo, and the boss
+    // Shine appears (makeShineAppearWithDemo, the stage's demo shine over the bath) 60 ticks on
+    // once that demo is over.
+    bw.shineAt = mario && st && st.goldK !== undefined ? base + st.goldK * QF_PER_FRAME + Math.max(BW.shineAfter, BW.downDemoFrames * BW_TICKS) : Infinity;
     if (bw.brkChain && lt) bw.links.forEach((lk, i) => brkApply(bw.brkChain, lk.userData.mats || (lk.userData.mats = chompMats(lk)), lt[i]));
     node.userData.bwHeat = heat; node.userData.bwBark = bark;
     const y = yg + BW_RADIUS;
     placeFree(node, [x, y, z], [0, yaw, 0], node.userData.base.s);
     node.visible = true;
     if (rg && camera.position.distanceToSquared(node.position) < 9000 * 9000) { const p = chompPose(bw, rg, Math.max(0, f)); poseBck(rg.bones, p.anim, p.f); }
-    if (!pts) { bw.links.forEach((lk) => { lk.visible = false; }); if (bw.pkNode) bw.pkNode.visible = false; return; }
+    // takeBath: from then on only the ball is performed (TBossWanwan::perform), so the chain and
+    // the picket are no longer drawn (IL videos: none by the gold chomp).
+    const bathed = st && st.goldK !== undefined && kf >= st.goldK;
+    if (!pts || bathed) { bw.links.forEach((lk) => { lk.visible = false; }); if (bw.pkNode) bw.pkNode.visible = false; return; }
     // The links sit on rope points 0..n-2 facing the next point, every other one turned 90
     // degrees (TBWLeashNode::calcMatrix); the picket is the last point, facing away from the
     // third-last (TBWPicket::perform).
@@ -5885,7 +5929,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
+  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), v: st && st.v !== undefined ? Math.round(st.v * 10) / 10 : null, parked: !!(st && st.park && st.park.stop), fromTo: st && [st.from, st.to], chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)) });
   function update() {
     if (ctxQuiet) return;   // a stage finished loading for the view not being drawn: its next frame poses it
     let hud = null;
