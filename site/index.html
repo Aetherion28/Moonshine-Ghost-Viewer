@@ -3053,15 +3053,17 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // (any analog level), nozzle about 10 in front of Mario and 150 up, aimed the way he faces and a
   // little down, at power 40 (as V6+ ghosts record it standing); the secondary nozzle when the
   // switch timeline says it is out. Not while he holds something or rides Yoshi (no pumping).
+  // Gate in / out, shine get: Mario has no control (and can't pump).
+  const NO_PUMP_ANIMS = new Set([205, 269, 270, 301, 302, 315, 316, 317, 333]);
   function fluddGuessAt(g, q) {
     const d = g.data, inp = d.inputs;
     if (!inp || !inp.count || inp.hasFludd || q < inp.qf[0]) return null;
     let lo = 0, hi = inp.count - 1;
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (inp.qf[mid] <= q) lo = mid; else hi = mid - 1; }
     const s = ghostSampleAt(d, q);
-    if (s.gap) return null;
+    if (s.gap || !inferFludd(g, q)) return null;   // (no FLUDD on his back here)
     const a = ghostAnimAt(d, q), h = d.held ? d.held[s.i] : 0;
-    if (a.yoshi || (h && h !== 15)) return { present: true, blocked: true, nozzle: 0, spraying: false, power: 0, offset: [0, 150, 0], yaw: 0, pitch: 0 };
+    if (a.yoshi || (h && h !== 15) || NO_PUMP_ANIMS.has(a.id)) return { present: true, blocked: true, nozzle: 0, spraying: false, power: 0, offset: [0, 150, 0], yaw: 0, pitch: 0 };
     const yaw = (s.yaw / 32768) * Math.PI, sec = g.selected && g.selected[lo];
     const R = inp.trig[lo * 2 + 1] > 30 || !!(inp.buttons[lo] & 0x20);
     if (sec) return { present: true, nozzle: 4, spraying: R, power: 38, offset: [-Math.sin(yaw) * 70, 120, -Math.cos(yaw) * 70], yaw: yaw + Math.PI, pitch: -1.4 };
@@ -4785,7 +4787,7 @@ void main() {
     const sgd = shineDemo(g);   // TMario::winDemo: FLUDD stops with the Shine get
     for (let e = Math.max(0, f0 - 300); e <= f0; e++) {
       if (sgd && e * QF_PER_FRAME >= sgd.q && e * QF_PER_FRAME < sgd.until) continue;
-      const fe = yoshiJuice(d, e * QF_PER_FRAME) || ghostFluddAt(d, e * QF_PER_FRAME);
+      const fe = yoshiJuice(d, e * QF_PER_FRAME) || ghostFluddAt(d, e * QF_PER_FRAME) || fluddGuessAt(g, e * QF_PER_FRAME);
       if (!fe || !fe.present) continue;
       const ems = [];
       if (bursts.includes(e)) ems.push([waterEmission(g, e, 0, fe, ghostSampleAt(d, e * QF_PER_FRAME), marioSpeedAt(d, e), BOMB, true), -1 - e]);
@@ -5370,7 +5372,7 @@ void main() {
     const C = g.jpaJets || (g.jpaJets = new Map());
     if (C.has(e)) return C.get(e);
     if (C.size > 20000) C.clear();
-    const d = g.data, q = e * QF_PER_FRAME, fe = ghostFluddAt(d, q), sgd = shineDemo(g);
+    const d = g.data, q = e * QF_PER_FRAME, fe = ghostFluddAt(d, q) || fluddGuessAt(g, q), sgd = shineDemo(g);
     let out = null;
     if (fe && fe.present && fe.nozzle !== 2 && !(sgd && q >= sgd.q && q < sgd.until)) {
       const bursts = burstFrames(g);
