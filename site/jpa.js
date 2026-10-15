@@ -88,7 +88,7 @@ const JPA = (() => {
     prepare(res);
     const em = res.em;
     return {
-      res, seed: seed >>> 0, calcs: 0, frame: 0, timer: 0, emitTimer: 0,
+      res, seed: seed >>> 0, calcs: 0, frame: 0, timer: 0, emitTimer: 0, emitNext: true,
       first: true, stopEmit: false, enableDelete: false, maxFrame: em.maxFrame,
       rate: em.rate, volumeSize: em.volumeSize, volumeSweep: em.volumeSweep, life: em.life, weight: em.weight,
       initVelOmni: em.initVelOmni, initVelDir: em.initVelDir, spread: em.spread, keyScl: 1,
@@ -97,13 +97,25 @@ const JPA = (() => {
       dead: false,
     };
   }
-  // Starting part-way into a run: the emitter's frame count and spawn timer after `calcs` calcs.
+  // Starting part-way into a run: the emitter's frame count and spawn timer after `calcs` calcs
+  // (with an emit interval, only the calcs it emitted on count towards the spawn timer).
   function advanceTo(e, calcs) {
     e.calcs = e.frame = calcs;
-    const r = e.rate * calcs;
+    const er = emitRate(e.res.em);
+    let emits = calcs;
+    if (er !== 1) {
+      emits = calcs > 0 ? 1 + Math.floor((calcs - 1) * er) : 0;
+      const t = calcs * er;
+      e.emitTimer = t - Math.floor(t);
+      e.emitNext = calcs === 0 || Math.floor(t) > Math.floor((calcs - 1) * er);
+    }
+    const r = e.rate * emits;
     e.timer = r - Math.floor(r);
     e.first = calcs === 0;
   }
+  // JPABaseEmitter::mEmitRate: an emitter with an emit interval only creates particles on one
+  // calc in interval + 1.
+  const emitRate = (em) => (em.emitInterval ? 1 / (em.emitInterval + 1) + 1e-7 : 1);
 
   function keyValue(k, t) {   // JPAGetKeyFrameInterpolation
     const K = k.keys, n = K.length / 4;
@@ -359,15 +371,20 @@ const JPA = (() => {
     globalParams(e, M);   // the bind-to-matrix callback, then calcEmitterGlobalParams
     fieldsSet(e);
     if (!e.enableDelete) {
-      // calcCreateParticle (not fixed interval; emit interval 0)
-      let n = 0;
-      let rate = e.rate;
-      if (e.res.em.rateRndm !== 0) rate += rate * e.res.em.rateRndm * rng.rf();
-      e.timer += rate;
-      if (e.timer >= 1) { n = Math.trunc(e.timer); e.timer -= n; }
-      else if (rate > 0 && e.first) n = 1;
-      if (e.stopEmit) n = 0;
-      for (let i = 0; i < n; i++) createParticle(e, rng);
+      // calcCreateParticle (not fixed interval)
+      if (e.emitNext) {
+        let n = 0;
+        let rate = e.rate;
+        if (e.res.em.rateRndm !== 0) rate += rate * e.res.em.rateRndm * rng.rf();
+        e.timer += rate;
+        if (e.timer >= 1) { n = Math.trunc(e.timer); e.timer -= n; }
+        else if (rate > 0 && e.first) n = 1;
+        if (e.stopEmit) n = 0;
+        for (let i = 0; i < n; i++) createParticle(e, rng);
+      }
+      const er = emitRate(e.res.em);
+      if (er === 1) e.emitNext = true;
+      else { e.emitTimer += er; if (e.emitTimer >= 1) { e.emitTimer -= 1; e.emitNext = true; } else e.emitNext = false; }
       e.first = false;
     }
     // doParticle

@@ -2517,7 +2517,12 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     return s0 === null ? 0 : time - s0;
   }
   function updateWalkers() {
-    objNodes.forEach((node) => {
+    objNodes.forEach((node, i) => {
+      if (node.userData.spin && !node.userData.sgPlaced) node.rotation.y = (node.userData.baseRotY || 0) + idleClock * SHINE_FLY.spin * DEG;   // coins and Shines turning
+      if (/^shine/.test(node.userData.pick || '')) {   // (their particles, on the stage's own clock)
+        node.userData.sfxList = node.visible && objectsGroup && objectsGroup.visible ? shineFx(node, i, null, idleClock) : null;
+        return;
+      }
       if (node.userData.bg) placeGesso(node, idleClock / QF_PER_FRAME);
       else if (node.userData.bw) placeChomp(node, idleClock / QF_PER_FRAME);
       else if (node.userData.walk) placeWalker(node, idleClock / QF_PER_FRAME);
@@ -4847,6 +4852,78 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       o.position.copy(o.userData.sgSave[0]); o.quaternion.copy(o.userData.sgSave[1]); o.scale.copy(o.userData.sgSave[2]);
     });
   }
+  // The Shines' own particles (TShine::calc, every frame one is shown, bound to its body joint:
+  // ms_shine_senko and ms_shine_kira, and for one not yet collected, the rays and the rainbow,
+  // ms_shine_promi and ms_shine_bow). The farther the camera, the fewer (by distance: the rays'
+  // lifetime and the others' rates), and half size once it's been taken to Mario (unk1A8).
+  // [distance under, promi lifetime, senko rate, kira rate, bow rate]
+  const SHINE_FX_BANDS = [[2000, 30, 0.15, 1, 1], [4000, 15, 0.1, 0.6, 1], [6000, 0, 0.05, 0.3, 0], [Infinity, 0, 0.025, 0.1, 0]];
+  const SHINE_FX = ['shine_senko', 'shine_kira', 'shine_promi', 'shine_bow'];
+  const SHINE_FX_FRAMES = 60;   // (ms_shine_senko's particles live up to 50 frames)
+  const _sbM = new THREE.Matrix4(), _sbN = new THREE.Matrix4(), _sbQ = new THREE.Quaternion(), _sbE = new THREE.Euler(0, 0, 0, 'ZYX');
+  const _sbP = new THREE.Vector3(), _sbS = new THREE.Vector3();
+  // Shown at `time`, as updateObjects shows it (its Shine get demo, collected, not out yet, or
+  // not the one this run collects).
+  function shineShownAt(node, i, g, time) {
+    const dm = g ? shineDemoAt(g, time) : null;
+    if (dm && dm.i === i) return true;
+    const times = g && g.pickups ? g.pickups.get(objectsKey) : null;
+    if (times && time >= times[i]) return false;
+    if ($('optShines').checked) return true;
+    if (node.userData.shineMode === 'demo') {
+      const fl = shineFlights.find((x) => x.i === i), sp = g && g.shineSpawn ? g.shineSpawn.get(objectsKey) : null;
+      const q = fl ? fl.q0 : chompShineAt(i);
+      if (q !== null ? !(time >= q) : !sp || !(time >= sp[i])) return false;
+    }
+    const keep = g && g.finalShine ? g.finalShine.get(objectsKey) : null;
+    return !(keep && keep.size && !keep.has(i));
+  }
+  // Its body joint's matrix at `time` (getAnmMtx(2)): placed (the joint 71.4 up), flying in, or in
+  // its Shine get demo on the demo's animation; and its particles' scale then.
+  function shineBodyMatrix(node, i, g, time) {
+    const b = node.userData.base, dm = g ? shineDemoAt(g, time) : null;
+    if (dm && dm.i === i) {
+      const getting = time >= dm.land, A = SHINE_BCK[getting ? (dm.yoshi ? 'get_yo' : 'get') : 'float'];
+      const f = Math.min(A.d - 1, (time - (getting ? dm.land : dm.q)) / QF_PER_FRAME * 2);
+      if (getting) _sbN.compose(_sbP.set(dm.x, dm.y, dm.z), _sbQ.setFromEuler(_sbE.set(0, dm.yaw, 0)), _sbS.set(1, 1, 1));
+      else _sbN.compose(_sbP.set(b.p[0], b.p[1], b.p[2]), _sbQ.setFromEuler(_sbE.set(b.r[0], (node.userData.baseRotY || 0) + shineTurn(i, time), b.r[2], 'ZYX')), _sbS.set(b.s[0], b.s[1], b.s[2]));
+      _sbN.multiply(bckJoint(A.j[0], f, _sbM)).multiply(bckJoint(A.j[2], f, _sbM));
+      return { M: Array.from(_sbN.elements), scale: getting ? 0.5 : 1 };
+    }
+    const fl = shineFlights.find((x) => x.i === i);
+    _sbP.set(b.p[0], b.p[1], b.p[2]);
+    if (fl && time >= fl.q0) { shineFlightAt(fl, time, _sfV); _sbP.set(b.p[0] + _sfV.x - fl.to[0], b.p[1] + _sfV.y - fl.to[1], b.p[2] + _sfV.z - fl.to[2]); }
+    _sbN.compose(_sbP, _sbQ.setFromEuler(_sbE.set(b.r[0], (node.userData.baseRotY || 0) + shineTurn(i, time), b.r[2], 'ZYX')), _sbS.set(b.s[0], b.s[1], b.s[2]));
+    _sbN.multiply(_sbM.makeTranslation(0, SG.bindY, 0));
+    return { M: Array.from(_sbN.elements), scale: 1 };
+  }
+  function shineFx(node, i, g, time) {
+    if (typeof JPA === 'undefined' || typeof JPA_RES === 'undefined' || !JPA_RES.shine_kira) return [];
+    const f0 = Math.floor((time === undefined ? t : time) / QF_PER_FRAME), key = (g ? g.fileName + '|' + g.data.header.startQf : '') + '|' + objectsKey;
+    const d = camera.position.distanceTo(node.position), band = SHINE_FX_BANDS.findIndex((x) => d < x[0]);
+    const S = node.userData.sfx && node.userData.sfx.key === key ? node.userData.sfx : (node.userData.sfx = { key, runs: [] });
+    if (S.at === f0 && S.band === band) return S.list;
+    if (S.band !== band) S.runs = [];   // (its emitters' rates change with the distance: run again)
+    const B = SHINE_FX_BANDS[band], all = [], mats = new Map();
+    const mat = (e) => { let m = mats.get(e); if (!m) mats.set(e, m = shineBodyMatrix(node, i, g, e * QF_PER_FRAME)); return m; };
+    const tune = (em, k, e) => {
+      if (k === 0) em.rate = B[2]; else if (k === 1) em.rate = B[3]; else if (k === 2) em.life = B[1]; else em.rate = B[4];
+      const sc = mat(e).scale;
+      em.dynScale = [sc, sc, sc]; em.ptclScale = [sc, sc, sc];
+      return em;
+    };
+    SHINE_FX.forEach((name, k) => {
+      const res = JPA_RES[name];
+      if (!res) return;
+      const seed = (c) => Math.imul(k + 31, 0x9e3779b1) ^ Math.imul(c + 1 + i * 7919, 0x85ebca6b);
+      const r = S.runs[k] = jpaHoldRun(S.runs[k], f0, (e) => shineShownAt(node, i, g, e * QF_PER_FRAME),
+        (c) => tune(JPA.makeEmitter(res, seed(c)), k, c), (e, run) => { const m = mat(e); if (run.em) tune(run.em, k, e); return m.M; }, SHINE_FX_FRAMES);
+      all.push(...r.dying);
+      if (r.em) all.push(r.em);
+    });
+    S.at = f0; S.band = band; S.list = all;
+    return all;
+  }
   // TCameraBck::updateDemo: cam_interest is the look point and cam_position (its child) the
   // camera, the position joint's y scale the field of view; offset by Mario's position and
   // turned about him by the Shine's angle (CPolarSubCamera::updateDemoCamera_).
@@ -5019,7 +5096,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       }
       if (cork && i === cork.shine && t < cork.shineAt) { node.visible = false; return; }
       const sgd = g ? shineDemoAt(g, t) : null;
-      if (sgd && i === sgd.i) { placeShineDemo(node, sgd, t); counts.shine++; return; }
+      if (sgd && i === sgd.i) { placeShineDemo(node, sgd, t); counts.shine++; node.userData.sfxList = objectsGroup.visible ? shineFx(node, i, g) : null; return; }
       unplaceShineDemo(node);
       const got = times && t >= times[i];
       node.visible = !got;
@@ -5045,6 +5122,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         if (node.userData.spin) node.rotation.y = node.userData.baseRotY + (/^shine/.test(pick) ? shineTurn(i, t) : spin);
       }
       node.userData.flew = !!flying;
+      node.userData.sfxList = /^shine/.test(pick) && node.visible && objectsGroup.visible ? shineFx(node, i, g) : null;
       if (node.userData.glow) {   // the glow card turns to the camera while the body spins
         const yaw = Math.atan2(camera.position.x - node.position.x, camera.position.z - node.position.z);
         node.userData.glow.forEach((o) => { o.rotation.y = yaw - node.rotation.y; });
@@ -6439,8 +6517,8 @@ void main() {
   // count of calcs it has had since it came on (so its particles are the ones of one unbroken run,
   // wherever the start is). Frames sharing a start carry the run on a frame at a time as it plays;
   // anywhere else it is run again. r: the run so far (after frame r.e).
-  function jpaHoldRun(r, f0, on, make, mat) {
-    const B = JPA_SIM_FRAMES, G = B / 2, S0 = Math.max(0, Math.floor((f0 - B) / G) * G);
+  function jpaHoldRun(r, f0, on, make, mat, frames) {
+    const B = frames || JPA_SIM_FRAMES, G = B / 2, S0 = Math.max(0, Math.floor((f0 - B) / G) * G);
     if (!r || r.S0 !== S0 || r.e > f0) {
       // (where the bit was last seen coming on, and how far it has stayed on since: frames [c0, c1])
       const seen = r ? r.seen : null;
@@ -6466,7 +6544,7 @@ void main() {
       const cur = on(e);
       if (cur && !r.em) r.em = make(e);
       if (!r.em && !r.dying.length) { r.prev = cur; continue; }
-      const M = mat(e) || r.last;
+      const M = mat(e, r) || r.last;
       if (!M) { r.prev = cur; continue; }
       r.last = M;
       for (let k = 0; k < 2; k++) {
@@ -6491,6 +6569,7 @@ void main() {
     ghosts.forEach((g) => { if (g.visible && g.jpa && g.jpa.length) list.push(...g.jpa); });
     objNodes.forEach((o) => { if (o.visible && o.userData.bwJpa && o.userData.bwJpa.length) list.push(...o.userData.bwJpa); });
     objNodes.forEach((o) => { if (o.userData.bg && o.userData.bgJpa && o.userData.bgJpa.length) list.push(...o.userData.bgJpa); });
+    objNodes.forEach((o) => { if (o.visible && o.userData.sfxList && o.userData.sfxList.length) list.push(...o.userData.sfxList); });
     if (!list.length && !jpaBatches) return;
     if (!jpaBatches) {
       jpaScreen = new THREE.DataTexture(new Uint8Array(3), 1, 1, THREE.RGBFormat);

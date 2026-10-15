@@ -27,6 +27,11 @@ EFFECTS = {
     "watslide_b": "ms_m_watslide_b.jpa",     # 0x112
     "watslide_c": "ms_m_watslide_c.jpa",     # 0x113
     "slipsmoke": "ms_m_slipsmoke.jpa",       # 0x103, the same on other ground
+    # TShine::calc, bound to its body joint: rays, flashes, twinkles, the rainbow
+    "shine_promi": "ms_shine_promi.jpa",     # 0x127
+    "shine_senko": "ms_shine_senko.jpa",     # 0x128
+    "shine_kira": "ms_shine_kira.jpa",       # 0x129
+    "shine_bow": "ms_shine_bow.jpa",         # 0x12A
 }
 
 # TBossWanwan (bosswanwan.cpp): its effects, in the stage archive.
