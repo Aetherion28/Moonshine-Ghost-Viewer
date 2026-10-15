@@ -1,12 +1,13 @@
 # Sunshine Ghost Viewer
 
-A 3D viewer for Super Mario Sunshine practice-mod ghosts (Moonshine `.smsghost`, versions 3–6).
+A 3D viewer for Super Mario Sunshine practice-mod ghosts (Moonshine `.smsghost`, versions 3–8).
 Open `site/index.html` from any static web server, then drop ghost files on the stage.
 
 - Stages, objects, NPCs, Mario and FLUDD built from the game's own files (`tools/`).
 - Mario animations, FLUDD nozzles and water, carried and thrown objects (springs, fruit,
   Bob-ombs), the Noki Bay Monty Mole cannon, tightropes, pickups, input display.
-- Frame-by-frame or Cinematic playback, follow / free / top cameras.
+- Frame-by-frame or Cinematic playback, follow / free / top cameras; Follow plays a V8 ghost
+  through the camera it recorded (drag to look round, and it swings back when you let go).
 
 ## Layout
 

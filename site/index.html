@@ -5967,7 +5967,7 @@ void main() {
   let split = null, splitNoStage = false;   // the comparison view (see renderSplit)
   function leadGhost() { return followGhost && followGhost.visible && ghosts.includes(followGhost) ? followGhost : ghosts.find((x) => x.visible); }
   function setFollow(g) { followGhost = g; gameCam.at = null; renderGhostList(); updateMapNotice(); update(); }
-  const GHOST_LATEST = 7;   // newest Moonshine ghost format
+  const GHOST_LATEST = 8;   // newest Moonshine ghost format
   function renderGhostList() {
     if (typeof splitUi === 'function') try { splitUi(); } catch (e) { /* before the split view is set up */ }
     const list = $('ghostList');
@@ -5991,8 +5991,11 @@ void main() {
       name.textContent = h.name || g.fileName;
       // Older ghost formats (an older Moonshine): a ⚠ with what the file is missing.
       if (h.version < GHOST_LATEST) {
-        const miss = [h.version < 4 && 'Yoshi and held objects', h.version < 5 && 'controller inputs', 'FLUDD'].filter(Boolean);
-        const msg = `Ghost format v${h.version} (current is v${GHOST_LATEST}), recorded with an older Moonshine. It has no ${miss.join(', ').replace(/, ([^,]*)$/, ' or $1')} data, so the viewer guesses ${h.version < 5 ? 'the inputs and FLUDD' : 'FLUDD'}.`;
+        const list = (a) => a.join(', ').replace(/, ([^,]*)$/, a.length > 2 ? ', or $1' : ' or $1');
+        const miss = [h.version < 4 && 'Yoshi and held objects', h.version < 5 && 'controller inputs', h.version < 6 && 'FLUDD',
+          h.version === 6 && 'spam spray', h.version === 6 && 'Yoshi animation', 'camera'].filter(Boolean);
+        const guess = [h.version < 5 && 'the inputs', h.version < 6 && 'FLUDD', h.version === 6 && 'spam sprays', h.version === 6 && 'Yoshi\'s animation'].filter(Boolean);
+        const msg = `Ghost format v${h.version} (current is v${GHOST_LATEST}), recorded with an older Moonshine. It has no ${list(miss)} data, so ${guess.length ? `the viewer guesses ${list(guess).replace(' or ', ' and ')}, and ` : ''}Follow uses the viewer's own camera rather than the run's.`;
         const w = document.createElement('button');
         w.className = 'old'; w.type = 'button'; w.textContent = '\u26a0\ufe0f';
         w.title = msg; w.setAttribute('aria-label', msg);
@@ -6050,7 +6053,9 @@ void main() {
   // well behind a running Mario here.
   const GAME_CAM = { atY: 160, atXZ: 0.25, atYr: 0.12, posXZ: 0.3, posY: 0.2, pitch: 22 * Math.PI / 180 };
   const gameCam = { at: null, dist: 1200 };
+  // (Every hand-back sets userCamUntil to the moment they let go + USER_CAM_WAIT.)
   let userCamUntil = 0, camDragging = false;
+  const USER_CAM_WAIT = 2000;
   function gameCamStep(lead, dt) {
     // Game frames since the last step, from the playback clock: the camera moves when the shown
     // frame does, so Mario (who steps a whole game frame at a time) doesn't judder against it.
@@ -6084,6 +6089,51 @@ void main() {
     camera.position.z += (want.z - camera.position.z) * chase(GAME_CAM.posXZ);
     camera.position.y += (want.y - camera.position.y) * chase(GAME_CAM.posY);
     controls.target.copy(at);
+  }
+
+  // The run's own camera (Moonshine V8 records the game's rendered view): in Follow, a ghost that
+  // has one is seen the way it was recorded, Shine get and all. A drag or zoom still takes the view
+  // over, orbiting round the point on it as far off as Mario and carried along with him; let go, it
+  // holds REC_CAM.hold s and then swings quickly back onto the recording, there by hold + swing.
+  const REC_CAM = { hold: 0.5, swing: 0.45, rate: 12 };
+  const _rcP = new THREE.Vector3(), _rcQ = new THREE.Quaternion(), _rcD = new THREE.Vector3(), _rcA = new THREE.Vector3();
+  const _rcSa = new THREE.Spherical(), _rcSb = new THREE.Spherical();
+  let camLead = null;   // where the followed ghost was last frame (to carry the user's view along)
+  function recordedView(g) {
+    const d = g && g.data;
+    if (!d || !d.camera || !d.camera.count) return null;
+    const s = ghostSampleAt(d, t);
+    return s.gap ? null : ghostCameraAt(d, t, d.segIndex[s.i]);
+  }
+  function recordedPhase(now) {
+    if (camDragging) return 'user';
+    const since = (now - (userCamUntil - USER_CAM_WAIT)) / 1000;
+    return since < REC_CAM.hold ? 'user' : since < REC_CAM.hold + REC_CAM.swing ? 'swing' : 'rec';
+  }
+  // After the controls have moved: the recorded view (or, swinging back, a step of the way to it),
+  // and the point on it a drag would orbit round. The user's own view is left as it is.
+  function applyRecordedView(rv, phase, dt, lead) {
+    if (phase === 'user') return;
+    _rcP.set(rv.pos[0], rv.pos[1], rv.pos[2]);
+    _rcQ.set(-rv.quat[0], -rv.quat[1], -rv.quat[2], rv.quat[3]);   // the view matrix's rotation inverted: the camera's own
+    let fov = rv.fov;
+    if (phase === 'swing') {
+      // round the ghost (not through him): angle and distance from him a step closer each frame
+      const k = 1 - Math.exp(-REC_CAM.rate * dt);
+      if (lead) {
+        _rcSa.setFromVector3(_rcA.copy(camera.position).sub(lead));
+        _rcSb.setFromVector3(_rcA.copy(_rcP).sub(lead));
+        const dth = Math.atan2(Math.sin(_rcSb.theta - _rcSa.theta), Math.cos(_rcSb.theta - _rcSa.theta));
+        _rcSa.radius += (_rcSb.radius - _rcSa.radius) * k; _rcSa.phi += (_rcSb.phi - _rcSa.phi) * k; _rcSa.theta += dth * k;
+        camera.position.copy(lead).add(_rcA.setFromSpherical(_rcSa));
+      } else camera.position.lerp(_rcP, k);
+      camera.quaternion.slerp(_rcQ, k);
+      fov = camera.fov + (rv.fov - camera.fov) * k;
+    } else { camera.position.copy(_rcP); camera.quaternion.copy(_rcQ); }
+    if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    _rcD.set(0, 0, -1).applyQuaternion(camera.quaternion);
+    const along = lead ? _rcD.dot(_rcP.copy(lead).sub(camera.position)) : 1000;
+    controls.target.copy(camera.position).addScaledVector(_rcD, Math.max(150, along));
   }
 
   function setCameraMode(mode) {
@@ -6124,7 +6174,7 @@ void main() {
   // ---------------------------------------------------------------- playback
 
   window.ghostViewerCam = (p, q) => { setCameraMode('free'); camera.position.set(p[0], p[1], p[2]); controls.target.set(q[0], q[1], q[2]); controls.update(); };
-  window.ghostViewerDebug = () => ({ chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), v: st && st.v !== undefined ? Math.round(st.v * 10) / 10 : null, parked: !!(st && st.park && st.park.stop), fromTo: st && [st.from, st.to], chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)),
+  window.ghostViewerDebug = () => ({ cam: { p: camera.position.toArray(), q: camera.quaternion.toArray(), fov: camera.fov, mode: cameraMode }, chomp: (() => { const n = objNodes.find((o) => o.userData.bw); if (!n) return null; const st = n.userData.bw.sim && n.userData.bw.sim.st; return { targets: st && st.targets, from: st && st.from, to: st && st.to, heat: n.userData.bwHeat, bark: n.userData.bwBark, pos: [Math.round(n.position.x), Math.round(n.position.y), Math.round(n.position.z)], staked: st && st.staked, bath: st && st.bath, picket: st && [Math.round(st.px), Math.round(st.pz)], haul: !!(st && st.plan), v: st && st.v !== undefined ? Math.round(st.v * 10) / 10 : null, parked: !!(st && st.park && st.park.stop), fromTo: st && [st.from, st.to], chain: st && st.rope ? Math.round(Math.hypot(st.rope.p[0][0] - st.rope.p[st.rope.p.length - 1][0], st.rope.p[0][1] - st.rope.p[st.rope.p.length - 1][1], st.rope.p[0][2] - st.rope.p[st.rope.p.length - 1][2])) : null }; })(), right: split && split.ctx ? { key: split.ctx.objectsKey, map: split.ctx.mapGroup && split.ctx.mapGroup.userData.id, route: split.ctx.autoStageRoute, col: !!split.ctx.stageCol } : null, objectsKey, mapId: mapGroup && mapGroup.userData.id, plans: ghosts.map((g) => g.carry && g.carry.get(objectsKey)),
     water: ghosts.map((g) => { const L = g.water && g.water.userData.list; if (!L) return null; let h = 0;
       L.drops.forEach((p) => { h = (h * 31 + Math.round(p.x * 10) + Math.round(p.y * 10) * 7 + Math.round(p.z * 10) * 13) | 0; });
       L.splashes.forEach((p) => { h = (h * 31 + Math.round(p.p[0] * 10) + Math.round(p.b * 100)) | 0; });
@@ -6441,18 +6491,32 @@ void main() {
 
   // One view: camera (the Shine demo's, the follow camera's, or the user's), then the frame.
   function viewStep(dt, now, interactive) {
-    // The Shine get demo camera takes over the game's follow camera (not Fixed, not a drag).
+    // Follow: the run's recorded camera, where the ghost has one; else the Shine get demo camera
+    // takes over the game's follow camera (not Fixed, not a drag).
     const sgLead = leadGhost(), sgDm = sgLead ? shineDemoAt(sgLead, t) : null;
-    const sgCam = sgDm && cameraMode === 'follow' && !(userCamUntil > now || camDragging) ? shineDemoCam(sgDm, t) : null;
+    const rv = cameraMode === 'follow' ? recordedView(sgLead) : null, rp = rv ? recordedPhase(now) : null;
+    const sgCam = !rv && sgDm && cameraMode === 'follow' && !(userCamUntil > now || camDragging) ? shineDemoCam(sgDm, t) : null;
     if (sgCam) {
       camera.position.set(sgCam.pos[0], sgCam.pos[1], sgCam.pos[2]);
       controls.target.set(sgCam.at[0], sgCam.at[1], sgCam.at[2]);
       if (camera.fov !== sgCam.fov) { camera.fov = sgCam.fov; camera.updateProjectionMatrix(); }
       gameCam.at = null;
-    } else if (camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
+    } else if (!rv && camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
+    let lead = null;
     if (isFollow() && !sgCam) {
       const p = leadPosition();
-      if (p && (cameraMode === 'fixed' || userCamUntil > now || camDragging)) {
+      if (rv && p) {
+        // The user's view (theirs, or swinging back): carried along as the ghost moves.
+        if (rp !== 'rec' && camLead && camLead.distanceToSquared(p) < 3000 * 3000) {
+          const delta = p.clone().sub(camLead);
+          controls.target.add(delta);
+          camera.position.add(delta);
+        }
+        // (where the game's follow camera would carry on from, should the recording stop)
+        (gameCam.at || (gameCam.at = new THREE.Vector3())).copy(controls.target);
+        gameCam.lastT = t; gameCam.key = objectsKey;
+        lead = p;
+      } else if (p && (cameraMode === 'fixed' || userCamUntil > now || camDragging)) {
         // Fixed follow (or the user is moving it): keep their orbit angle and distance and carry
         // the camera along with the ghost.
         const delta = p.clone().sub(controls.target);
@@ -6460,9 +6524,11 @@ void main() {
         camera.position.add(delta);
         gameCam.at = null;
       } else if (p) gameCamStep(p, dt);
-    }
+      camLead = p;
+    } else camLead = null;
     moveCamera(dt);
     if (interactive) controls.update(); else camera.lookAt(controls.target);
+    if (rv) applyRecordedView(rv, rp, dt, lead);
     if (mapGroup && mapGroup.userData.sky) mapGroup.userData.sky.position.copy(camera.position);
     updateTriggers();
     updateNames();
@@ -6517,10 +6583,12 @@ void main() {
   function splitTall() { return (splitTall.mq || (splitTall.mq = matchMedia('(orientation: portrait) and (max-width: 760px)'))).matches; }
   function splitOn() { return !!(split && ghosts.includes(split.a) && ghosts.includes(split.b)); }
   const camSave = () => ({ p: camera.position.clone(), q: controls.target.clone(), at: gameCam.at && gameCam.at.clone(),
-    dist: gameCam.dist, lastT: gameCam.lastT, key: gameCam.key, user: userCamUntil });
+    dist: gameCam.dist, lastT: gameCam.lastT, key: gameCam.key, user: userCamUntil, lead: camLead && camLead.clone(), fov: camera.fov });
   function camLoad(c) {
     camera.position.copy(c.p); controls.target.copy(c.q); gameCam.at = c.at && c.at.clone();
     gameCam.dist = c.dist; gameCam.lastT = c.lastT; gameCam.key = c.key; userCamUntil = c.user;
+    camLead = c.lead ? c.lead.clone() : null;
+    if (c.fov && camera.fov !== c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
   }
   const ghostEnd = (g) => g.data.qf[g.data.qf.length - 1];
   const splitTB = () => Math.max(0, Math.min(ghostEnd(split.b), t + split.offset));
@@ -6631,7 +6699,7 @@ void main() {
       const oa = act.p.clone().sub(act.q), ob = oth.p.clone().sub(oth.q);
       ob.lerp(oa, 1 - Math.pow(0.75, Math.max(1, dt * 60)));
       oth.p.copy(oth.q).add(ob);
-      oth.user = Math.max(oth.user, act.user, camDragging ? now + 2000 : 0);
+      oth.user = Math.max(oth.user, act.user, camDragging ? now + USER_CAM_WAIT : 0);
       oth.dist = act.dist;
       if (cameraMode === 'free' || cameraMode === 'top') { oth.at = null; }
     }
@@ -6866,7 +6934,7 @@ void main() {
       setCameraMode(cam[0]);
       camera.position.set(+cam[1], +cam[2], +cam[3]); controls.target.set(+cam[4], +cam[5], +cam[6]);
       gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target)));
-      userCamUntil = performance.now() + 2000;
+      userCamUntil = performance.now() + USER_CAM_WAIT;
       controls.update();
     }
     (q.get('h') || '').split(',').filter(Boolean).map(Number).forEach((i) => { if (added[i]) added[i].visible = false; });
@@ -6879,7 +6947,7 @@ void main() {
       split.offset = short ? (sp.length > 2 ? toQf(sp[2]) - t : 0) : q.has('tB') ? Number(q.get('tB')) - t : sp[2] || 0;
       const cb = (q.get('cb') || q.get('camB') || '').split(',').map(Number);
       split.cams = [camSave(), camSave()];
-      if (cb.length === 6) { split.cams[1].p.set(cb[0], cb[1], cb[2]); split.cams[1].q.set(cb[3], cb[4], cb[5]); split.cams[1].user = performance.now() + 2000; }
+      if (cb.length === 6) { split.cams[1].p.set(cb[0], cb[1], cb[2]); split.cams[1].q.set(cb[3], cb[4], cb[5]); split.cams[1].user = performance.now() + USER_CAM_WAIT; }
       renderGhostList();
       splitUi();
     }
@@ -7189,7 +7257,7 @@ void main() {
     }, { passive: true });
     const lift = (e) => {
       if (e.targetTouches.length) return;
-      if (look && look.orbit && camDragging) { camDragging = false; userCamUntil = performance.now() + 2000; }
+      if (look && look.orbit && camDragging) { camDragging = false; userCamUntil = performance.now() + USER_CAM_WAIT; }
       look = null; controls.enabled = true;
     };
     el.addEventListener('touchend', lift, { passive: true });
@@ -7230,11 +7298,11 @@ void main() {
   // 2 s after they let go (at the distance they zoomed to).
   controls.addEventListener('start', () => { camDragging = true; });
   controls.addEventListener('end', () => {
-    camDragging = false; userCamUntil = performance.now() + 2000;
+    camDragging = false; userCamUntil = performance.now() + USER_CAM_WAIT;
     gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target)));
   });
   renderer.domElement.addEventListener('wheel', () => {
-    userCamUntil = performance.now() + 2000;
+    userCamUntil = performance.now() + USER_CAM_WAIT;
     setTimeout(() => { gameCam.dist = Math.min(2000, Math.max(700, camera.position.distanceTo(controls.target))); }, 50);
   }, { passive: true });
 
