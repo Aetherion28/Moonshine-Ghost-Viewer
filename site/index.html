@@ -4495,35 +4495,22 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
   // FLUDD carries one secondary nozzle (Hover, Rocket or Turbo). A ghost only reveals which one
   // when it is selected, so show the most recent one used, or the first one the run uses.
   // Ghosts without FLUDD data: which nozzle is out (FLUDD wears one at a time). X switches between
-  // Spray and the secondary nozzle; spraying animations (fepmp / swpmp) mean Spray is out, and R held
-  // for a while without them (hovering) means the secondary is. Starts on Spray. 1 = secondary out.
-  const DEMO_ANIMS = new Set([205, 269, 270, 301, 302, 315, 316, 317, 333]);   // shine get, gate in/out: no control
+  // Spray and the secondary nozzle, starting on Spray; the standing spray animations (fepmp /
+  // swpmp) mean Spray is out. 1 = secondary out. (Checked against V6+ ghosts, which record the
+  // nozzle: plain X toggling matches 92-99.9% of their frames; guessing hovering from R being held,
+  // or Spray from R-then-A, only made it worse, since hovering players press R then A too.)
   function buildSelectedTimeline(data) {
     const inp = data.inputs;
     if (!inp || !inp.count || inp.hasFludd) return null;
     const out = new Uint8Array(inp.count);
-    // Hovering holds Mario's height (R held, under 4 a frame up or down for 8 inputs running); a
-    // spam spray (R pressed, A within 2 inputs: the guide's R then A) only exists on Spray.
-    let sel = 0, prev = 0, rRun = 0, lastY = null, rDown = -99, demo = -99;
+    let sel = 0, prev = 0;
     for (let i = 0; i < inp.count; i++) {
       const b = inp.buttons[i];
       if ((b & 0x400) && !(prev & 0x400)) sel ^= 1;   // X
-      const s = ghostSampleAt(data, inp.qf[i]), anim = data.anim[s.i];
-      const rHeld = (b & 0x20) || inp.trig[i * 2 + 1] > 60;
-      if ((b & 0x20) && !(prev & 0x20)) rDown = i;
-      const spam = (b & 0x100) && !(prev & 0x100) && (b & 0x20) && i - rDown <= 2;
-      const level = lastY !== null && Math.abs(s.y - lastY) < 4;
-      lastY = s.y;
       prev = b;
-      if (DEMO_ANIMS.has(anim)) demo = i;
-      if (anim === 286 || anim === 287 || spam) { sel = 0; rRun = 0; }
-      else if (rHeld && level && i - demo > 45) { if (++rRun >= 8) sel = 1; }   // (not while landing from a gate)
-      else rRun = 0;
+      const anim = data.anim[ghostSampleAt(data, inp.qf[i]).i];
+      if (anim === 286 || anim === 287) sel = 0;
       out[i] = sel;
-    }
-    // Hover evidence comes a few inputs after the switch: carry it back to the last X press.
-    for (let i = inp.count - 1; i > 0; i--) if (out[i] && !out[i - 1] && !(inp.buttons[i] & 0x400)) {
-      let k = i - 1; while (k > 0 && !out[k] && !(inp.buttons[k] & 0x400) && i - k < 8) { out[k] = 1; k--; }
     }
     return out;
   }
