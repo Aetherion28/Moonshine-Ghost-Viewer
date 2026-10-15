@@ -361,6 +361,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
         <input type="text" id="speedOut" inputmode="decimal" value="1×" aria-label="Playback speed, type a value" title="Click to type a speed">
       </div>
       <label><input type="checkbox" id="optPath" checked> Show full route lines</label>
+      <label title="The coloured circle at each ghost's feet that tells ghosts apart"><input type="checkbox" id="optRing" checked> Show ghost circles</label>
       <label><input type="checkbox" id="optObjects" checked> Show objects</label>
       <label title="Load zones, cutscene and warp triggers, area cylinders and the camera, area, flow, wire, shadow, mirror, sound and draw-distance cubes, as see-through volumes with labels."><input type="checkbox" id="optTriggers"> Show invisible triggers</label>
       <label><input type="checkbox" id="optNames"> Show model names</label>
@@ -4617,6 +4618,8 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     const ring = new THREE.Mesh(new THREE.RingGeometry(60, 78, 32), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.75, depthWrite: false }));
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 2;
+    ring.visible = $('optRing').checked;
+    group.userData.ring = ring;
     group.add(ring);
     setMarkerBody(group);
     return group;
@@ -6620,6 +6623,7 @@ void main() {
   $('camFree').onclick = () => setCameraMode('free');
   $('camTop').onclick = () => setCameraMode('top');
   $('optPath').onchange = (e) => ghosts.forEach((g) => { g.path.visible = e.target.checked && g.visible; });
+  $('optRing').onchange = (e) => ghosts.forEach((g) => { if (g.marker.userData.ring) g.marker.userData.ring.visible = e.target.checked; });
   $('optWire').onchange = (e) => setWireframe(e.target.checked);
   $('optAutoStage').onchange = () => { autoStageRoute = ''; update(); updateMapNotice(); };
   $('optObjects').onchange = (e) => { if (objectsGroup) objectsGroup.visible = e.target.checked; };
