@@ -58,15 +58,16 @@ const MarioRig = (() => {
     return file ? { name: file, data: bck.anims[file] } : null;
   }
 
-  // Hands per TMario::changeHand: 0 (default) -> ma_hnd2 + ma_hnd3, body hand shapes hidden;
-  // 1 -> ma_hnd3 + body shapes 5/6; 2 -> ma_hnd2 + body shapes 5/6.
+  // Hands per TMario::changeHand. J3DShpFlag_Visible set means the shape is skipped (J3DJoint
+  // draw), so: 0 (default) -> the body's own hand shapes 5/6, no hand models; 1 -> ma_hnd2;
+  // 2 -> ma_hnd3. ma_hnd4r is always hidden. Riding Yoshi always uses 0.
   function setHands(rig, handId) {
     const show = (k, v) => { if (rig.parts[k]) rig.parts[k].visible = v; };
     const h = handId === 1 || handId === 2 ? handId : 0;
-    show('hand_2_r', h !== 1); show('hand_2_l', h !== 1);
-    show('hand_3_r', h !== 2); show('hand_3_l', h !== 2);
+    show('hand_2_r', h === 1); show('hand_2_l', h === 1);
+    show('hand_3_r', h === 2); show('hand_3_l', h === 2);
     show('hand_4_r', false);
-    ['5', '6'].forEach((s) => { if (rig.bodyShapes[s]) rig.bodyShapes[s].visible = h !== 0; });
+    ['5', '6'].forEach((s) => { if (rig.bodyShapes[s]) rig.bodyShapes[s].visible = h === 0; });
   }
 
   function pose(rig, animId, yoshi, phase) {
@@ -83,7 +84,7 @@ const MarioRig = (() => {
       b.quaternion.setFromEuler(euler);
       b.position.set(sample(j[6], frame), sample(j[7], frame), sample(j[8], frame));
     }
-    if (!yoshi) setHands(rig, (MARIO_ANIM_TABLE[animId] || [0, 0])[1]);
+    setHands(rig, yoshi ? 0 : (MARIO_ANIM_TABLE[animId] || [0, 0])[1]);
     rig.anim = a.name;
     return a.name;
   }
