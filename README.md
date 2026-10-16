@@ -13,6 +13,9 @@ Open `site/index.html` from any static web server, then drop ghost files on the 
   `tools/spc.py`) come out from where the decomp says, timed by the ghost (Mario stands still
   for the demo's length), flying the way `TShine::appearWithTime` / `appearSimple` do, with the
   world stopped meanwhile and, for ghosts without a recorded camera, the demo's own cameras.
+- Invisible triggers: load zones, cutscene and warp triggers, area cylinders, the stage's cubes,
+  and enemies' own trigger zones (`tools/build_triggers.py` `ENEMY_ZONES`: so far the Monty Mole
+  cannon's bomb, hide and come-back-out distances, from the stage's `cannon.prm`).
 - Frame-by-frame or Cinematic playback, follow / free / top cameras; Follow plays a V8 ghost
   through the camera it recorded (drag to look round, and it swings back when you let go).
 

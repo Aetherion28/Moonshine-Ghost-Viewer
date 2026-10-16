@@ -363,7 +363,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
       <label><input type="checkbox" id="optPath" checked> Show full route lines</label>
       <label title="The coloured circle at each ghost's feet that tells ghosts apart"><input type="checkbox" id="optRing" checked> Show ghost circles</label>
       <label><input type="checkbox" id="optObjects" checked> Show objects</label>
-      <label title="Load zones, cutscene and warp triggers, area cylinders and the camera, area, flow, wire, shadow, mirror, sound and draw-distance cubes, as see-through volumes with labels."><input type="checkbox" id="optTriggers"> Show invisible triggers</label>
+      <label title="Load zones, cutscene and warp triggers, area cylinders and the camera, area, flow, wire, shadow, mirror, sound and draw-distance cubes, and enemies' own trigger zones (the Monty Mole cannon's), as see-through volumes with labels."><input type="checkbox" id="optTriggers"> Show invisible triggers</label>
       <label><input type="checkbox" id="optNames"> Show model names</label>
       <label title="Shines that appear only after an event (red coins, a boss, 100 coins...) are hidden until the ghost triggers them; the 100-coin shine counts the stage's placed gold coins. Red coins that a red switch brings out stay hidden until the ghost presses it. Tick to show every shine and red coin in the level."><input type="checkbox" id="optShines"> Show all shines and red coins</label>
       <label><input type="checkbox" id="optAutoStage" checked> Switch stage with the ghost</label>
@@ -1257,7 +1257,7 @@ dialog.browse::backdrop { background: rgba(0,0,0,.45); }
     if (key === objectsKey) return;
     objectsKey = key;
     if (objectsGroup) scene.remove(objectsGroup);
-    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {}; objSpawn = null; objCams = { tools: {}, bck: {} }; objShineSrc = [];
+    objectsGroup = null; objList = []; objNodes = []; wireMeshes = []; objDyn = {}; objProtos = {}; objSpawn = null; objCams = { tools: {}, bck: {} }; objShineSrc = []; objTrig = [];
     const info = entry.objects;
     if (!info || !info.scenes[routeKey]) { update(); return; }
     let lib = objLibCache.get(info.lib);
@@ -6356,6 +6356,9 @@ void main() {
     sound: [0x7bdc4b, 'Sound cube'], fastA: [0xb07a4b, 'Draw cube A'], fastB: [0xb07a4b, 'Draw cube B'], fastC: [0xb07a4b, 'Draw cube C'], cube: [0xcccccc, 'Cube'],
   };
   const CYL_KINDS = new Set(['stage', 'stageHipDrop', 'demo', 'warp', 'areaCyl']);
+  // Enemies' own distance checks (kind 'enemy', a sphere of radius a round the enemy; info names
+  // the zone, tools/build_triggers.py ENEMY_ZONES).
+  const ENEMY_ZONE_COLOR = { bomb: 0xff5a1f, bomb2: 0xffb21f, hide: 0x8fd14f, unhide: 0x4fc3d1 };
   function areaName(a) {
     const r = ROUTE_NAMES[`${a}:0`];
     return r ? r.label : WORLD_NAMES[a] || `area ${a}`;
@@ -6385,27 +6388,31 @@ void main() {
   }
   function updateTriggers() {
     const on = $('optTriggers').checked;
-    if (trigGroup && (!on || trigGroup.userData.key !== objectsKey)) { clearGroup(trigGroup); trigGroup = null; }
+    // (rebuilt when the list changes too: a stage's key is set before its file has loaded)
+    if (trigGroup && (!on || trigGroup.userData.key !== objectsKey || trigGroup.userData.list !== objTrig)) { clearGroup(trigGroup); trigGroup = null; }
     if (!on || trigGroup || !objectsKey) return;
     trigGroup = new THREE.Group();
     trigGroup.userData.key = objectsKey;
+    trigGroup.userData.list = objTrig;
     const D = Math.PI / 180;
     objTrig.forEach(([kind, label, x, y, z, rx, ry, rz, a, b, c, info]) => {
-      const [col, name] = TRIG_STYLE[kind] || TRIG_STYLE.cube;
+      let [col, name] = TRIG_STYLE[kind] || TRIG_STYLE.cube;
       const g = new THREE.Group();
       g.position.set(x, y, z);
       let geo;
-      if (CYL_KINDS.has(kind)) geo = new THREE.CylinderGeometry(a, a, b, 20, 1, true);
+      const enemy = kind === 'enemy';
+      if (enemy) { col = ENEMY_ZONE_COLOR[info] || 0xff5a1f; geo = new THREE.SphereGeometry(a, 32, 16); }
+      else if (CYL_KINDS.has(kind)) geo = new THREE.CylinderGeometry(a, a, b, 20, 1, true);
       else { geo = new THREE.BoxGeometry(a, b, c); g.rotation.set(rx * D, ry * D, rz * D, 'ZYX'); }
       geo.translate(0, b / 2, 0);
       const fill = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide, fog: false }));
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 1), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.8, fog: false }));
       g.add(fill, edges);
-      let text = name;
+      let text = enemy ? `${label} (${Math.round(a)})` : name;
       if (kind === 'stage' || kind === 'stageHipDrop') text += ' → ' + areaName(info);
       else if (kind === 'warp' && Array.isArray(info)) text += ` ${info[0]} → ${info[1]}`;
       const sp = labelSprite(text, '#' + col.toString(16).padStart(6, '0'));
-      sp.position.set(0, b, 0);
+      sp.position.set(0, enemy ? a : b, 0);
       g.add(sp);
       g.userData.label = sp;
       trigGroup.add(g);
@@ -6964,6 +6971,7 @@ void main() {
       return [L.drops.length, L.splashes.length, h, g.puddles ? g.puddles.geometry.drawRange.count : 0, !!g.water.visible]; }),
     jpa: ghosts.map((g) => (g.jpa || []).reduce((n, e) => n + (e.ptcl ? e.ptcl.length : 0), 0)),
     ends: ghosts.map((g) => (g.endShine ? [...g.endShine.entries()].map(([k, v]) => [k, v.i, v.q, v.p.map(Math.round), v.simple]) : null)),
+    trig: { n: objTrig.length, enemy: objTrig.filter((t) => t[0] === 'enemy').length, drawn: trigGroup ? trigGroup.children.length : -1, key: trigGroup && trigGroup.userData.key },
     flights: shineFlights.map((fl) => ({ i: fl.i, q0: fl.q0, stopEnd: fl.stopEnd, L: fl.L, from: fl.from, to: fl.to, cams: (fl.cams || []).map((c) => [c.q, c.len, c.bck ? 'bck' : 'tool']) })) });
   let hudKey = null;   // what the readout shows
   function update() {

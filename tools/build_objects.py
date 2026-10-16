@@ -1499,6 +1499,8 @@ def main(argv):
                                            and ("Thrown" in k or "Bomb" in k or "Body" in k or "Damage" in k)}}
             if dyn:
                 data["dyn"] = dyn
+            from build_triggers import triggers   # (imports this module: loaded late)
+            data["trig"] = triggers(arc)
             (out_dir / f"{scene}.json").write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False))
         glb = w.write(out_dir / "tmp.glb")
         (out_dir / "tmp.glb").unlink()
