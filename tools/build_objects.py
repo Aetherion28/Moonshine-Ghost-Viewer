@@ -747,24 +747,118 @@ def name_key(name: str) -> int:
     return k
 
 
-def event_shines(arc: dict) -> list:
-    """Shines the stage's event scripts bring out with a demo (map/sp/*.sb, TEventWatcher):
-    appearShineFromNPC(shine, NPC, demo camera) where the NPC stands, appearShine(shine, demo
-    camera) where the Shine is placed. [[shine key, NPC key (0: at the Shine), demo camera]]."""
+BOSS_SHINE, BOSS_CAM = "シャイン（ボス用）", "ボスシャインカメラ"
+# Placed objects whose code brings out a Shine with a demo (TItemManager::makeShineAppearWithDemo,
+# the decomp's callers): type -> (Shine, demo camera, where it comes out: "at" the object (+ dy up),
+# "near": the one of these nearest Mario then (+ dy), "mario": where Mario is, "self": where the
+# Shine is placed). Gooper Blooper's and the Chain Chomp's are worked out by their simulations.
+CODE_SHINES = {
+    "MareCork": (BOSS_SHINE, BOSS_CAM, "at", 0),                     # TMareCork::calcRootMatrix, frame 250
+    "BossPakkun": (BOSS_SHINE, BOSS_CAM, "mario", 0),                # TNerveBPDie (where he lies: by Mario)
+    "BossTelesa": (BOSS_SHINE, BOSS_CAM, "at", 0),                   # bosstelesa.cpp, 240 ticks after the last hit
+    "BossEel": (BOSS_SHINE, "めおとウナギシャインカメラ", "at", 0),     # bosseel.cpp, from its tooth ha7
+    "BossHanachan": (BOSS_SHINE, BOSS_CAM, "mario", 0),              # (BossHanachan not decompiled: where Mario beat it)
+    "FireWanwan": (BOSS_SHINE, BOSS_CAM, "near", 500),               # TFireWanwanManager::checkShineAppear: the last one put out
+    "BellDolpicPolice": ("シャイン（ドルピック鐘警察署用）", "ドルピック鐘警察署カメラ", "at", 0),
+    "BellDolpicTV": ("シャイン（ドルピック鐘テレビ局用）", "ドルピック鐘テレビ局カメラ", "at", 0),
+    "MonumentShine": ("シャイン（モニュメントシャイン用）", "モニュメントシャインカメラ", "at", 0),
+    "AirportEventSink": ("シャイン（落書き用）", "落書きシャインカメラ", "self", 0),
+    "NPCSunflowerL": ("ひまわり用シャイン", "ひまわりシャインカメラ", "near", 500),   # NpcEvent.cpp: the last one revived
+    "NPCSunflowerS": ("ひまわり用シャイン", "ひまわりシャインカメラ", "near", 500),
+    "AmiKing": ("シャイン（観覧車シャイン用）", "観覧車シャインカメラ", "near", 0),     # TAmiKing, as it falls
+    "WaterMelon": ("シャイン（お化けスイカ用）", "スイカシャインカメラ", "self", 0),    # TBigWatermelon::startEvent
+    "AnimalBird": ("シャイン（鳥用）", "鳥シャインカメラ", "near", 0),               # (the bird code isn't decompiled)
+}
+
+
+def name_key(name: str) -> int:
+    """JDrama::TNameRef::calcKeyCode: the u16 key the game looks names up by."""
+    k = 0
+    for b in name.encode("shift_jis"):
+        k = (k * 3 + b) & 0xFFFF
+    return k
+
+
+def shine_sources(arc: dict, objs: list) -> list:
+    """Every way the stage brings out a Shine that isn't simply there, as the decomp has it:
+    [{"s": Shine key, "cam": its demo camera (it flies in: TShine::appearWithTime over the
+    camera's length, the world stopped), and where from: "at": [[x, y, z], ...] (the one
+    nearest Mario then), "dy", "mario": 1 (where Mario is), "npc": key (an NPC he talks to: 0,
+    one only known at run time); none of these: where the Shine is placed. Or no camera:
+    "simple": ticks (TShine::appearSimple: up and back down, where Mario then takes it),
+    "onMario": 1 (appeared on Mario, appearShineFromNPCWithoutDemo)}]."""
     import spc
+    shines = {o["name"] for o in objs if o["type"] == "Shine"}
     out = []
+
+    def add(shine, cam=None, **kw):
+        if shine not in shines:
+            return
+        ev = {"s": name_key(shine), **({"cam": cam} if cam else {}), **kw}
+        for e in out:   # the same Shine from several objects of a kind: one source, nearest of them all
+            if "at" in e and "at" in ev and {k: v for k, v in e.items() if k != "at"} == {k: v for k, v in ev.items() if k != "at"}:
+                e["at"] += [p for p in ev["at"] if p not in e["at"]]
+                return
+        if ev not in out:
+            out.append(ev)
+
+    def pos(o, dy=0.0):
+        pl = scene_bin.placement(o["payload"])
+        return [round(pl[0][0], 1), round(pl[0][1] + dy, 1), round(pl[0][2], 1)] if pl else None
+
+    # Event scripts (map/sp/*.sb, TEventWatcher's builtins)
     for k in sorted(arc):
         if not re.fullmatch(r"map/sp/.+\.sb", k):
             continue
         for name, args in spc.builtin_calls(arc[k]):
-            if name == "appearShineFromNPC" and len(args) == 3 and all(isinstance(a, str) and a for a in args):
-                ev = [name_key(args[0]), name_key(args[1]), args[2]]
-            elif name == "appearShine" and len(args) == 2 and all(isinstance(a, str) and a for a in args):
-                ev = [name_key(args[0]), 0, args[1]]
-            else:
-                continue
-            if ev not in out:
-                out.append(ev)
+            if name == "appearShine" and len(args) == 2 and isinstance(args[0], str) and isinstance(args[1], str):
+                add(args[0], args[1])   # where it's placed (makeShineAppearWithDemoOffset, no offset)
+            elif name == "appearShineFromNPC" and len(args) == 3 and isinstance(args[0], str) and isinstance(args[2], str):
+                add(args[0], args[2], npc=name_key(args[1]) if isinstance(args[1], str) else 0)
+            elif name == "appearShineFromKageMario" and len(args) == 3 and isinstance(args[0], str):
+                add(args[0], simple=args[2] if isinstance(args[2], int) else 360)
+            elif name == "appearShineFromNPCWithoutDemo" and args and isinstance(args[0], str):
+                # (on Mario, where he talks to the shop's raccoons)
+                add(args[0], onMario=1, at=[p for p in (pos(o) for o in objs if o["name"].startswith("マニ屋")) if p])
+            elif name == "appearShineForWoodBox":
+                for n in ("木箱ゲーム用シャイン１", "木箱ゲーム用シャイン２"):
+                    add(n, "木箱ゲーム用シャインカメラ", at=[[-4010.0, 9850.0, -4040.0]])
+    # Hidden in an object (THideObjBase with event ID 777): "シャイン（<its name>）", from it
+    for o in objs:
+        pl = o["payload"]
+        if any(len(pl) >= off and struct.unpack_from(">i", pl, len(pl) - off)[0] == 777 for off in (16, 28)):
+            p = pos(o)
+            if p:
+                add(f"シャイン（{o['name']}）", f"シャイン（{o['name']}）カメラ", at=[p])
+    # The objects' own code
+    by_type = {}
+    for o in objs:
+        by_type.setdefault(o["type"], []).append(o)
+    for typ, (shine, cam, how, dy) in CODE_SHINES.items():
+        if typ not in by_type:
+            continue
+        if how == "self":
+            add(shine, cam)
+        elif how == "mario":
+            add(shine, cam, mario=1, **({"dy": dy} if dy else {}))
+        else:
+            ps = [p for p in (pos(o, dy) for o in by_type[typ]) if p]
+            if ps:
+                add(shine, cam, at=ps if how == "near" else ps[:1])
+    if "SleepBossHanachan" in by_type and "ShiningStone" in by_type:   # TLeanMirror: 1100 over the stone
+        add(BOSS_SHINE, BOSS_CAM, at=[pos(by_type["ShiningStone"][0], 1100.0)])
+    if "MapEventSirenaSink" in by_type:   # TMapEventSirenaSink::watch (unk68, set in loadAfter)
+        add("シャイン（ホテル上げ用）", "ホテル上げシャインカメラ", at=[[0.0, 3300.0, -2570.0]])
+    # The 100th gold coin (TCoin::taken: where that coin was, by Mario), and a Shine placed as
+    # "quickly" (TShine::control: 240 ticks in, with its own demo)
+    add("シャイン（１００枚コイン用）", "シャイン（１００枚コイン用）カメラ", mario=1)
+    for o in objs:
+        if o["type"] == "Shine":
+            try:
+                if _lstr(o["payload"], actor_tail(o["payload"]))[0] == b"quickly":
+                    add(o["name"], "シャイン（いきなり出現）カメラ")
+            except (struct.error, ValueError):
+                pass
     return out
 
 
@@ -1370,9 +1464,9 @@ def main(argv):
                 data["cams"] = cams
             if cam_bcks:
                 data["camBck"] = cam_bcks
-            ev_shines = event_shines(arc)
-            if ev_shines:
-                data["evShines"] = ev_shines
+            src = shine_sources(arc, scene_bin.parse(arc["map/scene.bin"]))
+            if src:
+                data["shineSrc"] = src
             for o in scene_bin.parse(arc["map/scene.bin"]):   # TMario::load: flag bit 1 = starts without FLUDD
                 if o["type"] == "Mario" and len(o["payload"]) >= 4 and struct.unpack_from(">I", o["payload"], len(o["payload"]) - 4)[0] & 1:
                     data["noFludd"] = 1
