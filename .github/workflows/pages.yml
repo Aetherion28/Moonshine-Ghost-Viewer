@@ -1,9 +1,11 @@
 name: Deploy site to GitHub Pages
 
-# The site is main's site/ folder, with the v2 branch's site/ under /v2/.
+# The site is main's site/ folder, with the v2 branch's site/ under /v2/. The github-pages
+# environment only deploys from main, so after pushing v2 run this workflow on main by hand
+# (workflow_dispatch) to publish it.
 on:
   push:
-    branches: [main, v2]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
