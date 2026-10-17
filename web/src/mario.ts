@@ -15,6 +15,7 @@ import { GfxRenderCache } from '../noclip/gfx/render/GfxRenderCache.js';
 import { MARIO_ANIM_TABLE, MARIO_BCK_FILES } from './mario_anims.js';
 import { SMSPass, SceneBinObjLight } from './sms_scene.js';
 import { colorFromRGBA } from '../noclip/Color.js';
+import { ColorKind } from '../noclip/gx/gx_render.js';
 import { transformVec3Mat4w1 } from '../noclip/MathHelpers.js';
 
 const _v = vec3.create();
@@ -175,4 +176,51 @@ export function parseArchive(buf: ArrayBuffer, yaz0: (b: ArrayBufferSlice) => Ar
     let b = new ArrayBufferSlice(buf);
     if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) === 'Yaz0') b = yaz0(b);
     return RARC.parse(b);
+}
+
+// ---------------------------------------------------------------- Yoshi
+// yoshi.szs's model and its BCKs in alphabetical order (MActor's index, which Moonshine V7
+// records). Body colour: TEV register 2 = TYoshi's bodyColor for its type.
+const YOSHI_COLORS = [[0x40, 0xa1, 0x24], [0xff, 0x8c, 0x1c], [0xaa, 0x4c, 0xff], [0xff, 0xa0, 0xbe]];   // green, orange, purple, pink
+
+export class YoshiModel {
+    public body: J3DModelInstanceSimple;
+    private anim = new PinnedAnimationController(30);
+    private names: string[];
+    private bcks = new Map<number, ANK1 | null>();
+    private colour = -1;
+    constructor(device: GfxDevice, cache: GfxRenderCache, private arc: RARC.JKRArchive) {
+        const f = arc.findFile('yoshi_model.bmd')!;
+        this.body = new J3DModelInstanceSimple(new J3DModelData(device, cache, BMD.parse(f.buffer)));
+        this.body.passMask = SMSPass.MAIN;
+        this.body.animationController = this.anim;
+        (this.body as any).isPlayer = true;
+        this.names = arc.root.files.map((x) => x.name.toLowerCase()).filter((n) => n.endsWith('.bck')).sort();
+    }
+    /** The rider animation's Yoshi counterpart (ghosts before V7 record only Mario): yo_run -> yoshi_run. */
+    indexForRider(marioFile: string | undefined): number {
+        const name = marioFile && /^yo_/.test(marioFile) ? `yoshi_${marioFile.slice(3)}.bck` : 'yoshi_wait.bck';
+        const k = this.names.indexOf(name);
+        return k >= 0 ? k : this.names.indexOf('yoshi_wait.bck');
+    }
+    private bck(i: number) {
+        if (!this.bcks.has(i)) {
+            const f = this.names[i] ? this.arc.findFile(this.names[i]) : null;
+            this.bcks.set(i, f ? BCK.parse(f.buffer) : null);
+        }
+        return this.bcks.get(i)!;
+    }
+    duration(i: number) { const a = this.bck(i); return a ? a.duration : 1; }
+    pose(x: number, y: number, z: number, yaw: number, colour: number, animIndex: number, frame: number) {
+        if (colour !== this.colour) {
+            this.colour = colour;
+            const c = YOSHI_COLORS[colour >= 1 && colour <= 4 ? colour - 1 : 0];
+            for (const mi of this.body.materialInstances) mi.setColorOverride(ColorKind.C2, { r: c[0] / 255, g: c[1] / 255, b: c[2] / 255, a: 1 });
+        }
+        const a = this.bck(animIndex);
+        if (a && (this.body as any)._ank1 !== a) { this.body.bindANK1(a, this.anim); (this.body as any)._ank1 = a; }
+        if (a) this.anim.setTimeInFrames(frame);
+        mat4.fromYRotation(this.body.modelMatrix, (yaw / 32768) * Math.PI);
+        this.body.modelMatrix[12] = x; this.body.modelMatrix[13] = y; this.body.modelMatrix[14] = z;
+    }
 }

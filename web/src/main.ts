@@ -15,8 +15,9 @@ import { colorFromRGBA } from '../noclip/Color.js';
 import { GameFS, openDisc, openFolder, rememberHandle, rememberedHandle, forgetHandle } from './disc.js';
 import { parseStageArc, sceneForRoute } from './stagearc.js';
 import { SunshineRenderer, SunshineSceneDesc } from './sms_scene.js';
-import { MarioModel, parseArchive, setPlayerLights } from './mario.js';
-import { parseSmsGhost, ghostSampleAt, ghostAnimAt, ghostFluddAt, ghostCameraAt, ghostFormatTime, ghostRouteLabel } from './ghost.js';
+import { MarioModel, YoshiModel, parseArchive, setPlayerLights } from './mario.js';
+import { MARIO_BCK_FILES } from './mario_anims.js';
+import { parseSmsGhost, ghostSampleAt, ghostAnimAt, ghostFluddAt, ghostCameraAt, ghostYoshiAt, ghostFormatTime, ghostRouteLabel } from './ghost.js';
 import { buildTriggers, marioStart, Trigger } from './triggers.js';
 import { drawTriggers } from './overlay.js';
 import { InputDisplay } from './inputs.js';
@@ -37,12 +38,14 @@ interface Ghost {
     color: string;
     visible: boolean;
     mario: MarioModel | null;
+    yoshi: YoshiModel | null;
 }
 
 // ---------------------------------------------------------------- state
 let fs: GameFS | null = null;
 let stageTable: string[][] = [];
 let marioArc: RARC.JKRArchive | null = null;
+let yoshiArc: RARC.JKRArchive | null = null;
 let renderer: SunshineRenderer | null = null;
 let stageName = '';
 let stageLoading = '';
@@ -75,6 +78,7 @@ async function useDisc(g: GameFS) {
     fs = g;
     stageTable = parseStageArc(await fs.read('data/stageArc.bin'));
     marioArc = parseArchive(await fs.read('data/mario.szs'), Yaz0.decompressSW);
+    yoshiArc = fs.has('data/yoshi.szs') ? parseArchive(await fs.read('data/yoshi.szs'), Yaz0.decompressSW) : null;
     $('discLabel').textContent = `${g.label}${g.id ? ` · ${g.id}` : ''}`;
     document.body.classList.add('hasDisc');
     fillStagePicker();
@@ -166,7 +170,7 @@ async function loadStage(name: string) {
 
 function destroyStage() {
     if (!renderer) return;
-    for (const g of ghosts) g.mario = null;
+    for (const g of ghosts) { g.mario = null; g.yoshi = null; }
     renderer.destroy(device);
     renderer = null;
 }
@@ -180,6 +184,13 @@ function attachMario(g: Ghost) {
     swapTextures(device, cache, renderer.rarc, m.all);
     renderer.modelInstances.push(...m.all);
     g.mario = m;
+    g.yoshi = null;
+    if (yoshiArc && g.data.yoshi && g.data.yoshi.some((v: number) => v)) {
+        const y = new YoshiModel(device, cache, yoshiArc);
+        if (amb) y.body.modelMaterialData.materialData?.forEach((md: any) => { md.material.colorAmbRegs[0] = { r: amb.r / 255, g: amb.g / 255, b: amb.b / 255, a: amb.a / 255 }; });
+        renderer.modelInstances.push(y.body);
+        g.yoshi = y;
+    }
 }
 
 function frameStage() {
@@ -199,7 +210,7 @@ async function addGhostFiles(files: FileList | File[]) {
     for (const f of Array.from(files)) {
         try {
             const data = parseSmsGhost(await f.arrayBuffer());
-            const g: Ghost = { data, fileName: f.name, color: COLORS[ghosts.length % COLORS.length], visible: true, mario: null };
+            const g: Ghost = { data, fileName: f.name, color: COLORS[ghosts.length % COLORS.length], visible: true, mario: null, yoshi: null };
             ghosts.push(g);
             attachMario(g);
             for (const w of data.warnings) console.warn(f.name, w);
@@ -245,7 +256,7 @@ function findLight(r: SunshineRenderer, name: string) {
 }
 
 function poseGhosts() {
-    if (renderer && playerSun) setPlayerLights(ghosts.flatMap((g) => g.mario ? g.mario.all : []), playerSun, camera.viewMatrix);
+    if (renderer && playerSun) setPlayerLights(ghosts.flatMap((g) => [...(g.mario ? g.mario.all : []), ...(g.yoshi ? [g.yoshi.body] : [])]), playerSun, camera.viewMatrix);
     if (renderer && objectSun) {   // TLightCommon::setLight, the object group
         setPlayerLights(actorModels, objectSun, camera.viewMatrix);
         // TODO: with GXInitLightShininess(50)'s attenuation and the diffuse function these
@@ -259,11 +270,25 @@ function poseGhosts() {
         if (!m) continue;
         const on = g.visible && ghostOnStage(g, t) && t <= g.data.header.durationQf;
         m.setVisible(on);
+        if (g.yoshi && !on) g.yoshi.body.visible = false;
         if (!on) continue;
         const s = ghostSampleAt(g.data, t), a = ghostAnimAt(g.data, t), fl = ghostFluddAt(g.data, t);
         const noz = fl && fl.present ? ({ 0: 'normal_wg', 1: 'rocket_wg', 4: 'hover_wg', 5: 'back_wg' } as Record<number, string>)[fl.nozzle] || 'normal_wg' : (fl ? null : 'normal_wg');
         m.pose(s.x, s.y, s.z, s.yaw, a.id, !!a.yoshi, a.phase, a.yoshi ? null : noz);
         m.calcParts();
+        if (g.yoshi) {
+            // Riding Yoshi (the sample's Yoshi type, 1..4): V7 records his own animation and frame;
+            // older ghosts get the rider animation's counterpart at the same point of its loop.
+            const colour = g.data.yoshi ? g.data.yoshi[s.i] : 0;
+            g.yoshi.body.visible = !!colour && !s.gap;
+            if (g.yoshi.body.visible) {
+                const ob = ghostYoshiAt(g.data, t);
+                let k: number, f: number;
+                if (ob) { k = ob.anim; f = ob.frame; }
+                else { k = g.yoshi.indexForRider(MARIO_BCK_FILES[a.id]); f = (a.phase / 4096) * g.yoshi.duration(k); }
+                g.yoshi.pose(s.x, s.y, s.z, s.yaw, colour, k, f);
+            }
+        }
     }
 }
 
