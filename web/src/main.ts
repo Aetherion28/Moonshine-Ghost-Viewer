@@ -20,6 +20,7 @@ import { parseSmsGhost, ghostSampleAt, ghostAnimAt, ghostFluddAt, ghostCameraAt,
 import { buildTriggers, marioStart, Trigger } from './triggers.js';
 import { drawTriggers } from './overlay.js';
 import { InputDisplay } from './inputs.js';
+import { buildActors, actorParts, updateActorParts, swapTextures } from './actors.js';
 
 const QF_PER_SECOND = 120000 / 1001;
 const QF_PER_FRAME = 4;
@@ -145,8 +146,16 @@ async function loadStage(name: string) {
         renderer = r;
         stageName = name;
         triggers = buildTriggers(r.rarc);
-        playerSun = findPlayerSun(r);
-        r.beforePrepare = () => poseGhosts();
+        playerSun = findLight(r, '太陽（プレイヤー）');
+        objectSun = findLight(r, '太陽（オブジェクト）');
+        r.beforePrepare = (vi) => { poseGhosts(); if (actorParts.length) updateActorParts(actorParts, vi.time); };
+        const cache = r.renderHelper.renderInstManager.gfxRenderCache;
+        const actors = buildActors(device, cache, r.rarc);
+        const oa = r.objectAmbient;
+        if (oa) for (const a of actors) a.modelMaterialData.materialData?.forEach((md: any) => { md.material.colorAmbRegs[0] = { r: oa.r / 255, g: oa.g / 255, b: oa.b / 255, a: oa.a / 255 }; });
+        for (const a of actors) (a as any).isPlayer = true;   // (lit by the viewer, not noclip's object light)
+        actorModels = actors;
+        r.modelInstances.push(...actors);
         for (const g of ghosts) attachMario(g);
         $<HTMLSelectElement>('stage').value = name;
         if (!ghosts.length || camMode === 'free') frameStage();
@@ -168,6 +177,7 @@ function attachMario(g: Ghost) {
     const m = new MarioModel(device, cache, marioArc);
     const amb = renderer.playerAmbient;
     if (amb) for (const inst of m.all) inst.modelMaterialData.materialData?.forEach((md: any) => { md.material.colorAmbRegs[0] = { r: amb.r / 255, g: amb.g / 255, b: amb.b / 255, a: amb.a / 255 }; });
+    swapTextures(device, cache, renderer.rarc, m.all);
     renderer.modelInstances.push(...m.all);
     g.mario = m;
 }
@@ -226,16 +236,24 @@ function ghostOnStage(g: Ghost, time: number) {
     return !!seg && sceneForRoute(stageTable, seg.route.area, seg.route.episode) === stageName;
 }
 
-let playerSun: any = null;
-function findPlayerSun(r: SunshineRenderer) {
+let playerSun: any = null, objectSun: any = null, actorModels: any[] = [];
+function findLight(r: SunshineRenderer, name: string) {
     let found: any = null;
-    const walk = (o: any) => { if (found) return; if (o.type === 'Group') o.children.forEach(walk); else if (o.type === 'Light' && o.name === '太陽（プレイヤー）') found = o; };
+    const walk = (o: any) => { if (found) return; if (o.type === 'Group') o.children.forEach(walk); else if (o.type === 'Light' && o.name === name) found = o; };
     if (r.sceneBin) walk(r.sceneBin);
     return found;
 }
 
 function poseGhosts() {
     if (renderer && playerSun) setPlayerLights(ghosts.flatMap((g) => g.mario ? g.mario.all : []), playerSun, camera.viewMatrix);
+    if (renderer && objectSun) {   // TLightCommon::setLight, the object group
+        setPlayerLights(actorModels, objectSun, camera.viewMatrix);
+        // TODO: with GXInitLightShininess(50)'s attenuation and the diffuse function these
+        // characters' specular channel has, the GX lighting model (as Dolphin and noclip run it)
+        // washes them out white; the game doesn't look like that, so something about how their
+        // specular light is set is still missing. Left off for now.
+        for (const m of actorModels) { const l = m.getGXLightReference(2); l.Color.r = l.Color.g = l.Color.b = 0; }
+    }
     for (const g of ghosts) {
         const m = g.mario;
         if (!m) continue;
@@ -520,4 +538,6 @@ drop.addEventListener('drop', async (e) => {
 
 // For tests and the console.
 (window as any).ghostViewer = { get t() { return t; }, seek, addGhostFiles, loadStage, get stage() { return stageName; }, get ghosts() { return ghosts; }, useDiscFile: async (f: File) => useDisc(await openDisc(f)), camera, triggers: () => triggers, setCamMode,
+    get renderer() { return renderer; },
+    models: () => renderer ? renderer.modelInstances.map((m: any) => [m.name, m.materialInstances.map((x: any) => x.name), [...m.modelMatrix.slice(12, 15)]]) : [],
     look: (eye: number[], at: number[]) => { setCamMode('free'); setCameraLook(eye, at); }, sample: () => lead && ghostSampleAt(lead.data, t) };

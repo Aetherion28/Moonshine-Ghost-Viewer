@@ -507,6 +507,7 @@ export class SunshineRenderer implements Viewer.SceneGfx {
     public objLightConfig: LightConfig | null = null;
     /** The stage's ambient colour for the player (太陽アンビエント（プレイヤー）), if it has one. */
     public playerAmbient: SceneBinObjAmbColor | null = null;
+    public objectAmbient: SceneBinObjAmbColor | null = null;
     /** The scene.bin tree, for the viewer's own use (triggers, objects). */
     public sceneBin: SceneBinObj | null = null;
     /** Called before the models are prepared each frame (the viewer poses its ghosts there). */
@@ -716,6 +717,7 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
                 this.ambAry = obj;
                 this.objectsAmbIndex = obj.children.findIndex((ambColor) => ambColor.name === "太陽アンビエント（オブジェクト）");
                 this.playerAmbIndex = obj.children.findIndex((ambColor) => ambColor.name === "太陽アンビエント（プレイヤー）");
+                if (this.objectsAmbIndex >= 0) renderer.objectAmbient = obj.children[this.objectsAmbIndex] as SceneBinObjAmbColor;
                 if (this.playerAmbIndex >= 0) renderer.playerAmbient = obj.children[this.playerAmbIndex] as SceneBinObjAmbColor;
             }
         } else if (obj.type === 'MapObj') {
