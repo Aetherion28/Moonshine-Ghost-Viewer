@@ -2,26 +2,13 @@
 // browser, and is drawn by the game's own J3D / GX rendering (noclip.website's port of it, see
 // noclip/LICENSE). Ghosts are Moonshine .smsghost files played through it.
 
-import { mat4, quat, vec3 } from 'gl-matrix';
-import ArrayBufferSlice from '../noclip/ArrayBufferSlice.js';
-import { Camera, FPSCameraController } from '../noclip/Camera.js';
 import * as Yaz0 from '../noclip/Common/Compression/Yaz0.js';
-import * as RARC from '../noclip/Common/JSYSTEM/JKRArchive.js';
-import { AntialiasingMode } from '../noclip/gfx/helpers/RenderGraphHelpers.js';
-import { createSwapChainForWebGL2, GfxPlatformWebGL2Config } from '../noclip/gfx/platform/GfxPlatformWebGL2.js';
-import { GfxDevice, GfxSwapChain } from '../noclip/gfx/platform/GfxPlatform.js';
-import InputManager from '../noclip/InputManager.js';
-import { colorFromRGBA } from '../noclip/Color.js';
 import { GameFS, openDisc, openFolder, rememberHandle, rememberedHandle, forgetHandle } from './disc.js';
 import { parseStageArc, sceneForRoute } from './stagearc.js';
-import { SunshineRenderer, SunshineSceneDesc } from './sms_scene.js';
-import { MarioModel, YoshiModel, parseArchive, setPlayerLights } from './mario.js';
-import { MARIO_BCK_FILES } from './mario_anims.js';
-import { parseSmsGhost, ghostSampleAt, ghostAnimAt, ghostFluddAt, ghostCameraAt, ghostYoshiAt, ghostFormatTime, ghostRouteLabel } from './ghost.js';
-import { buildTriggers, marioStart, Trigger } from './triggers.js';
-import { drawTriggers } from './overlay.js';
+import { parseArchive } from './mario.js';
+import { parseSmsGhost, ghostSampleAt, ghostFormatTime, ghostRouteLabel } from './ghost.js';
 import { InputDisplay } from './inputs.js';
-import { buildActors, actorParts, updateActorParts, swapTextures } from './actors.js';
+import { Ghost, Shared, View } from './view.js';
 
 const QF_PER_SECOND = 120000 / 1001;
 const QF_PER_FRAME = 4;
@@ -32,58 +19,42 @@ const WORLD_NAMES: Record<number, string> = { 0: 'Delfino Airstrip', 1: 'Delfino
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-interface Ghost {
-    data: any;
-    fileName: string;
-    color: string;
-    visible: boolean;
-    mario: MarioModel | null;
-    yoshi: YoshiModel | null;
-}
-
 // ---------------------------------------------------------------- state
-let fs: GameFS | null = null;
-let stageTable: string[][] = [];
-let marioArc: RARC.JKRArchive | null = null;
-let yoshiArc: RARC.JKRArchive | null = null;
-let renderer: SunshineRenderer | null = null;
-let stageName = '';
-let stageLoading = '';
-let triggers: Trigger[] = [];
-const ghosts: Ghost[] = [];
-let lead: Ghost | null = null;
-let t = 0;                       // QF from the ghosts' start
+const shared: Shared = {
+    fs: null, stageTable: [], marioArc: null, yoshiArc: null, ghosts: [],
+    opt: { recCam: true, triggers: false, auto: true },
+    onError: showError,
+    onStatus: (v, text) => { (v === viewA ? $('status') : $('statusB')).textContent = text; },
+    onStage: (v) => { if (v === viewA) $<HTMLSelectElement>('stage').value = v.stageName; update(); },
+};
+const ghosts = shared.ghosts;
+const viewA = new View($<HTMLCanvasElement>('scene'), $<HTMLCanvasElement>('overlay'), shared);
+let viewB: View | null = null;           // the comparison view, made when first turned on
+let compare = false;
+let lead: Ghost | null = null;           // the left view's ghost (and the splits' reference)
+let right: Ghost | null = null;          // the comparison view's ghost
+let offset = 0;                          // right view time = left view time + offset
 let playing = false;
 let speed = 1;
-let camMode: 'follow' | 'free' = 'follow';
 
-// ---------------------------------------------------------------- graphics
-const canvas = $<HTMLCanvasElement>('scene');
-const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false, depth: false, stencil: false });
-if (!gl) throw new Error('This browser has no WebGL 2.');
-const swapChain: GfxSwapChain = createSwapChainForWebGL2(gl, new GfxPlatformWebGL2Config());
-const device: GfxDevice = swapChain.getDevice();
-const camera = new Camera();
-(camera as any).clipSpaceNearZ = device.queryVendorInfo().clipSpaceNearZ;
-const input = new InputManager(canvas);
-const fps = new FPSCameraController();
-fps.camera = camera;
-const viewerInput: any = {
-    camera, time: 0, deltaTime: 0, backbufferWidth: 1, backbufferHeight: 1, onscreenTexture: null,
-    antialiasingMode: AntialiasingMode.FXAA, mouseLocation: { mouseX: -1, mouseY: -1 }, debugConsole: { addInfoLine() { } },
-};
+const t = () => viewA.t;
+function setT(q: number) {
+    viewA.t = Math.max(0, Math.min(duration(), q));
+    if (viewB) viewB.t = Math.max(0, Math.min(right ? right.data.header.durationQf : duration(), viewA.t + offset));
+}
 
 // ---------------------------------------------------------------- the disc
 async function useDisc(g: GameFS) {
-    fs = g;
-    stageTable = parseStageArc(await fs.read('data/stageArc.bin'));
-    marioArc = parseArchive(await fs.read('data/mario.szs'), Yaz0.decompressSW);
-    yoshiArc = fs.has('data/yoshi.szs') ? parseArchive(await fs.read('data/yoshi.szs'), Yaz0.decompressSW) : null;
+    shared.fs = g;
+    shared.stageTable = parseStageArc(await g.read('data/stageArc.bin'));
+    shared.marioArc = parseArchive(await g.read('data/mario.szs'), Yaz0.decompressSW);
+    shared.yoshiArc = g.has('data/yoshi.szs') ? parseArchive(await g.read('data/yoshi.szs'), Yaz0.decompressSW) : null;
     $('discLabel').textContent = `${g.label}${g.id ? ` · ${g.id}` : ''}`;
     document.body.classList.add('hasDisc');
     fillStagePicker();
-    const route = leadRoute();
-    await loadStage(route ? sceneForRoute(stageTable, route.area, route.episode) || 'dolpic0' : 'dolpic0');
+    const r = viewA.leadRoute();
+    await viewA.loadStage(r ? sceneForRoute(shared.stageTable, r.area, r.episode) || 'dolpic0' : 'dolpic0');
+    if (viewB) viewB.followStage();
 }
 
 async function pickDisc() {
@@ -91,8 +62,7 @@ async function pickDisc() {
     if (w.showOpenFilePicker) {
         try {
             const [h] = await w.showOpenFilePicker({ types: [{ description: 'GameCube disc image', accept: { 'application/octet-stream': ['.iso', '.gcm'] } }] });
-            const file = await h.getFile();
-            await useDisc(await openDisc(file));
+            await useDisc(await openDisc(await h.getFile()));
             rememberHandle(h);
             return;
         } catch (e: any) {
@@ -120,89 +90,19 @@ function showError(e: any) {
     console.error(e);
 }
 
-// ---------------------------------------------------------------- the stage
 function fillStagePicker() {
     const sel = $<HTMLSelectElement>('stage');
     sel.textContent = '';
-    stageTable.forEach((eps, area) => {
+    shared.stageTable.forEach((eps, area) => {
         const seen = new Set<string>();
-        const names = eps.filter((s) => s && s !== 'none' && !seen.has(s) && seen.add(s) && fs!.has(`data/scene/${s}.szs`));
+        const names = eps.filter((s) => s && s !== 'none' && !seen.has(s) && seen.add(s) && shared.fs!.has(`data/scene/${s}.szs`));
         if (!names.length) return;
         const og = document.createElement('optgroup');
         og.label = WORLD_NAMES[area] || `Area ${area}`;
         for (const s of names) { const o = document.createElement('option'); o.value = s; o.textContent = s; og.append(o); }
         sel.append(og);
     });
-    sel.value = stageName;
-}
-
-async function loadStage(name: string) {
-    if (!fs || name === stageName || name === stageLoading) return;
-    if (!fs.has(`data/scene/${name}.szs`)) { showError(new Error(`${name}.szs isn't on this disc.`)); return; }
-    stageLoading = name;
-    $('status').textContent = `Loading ${name}…`;
-    try {
-        const buf = await fs.read(`data/scene/${name}.szs`);
-        const context: any = { device, dataFetcher: { fetchData: async () => new ArrayBufferSlice(buf) } };
-        const r = await new SunshineSceneDesc(name, name).createScene(device, context) as SunshineRenderer;
-        if (stageLoading !== name) { r.destroy(device); return; }
-        if (renderer) destroyStage();
-        renderer = r;
-        stageName = name;
-        triggers = buildTriggers(r.rarc);
-        playerSun = findLight(r, '太陽（プレイヤー）');
-        objectSun = findLight(r, '太陽（オブジェクト）');
-        r.beforePrepare = (vi) => { poseGhosts(); if (actorParts.length) updateActorParts(actorParts, vi.time); };
-        const cache = r.renderHelper.renderInstManager.gfxRenderCache;
-        const actors = buildActors(device, cache, r.rarc);
-        const oa = r.objectAmbient;
-        if (oa) for (const a of actors) a.modelMaterialData.materialData?.forEach((md: any) => { md.material.colorAmbRegs[0] = { r: oa.r / 255, g: oa.g / 255, b: oa.b / 255, a: oa.a / 255 }; });
-        for (const a of actors) (a as any).isPlayer = true;   // (lit by the viewer, not noclip's object light)
-        actorModels = actors;
-        r.modelInstances.push(...actors);
-        for (const g of ghosts) attachMario(g);
-        $<HTMLSelectElement>('stage').value = name;
-        if (!ghosts.length || camMode === 'free') frameStage();
-        $('status').textContent = '';
-    } catch (e) { showError(e); $('status').textContent = ''; }
-    finally { if (stageLoading === name) stageLoading = ''; }
-}
-
-function destroyStage() {
-    if (!renderer) return;
-    for (const g of ghosts) { g.mario = null; g.yoshi = null; }
-    renderer.destroy(device);
-    renderer = null;
-}
-
-function attachMario(g: Ghost) {
-    if (!renderer || !marioArc) return;
-    const cache = renderer.renderHelper.renderInstManager.gfxRenderCache;
-    const m = new MarioModel(device, cache, marioArc);
-    const amb = renderer.playerAmbient;
-    if (amb) for (const inst of m.all) inst.modelMaterialData.materialData?.forEach((md: any) => { md.material.colorAmbRegs[0] = { r: amb.r / 255, g: amb.g / 255, b: amb.b / 255, a: amb.a / 255 }; });
-    swapTextures(device, cache, renderer.rarc, m.all);
-    renderer.modelInstances.push(...m.all);
-    g.mario = m;
-    g.yoshi = null;
-    if (yoshiArc && g.data.yoshi && g.data.yoshi.some((v: number) => v)) {
-        const y = new YoshiModel(device, cache, yoshiArc);
-        if (amb) y.body.modelMaterialData.materialData?.forEach((md: any) => { md.material.colorAmbRegs[0] = { r: amb.r / 255, g: amb.g / 255, b: amb.b / 255, a: amb.a / 255 }; });
-        renderer.modelInstances.push(y.body);
-        g.yoshi = y;
-    }
-}
-
-function frameStage() {
-    // As the game starts: behind Mario at his start, facing the way he faces; else from above.
-    const p = renderer ? marioStart(renderer.rarc) : null;
-    if (p) { const r = (p[3] * Math.PI) / 180; setCameraLook([p[0] - Math.sin(r) * 1100, p[1] + 420, p[2] - Math.cos(r) * 1100], [p[0], p[1] + 120, p[2]]); }
-    else setCameraLook([0, 6000, 8000], [0, 0, 0]);
-}
-
-function setCameraLook(eye: number[], at: number[]) {
-    mat4.targetTo(camera.worldMatrix, eye as any, at as any, [0, 1, 0]);
-    camera.worldMatrixUpdated();
+    sel.value = viewA.stageName;
 }
 
 // ---------------------------------------------------------------- ghosts
@@ -210,176 +110,85 @@ async function addGhostFiles(files: FileList | File[]) {
     for (const f of Array.from(files)) {
         try {
             const data = parseSmsGhost(await f.arrayBuffer());
-            const g: Ghost = { data, fileName: f.name, color: COLORS[ghosts.length % COLORS.length], visible: true, mario: null, yoshi: null };
+            const g: Ghost = { data, fileName: f.name, color: COLORS[ghosts.length % COLORS.length], visible: true };
             ghosts.push(g);
-            attachMario(g);
+            viewA.attach(g);
+            if (viewB) viewB.attach(g);
             for (const w of data.warnings) console.warn(f.name, w);
         } catch (e) { showError(new Error(`${f.name}: ${(e as any).message}`)); }
     }
-    if (!lead) lead = ghosts[0] || null;
+    if (!lead) setLead(ghosts[0] || null);
+    if (!right || right === lead) right = ghosts.find((g) => g !== lead) || null;
+    if (viewB) viewB.lead = right;
     renderGhostList();
-    followLeadStage();
+    viewA.followStage();
     update();
 }
 
+function setLead(g: Ghost | null) {
+    lead = g;
+    viewA.lead = g;
+    if (right === g) { right = ghosts.find((x) => x !== g) || null; if (viewB) viewB.lead = right; }
+}
+
 function duration() { return Math.max(0, ...ghosts.map((g) => g.data.header.durationQf)); }
-
-function leadRoute() {
-    if (!lead) return null;
-    const s = ghostSampleAt(lead.data, t);
-    const k = s.gap ? Math.min(s.i + 1, lead.data.segIndex.length - 1) : s.i;
-    const seg = lead.data.segments[lead.data.segIndex[k]];
-    return seg ? seg.route : null;
-}
-
-// The stage follows the leading ghost: when it goes into another area, that area's scene loads.
-function followLeadStage() {
-    if (!fs || !$<HTMLInputElement>('optAuto').checked) return;
-    const r = leadRoute();
-    if (!r) return;
-    const s = sceneForRoute(stageTable, r.area, r.episode);
-    if (s && s !== stageName) loadStage(s);
-}
-
-function ghostOnStage(g: Ghost, time: number) {
-    const s = ghostSampleAt(g.data, time);
-    const seg = g.data.segments[g.data.segIndex[s.i]];
-    return !!seg && sceneForRoute(stageTable, seg.route.area, seg.route.episode) === stageName;
-}
-
-let playerSun: any = null, objectSun: any = null, actorModels: any[] = [];
-function findLight(r: SunshineRenderer, name: string) {
-    let found: any = null;
-    const walk = (o: any) => { if (found) return; if (o.type === 'Group') o.children.forEach(walk); else if (o.type === 'Light' && o.name === name) found = o; };
-    if (r.sceneBin) walk(r.sceneBin);
-    return found;
-}
-
-function poseGhosts() {
-    if (renderer && playerSun) setPlayerLights(ghosts.flatMap((g) => [...(g.mario ? g.mario.all : []), ...(g.yoshi ? [g.yoshi.body] : [])]), playerSun, camera.viewMatrix);
-    if (renderer && objectSun) {   // TLightCommon::setLight, the object group
-        setPlayerLights(actorModels, objectSun, camera.viewMatrix);
-        // TODO: with GXInitLightShininess(50)'s attenuation and the diffuse function these
-        // characters' specular channel has, the GX lighting model (as Dolphin and noclip run it)
-        // washes them out white; the game doesn't look like that, so something about how their
-        // specular light is set is still missing. Left off for now.
-        for (const m of actorModels) { const l = m.getGXLightReference(2); l.Color.r = l.Color.g = l.Color.b = 0; }
-    }
-    for (const g of ghosts) {
-        const m = g.mario;
-        if (!m) continue;
-        const on = g.visible && ghostOnStage(g, t) && t <= g.data.header.durationQf;
-        m.setVisible(on);
-        if (g.yoshi && !on) g.yoshi.body.visible = false;
-        if (!on) continue;
-        const s = ghostSampleAt(g.data, t), a = ghostAnimAt(g.data, t), fl = ghostFluddAt(g.data, t);
-        const noz = fl && fl.present ? ({ 0: 'normal_wg', 1: 'rocket_wg', 4: 'hover_wg', 5: 'back_wg' } as Record<number, string>)[fl.nozzle] || 'normal_wg' : (fl ? null : 'normal_wg');
-        m.pose(s.x, s.y, s.z, s.yaw, a.id, !!a.yoshi, a.phase, a.yoshi ? null : noz);
-        m.calcParts();
-        if (g.yoshi) {
-            // Riding Yoshi (the sample's Yoshi type, 1..4): V7 records his own animation and frame;
-            // older ghosts get the rider animation's counterpart at the same point of its loop.
-            const colour = g.data.yoshi ? g.data.yoshi[s.i] : 0;
-            g.yoshi.body.visible = !!colour && !s.gap;
-            if (g.yoshi.body.visible) {
-                const ob = ghostYoshiAt(g.data, t);
-                let k: number, f: number;
-                if (ob) { k = ob.anim; f = ob.frame; }
-                else { k = g.yoshi.indexForRider(MARIO_BCK_FILES[a.id]); f = (a.phase / 4096) * g.yoshi.duration(k); }
-                g.yoshi.pose(s.x, s.y, s.z, s.yaw, colour, k, f);
-            }
-        }
-    }
-}
 
 function renderGhostList() {
     const box = $('ghostList');
     box.textContent = '';
     for (const g of ghosts) {
         const row = document.createElement('div');
-        row.className = 'ghostRow' + (g === lead ? ' lead' : '');
+        row.className = 'ghostRow' + (g === lead ? ' lead' : '') + (compare && g === right ? ' right' : '');
         const sw = document.createElement('input');
         sw.type = 'checkbox'; sw.checked = g.visible; sw.title = 'Show this ghost';
         sw.style.accentColor = g.color;
         sw.onchange = () => { g.visible = sw.checked; };
         const name = document.createElement('button');
         name.className = 'ghostName';
-        name.title = 'Follow this ghost';
+        name.title = compare ? 'Follow this ghost in the left view (shift-click: the right view)' : 'Follow this ghost';
         const h = g.data.header;
         name.innerHTML = `<span class="sw" style="background:${g.color}"></span>`;
         name.append(`${h.name || g.fileName}`);
         const meta = document.createElement('span');
         meta.className = 'meta';
-        meta.textContent = `${h.routeLabel} · ${ghostFormatTime(h.durationQf)}${h.author ? ' · ' + h.author : ''}`;
+        meta.textContent = `${h.routeLabel} · ${ghostFormatTime(h.durationQf)}${h.author ? ' · ' + h.author : ''}${g.data.camera ? ' · camera' : ''}`;
         name.append(meta);
-        name.onclick = () => { lead = g; renderGhostList(); followLeadStage(); update(); };
+        name.onclick = (e) => {
+            if (compare && e.shiftKey && g !== lead) { right = g; if (viewB) { viewB.lead = g; viewB.followStage(); } }
+            else setLead(g);
+            renderGhostList(); viewA.followStage(); update();
+        };
         const rm = document.createElement('button');
         rm.className = 'rm'; rm.textContent = '×'; rm.title = 'Remove this ghost';
         rm.onclick = () => {
             ghosts.splice(ghosts.indexOf(g), 1);
-            if (g.mario && renderer) renderer.modelInstances = renderer.modelInstances.filter((x) => !g.mario!.all.includes(x));
-            if (lead === g) lead = ghosts[0] || null;
+            viewA.detach(g); if (viewB) viewB.detach(g);
+            if (lead === g) setLead(ghosts[0] || null);
+            if (right === g) { right = ghosts.find((x) => x !== lead) || null; if (viewB) viewB.lead = right; }
             renderGhostList(); update();
         };
         row.append(sw, name, rm);
         box.append(row);
     }
     $('ghostHint').hidden = ghosts.length > 0;
+    const cb = $<HTMLInputElement>('optCompare');
+    cb.disabled = ghosts.length < 2;
+    if (ghosts.length < 2 && compare) setCompare(false);
 }
 
-// ---------------------------------------------------------------- camera
-const follow = { yaw: 0, pitch: 0.32, dist: 1100, userUntil: 0, pos: vec3.create(), have: false };
-let dragging = false, lastX = 0, lastY = 0;
-canvas.addEventListener('pointerdown', (e) => { if (camMode !== 'follow') return; dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); });
-canvas.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
-    follow.yaw -= (e.clientX - lastX) * 0.006; follow.pitch = Math.max(-1.2, Math.min(1.45, follow.pitch + (e.clientY - lastY) * 0.005));
-    lastX = e.clientX; lastY = e.clientY; follow.userUntil = performance.now() + 1500;
-});
-canvas.addEventListener('pointerup', () => { dragging = false; });
-canvas.addEventListener('wheel', (e) => { if (camMode !== 'follow') return; follow.dist = Math.max(200, Math.min(8000, follow.dist * Math.exp(e.deltaY * 0.001))); follow.userUntil = performance.now() + 1500; e.preventDefault(); }, { passive: false });
-
-const _q = quat.create(), _p = vec3.create();
-function updateCamera(dt: number) {
-    const aspect = canvas.width / Math.max(1, canvas.height);
-    let fov = 50;
-    if (camMode === 'free') {
-        fps.update(input, dt, 1);
-    } else if (lead) {
-        const s = ghostSampleAt(lead.data, t);
-        const rec = s.gap ? null : ghostCameraAt(lead.data, t, lead.data.segIndex[s.i]);
-        const userOn = dragging || performance.now() < follow.userUntil;
-        if (rec && !userOn && $<HTMLInputElement>('optRecCam').checked) {
-            // Moonshine V8: the game's own camera, as the run was seen.
-            quat.set(_q, -rec.quat[0], -rec.quat[1], -rec.quat[2], rec.quat[3]);
-            mat4.fromRotationTranslation(camera.worldMatrix, _q, rec.pos as any);
-            camera.worldMatrixUpdated();
-            fov = rec.fov;
-            // Hand over to the follow camera from here if the user drags.
-            const d = vec3.sub(_p, rec.pos as any, [s.x, s.y + 100, s.z]);
-            follow.dist = Math.max(200, vec3.length(d));
-            follow.yaw = Math.atan2(d[0], d[2]);
-            follow.pitch = Math.asin(Math.max(-1, Math.min(1, d[1] / follow.dist)));
-        } else {
-            if (!userOn) {   // behind him, turning with him (slowly)
-                const want = (s.yaw / 32768) * Math.PI + Math.PI;
-                let dy = want - follow.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-                follow.yaw += dy * Math.min(1, dt / 1000 * 2.5);
-            }
-            const tx = s.x, ty = s.y + 120, tz = s.z;
-            const eye = [tx + Math.sin(follow.yaw) * Math.cos(follow.pitch) * follow.dist, ty + Math.sin(follow.pitch) * follow.dist, tz + Math.cos(follow.yaw) * Math.cos(follow.pitch) * follow.dist];
-            setCameraLook(eye, [tx, ty, tz]);
-        }
+// ---------------------------------------------------------------- comparison view
+function setCompare(on: boolean) {
+    compare = on && ghosts.length >= 2;
+    $<HTMLInputElement>('optCompare').checked = compare;
+    document.body.classList.toggle('compare', compare);
+    if (compare && !viewB) {
+        viewB = new View($<HTMLCanvasElement>('sceneB'), $<HTMLCanvasElement>('overlayB'), shared);
+        viewB.lead = right;
+        for (const g of ghosts) viewB.attach(g);
     }
-    camera.fovY = (fov * Math.PI) / 180;
-    camera.aspect = aspect;
-    camera.setClipPlanes(10, 300000);
-}
-
-function setCamMode(m: 'follow' | 'free') {
-    camMode = m;
-    $('camFollow').setAttribute('aria-pressed', String(m === 'follow'));
-    $('camFree').setAttribute('aria-pressed', String(m === 'free'));
+    if (viewB) { viewB.lead = right; setT(t()); viewB.followStage(); }
+    renderGhostList();
+    update();
 }
 
 // ---------------------------------------------------------------- playback
@@ -388,47 +197,39 @@ function setPlaying(on: boolean) {
     playing = on && ghosts.length > 0;
     $('play').textContent = playing ? 'Pause' : 'Play';
 }
-function seek(q: number) { t = Math.max(0, Math.min(duration(), q)); update(); }
+function seek(q: number) { setT(q); update(); }
 
 function update() {
     const d = duration();
     const sc = $<HTMLInputElement>('scrub');
     sc.max = String(Math.max(1, Math.round(d)));
-    sc.value = String(Math.round(t));
-    $('clock').textContent = `${ghostFormatTime(Math.round(t))} / ${ghostFormatTime(Math.round(d))}`;
+    sc.value = String(Math.round(t()));
+    $('clock').textContent = `${ghostFormatTime(Math.round(t()))} / ${ghostFormatTime(Math.round(d))}`;
+    if (viewB && compare) {
+        $('clockB').textContent = `${ghostFormatTime(Math.round(viewB.t))}${offset ? ` (${offset > 0 ? '+' : '−'}${ghostFormatTime(Math.round(Math.abs(offset)))})` : ''}`;
+        const dl = splitDelta();
+        $('deltaB').textContent = dl ? `split ${dl.k + 1}: ${fmtDelta(dl.dq)}` : '';
+        $('deltaB').className = dl ? (dl.dq > 0 ? 'behind' : 'ahead') : '';
+    }
     drawSplitTicks();
     updateSplitTable();
-    followLeadStage();
-    hud.update(lead, t);
-    const r = leadRoute();
-    $('where').textContent = r ? `${ghostRouteLabel(r)} · ${stageName}` : stageName;
+    viewA.followStage();
+    if (viewB && compare) viewB.followStage();
+    hud.update(lead, t());
+    const r = viewA.leadRoute();
+    $('where').textContent = r ? `${ghostRouteLabel(r)} · ${viewA.stageName}` : viewA.stageName;
 }
 
 function frame(now: number) {
     const dt = Math.min(100, now - lastFrame);
     lastFrame = now;
     if (playing) {
-        t += (dt / 1000) * QF_PER_SECOND * speed;
-        if (t >= duration()) { t = duration(); setPlaying(false); }
+        setT(t() + (dt / 1000) * QF_PER_SECOND * speed);
+        if (t() >= duration()) { setT(duration()); setPlaying(false); }
         update();
     }
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    updateCamera(dt);
-    if (renderer) {
-        viewerInput.time = now;
-        viewerInput.deltaTime = dt;
-        viewerInput.backbufferWidth = w;
-        viewerInput.backbufferHeight = h;
-        swapChain.configureSwapChain(w, h);
-        device.beginFrame();
-        viewerInput.onscreenTexture = swapChain.getOnscreenTexture();
-        renderer.render(device, viewerInput);
-        device.endFrame();
-    }
-    drawTriggers($<HTMLCanvasElement>('overlay'), camera, $<HTMLInputElement>('optTriggers').checked ? triggers : []);
-    input.afterFrame();
+    viewA.frame(now, dt);
+    if (viewB && compare) viewB.frame(now, dt);
     requestAnimationFrame(frame);
 }
 
@@ -439,6 +240,16 @@ function splitGroup() {
     const route = lead.data.splits[0].route;
     const list = [lead, ...ghosts.filter((g) => g !== lead && g.data.splits.length && g.data.splits[0].route === route)];
     return { list, n: Math.max(...list.map((g) => g.data.splits.length)) };
+}
+// Comparison view: how far the right ghost is behind (+) or ahead (−) at the last split both passed.
+function splitDelta() {
+    if (!lead || !right || !viewB) return null;
+    const sa = lead.data.splits || [], sb = right.data.splits || [];
+    if (!sa.length || !sb.length || sa[0].route !== sb[0].route) return null;
+    let k = -1;
+    for (const x of sa) { const y = sb.find((z: any) => z.index === x.index); if (y && x.qf <= t() && y.qf <= viewB.t) k = x.index; }
+    if (k < 0) return null;
+    return { k, dq: sb.find((z: any) => z.index === k).qf - sa.find((z: any) => z.index === k).qf };
 }
 let tickKey = '', tickLayout = 0;
 new ResizeObserver(() => { tickLayout++; drawSplitTicks(); }).observe($('timeline'));
@@ -464,8 +275,8 @@ function updateSplitTable() {
     $('splitsHead').hidden = box.hidden = !G;
     if (!G) { tableKey = ''; return; }
     const at = (g: Ghost, k: number) => g.data.splits.find((x: any) => x.index === k);
-    const cur = lead!.data.splits.filter((x: any) => x.qf <= t).length;
-    const key = G.list.map((g) => g.fileName).join('|') + '|' + cur;
+    const cur = lead!.data.splits.filter((x: any) => x.qf <= t()).length;
+    const key = G.list.map((g) => g.fileName).join('|') + '|' + cur + '|' + compare;
     if (key === tableKey) return;
     tableKey = key;
     const segOf = (g: Ghost, k: number) => { const a = at(g, k), b = k ? at(g, k - 1) : { qf: 0 }; return a && b ? a.qf - b.qf : null; };
@@ -480,6 +291,7 @@ function updateSplitTable() {
     for (let k = 0; k < G.n; k++) {
         const tr = document.createElement('tr');
         if (k === cur - 1) tr.className = 'now';
+        tr.title = compare ? 'Line both views up on this split' : 'Jump to this split';
         tr.innerHTML = `<td>${k + 1}</td>`;
         const ref = at(lead!, k);
         G.list.forEach((g) => {
@@ -495,7 +307,14 @@ function updateSplitTable() {
             }
             tr.append(td);
         });
-        tr.onclick = () => { setPlaying(false); if (ref) seek(ref.qf); };
+        tr.onclick = () => {
+            setPlaying(false);
+            if (compare && right) {   // both views to this split
+                const b = at(right, k);
+                if (ref && b) offset = b.qf - ref.qf;
+            }
+            if (ref) seek(ref.qf);
+        };
         body.append(tr);
     }
     tbl.append(body);
@@ -516,24 +335,40 @@ $<HTMLInputElement>('folderFile').onchange = async (e) => {
 };
 $('addGhost').onclick = () => $<HTMLInputElement>('ghostFile').click();
 $<HTMLInputElement>('ghostFile').onchange = (e) => { const f = (e.target as HTMLInputElement).files; if (f) addGhostFiles(f); (e.target as HTMLInputElement).value = ''; };
-$<HTMLSelectElement>('stage').onchange = (e) => { $<HTMLInputElement>('optAuto').checked = false; loadStage((e.target as HTMLSelectElement).value); };
-$('play').onclick = () => { if (!playing && t >= duration()) t = 0; setPlaying(!playing); };
-$('back').onclick = () => { setPlaying(false); seek(Math.round(t / QF_PER_FRAME) * QF_PER_FRAME - QF_PER_FRAME); };
-$('fwd').onclick = () => { setPlaying(false); seek(Math.round(t / QF_PER_FRAME) * QF_PER_FRAME + QF_PER_FRAME); };
+$<HTMLSelectElement>('stage').onchange = (e) => { setAuto(false); viewA.loadStage((e.target as HTMLSelectElement).value); };
+$('play').onclick = () => { if (!playing && t() >= duration()) setT(0); setPlaying(!playing); };
+const step = (q: number) => Math.round(q / QF_PER_FRAME) * QF_PER_FRAME;
+$('back').onclick = () => { setPlaying(false); seek(step(t()) - QF_PER_FRAME); };
+$('fwd').onclick = () => { setPlaying(false); seek(step(t()) + QF_PER_FRAME); };
+$('backB').onclick = () => { setPlaying(false); offset -= QF_PER_FRAME; seek(t()); };
+$('fwdB').onclick = () => { setPlaying(false); offset += QF_PER_FRAME; seek(t()); };
+$('syncB').onclick = () => { offset = 0; seek(t()); };
 $<HTMLInputElement>('scrub').oninput = (e) => { setPlaying(false); seek(Number((e.target as HTMLInputElement).value)); };
 $<HTMLSelectElement>('speed').onchange = (e) => { speed = Number((e.target as HTMLSelectElement).value); };
-$('camFollow').onclick = () => setCamMode('follow');
-$('camFree').onclick = () => { mat4.copy((fps as any).camera.worldMatrix, camera.worldMatrix); setCamMode('free'); };
-$<HTMLInputElement>('optAuto').onchange = () => followLeadStage();
-$('errorClose').onclick = () => { $('error').hidden = true; };
+function setCam(m: 'follow' | 'free') {
+    viewA.setCamMode(m); if (viewB) viewB.setCamMode(m);
+    $('camFollow').setAttribute('aria-pressed', String(m === 'follow'));
+    $('camFree').setAttribute('aria-pressed', String(m === 'free'));
+}
+$('camFollow').onclick = () => setCam('follow');
+$('camFree').onclick = () => setCam('free');
+function setAuto(on: boolean) {
+    shared.opt.auto = on; viewA.autoStage = on;
+    $<HTMLInputElement>('optAuto').checked = on;
+    if (on) viewA.followStage();
+}
+$<HTMLInputElement>('optAuto').onchange = (e) => setAuto((e.target as HTMLInputElement).checked);
+$<HTMLInputElement>('optRecCam').onchange = (e) => { shared.opt.recCam = (e.target as HTMLInputElement).checked; };
+$<HTMLInputElement>('optTriggers').onchange = (e) => { shared.opt.triggers = (e.target as HTMLInputElement).checked; };
+$<HTMLInputElement>('optCompare').onchange = (e) => setCompare((e.target as HTMLInputElement).checked);
 $('error').onclick = () => { $('error').hidden = true; };
 
 window.addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).closest('input, select, textarea')) return;
-    if (e.code === 'KeyP' || (e.code === 'Space' && camMode !== 'free')) { e.preventDefault(); $('play').click(); }
+    if (e.code === 'KeyP' || (e.code === 'Space' && viewA.camMode !== 'free')) { e.preventDefault(); $('play').click(); }
     else if (e.code === 'Comma') $('back').click();
     else if (e.code === 'Period') $('fwd').click();
-    else if (e.code === 'KeyF') setCamMode(camMode === 'follow' ? 'free' : 'follow');
+    else if (e.code === 'KeyF') setCam(viewA.camMode === 'follow' ? 'free' : 'follow');
 });
 const drop = document.body;
 drop.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
@@ -548,7 +383,7 @@ drop.addEventListener('drop', async (e) => {
 });
 
 (async () => {
-    setCamMode('follow');
+    setCam('follow');
     renderGhostList();
     update();
     requestAnimationFrame(frame);
@@ -562,7 +397,10 @@ drop.addEventListener('drop', async (e) => {
 })();
 
 // For tests and the console.
-(window as any).ghostViewer = { get t() { return t; }, seek, addGhostFiles, loadStage, get stage() { return stageName; }, get ghosts() { return ghosts; }, useDiscFile: async (f: File) => useDisc(await openDisc(f)), camera, triggers: () => triggers, setCamMode,
-    get renderer() { return renderer; },
-    models: () => renderer ? renderer.modelInstances.map((m: any) => [m.name, m.materialInstances.map((x: any) => x.name), [...m.modelMatrix.slice(12, 15)]]) : [],
-    look: (eye: number[], at: number[]) => { setCamMode('free'); setCameraLook(eye, at); }, sample: () => lead && ghostSampleAt(lead.data, t) };
+(window as any).ghostViewer = {
+    get t() { return t(); }, seek, addGhostFiles, get stage() { return viewA.stageName; }, get ghosts() { return ghosts; },
+    get views() { return [viewA, viewB]; }, get renderer() { return viewA.renderer; }, setCompare,
+    loadStage: (n: string) => viewA.loadStage(n), triggers: () => viewA.triggers,
+    look: (eye: number[], at: number[]) => { setCam('free'); viewA.look(eye, at); }, sample: () => viewA.sample(),
+    models: () => viewA.renderer ? viewA.renderer.modelInstances.map((m: any) => [m.name, m.materialInstances.map((x: any) => x.name), [...m.modelMatrix.slice(12, 15)]]) : [],
+};

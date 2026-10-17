@@ -78,7 +78,6 @@ export function swapTextures(device: GfxDevice, cache: GfxRenderCache, arc: RARC
 
 /** Parts hung on a character's joints, placed each frame after its animation. */
 export interface ActorPart { part: J3DModelInstanceSimple; body: J3DModelInstanceSimple; joint: number; }
-export const actorParts: ActorPart[] = [];
 export function updateActorParts(parts: ActorPart[], timeMs: number) {
     const done = new Set<J3DModelInstanceSimple>();
     for (const p of parts) {
@@ -170,8 +169,7 @@ function idleAnim(files: Map<string, RARC.RARCFile>, model: string, joints: numb
 }
 
 /** Characters for the stage, as model instances placed in the world. Objects noclip already draws are left out. */
-export function buildActors(device: GfxDevice, cache: GfxRenderCache, arc: RARC.JKRArchive): J3DModelInstanceSimple[] {
-    actorParts.length = 0;
+export function buildActors(device: GfxDevice, cache: GfxRenderCache, arc: RARC.JKRArchive, actorParts: ActorPart[]): J3DModelInstanceSimple[] {
     const scene = arc.findFileData('map/scene.bin');
     if (!scene) return [];
     const files = listFiles(arc);

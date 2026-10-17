@@ -1,45 +1,39 @@
-# Sunshine Ghost Viewer
+# Moonshine Ghost Viewer v2
 
-A 3D viewer for Super Mario Sunshine practice-mod ghosts (Moonshine `.smsghost`, versions 3–8).
-Open `site/index.html` from any static web server, then drop ghost files on the stage.
+Super Mario Sunshine practice-mod ghosts (Moonshine `.smsghost`, versions 3–8) played in the game's
+own stages. v2 reads the stages from the player's own copy of the game, in the browser, and draws
+them with the game's own model and material code: the J3D / GX rendering of
+[noclip.website](https://github.com/magcius/noclip.website) (MIT, see `web/noclip/`), a port of
+what Sunshine runs. The site hosts no game data.
 
-- Stages, objects, NPCs, Mario and FLUDD built from the game's own files (`tools/`).
-- Mario animations, FLUDD nozzles and water, carried and thrown objects (springs, fruit,
-  Bob-ombs), the Noki Bay Monty Mole cannon, tightropes, pickups, input display.
-- The Chain Chomp and Gooper Blooper fights run the game's own code (from the decomp, in
-  `site/gesso.js` for Gooper Blooper) on what the ghost did: tentacles, nose pulls, damage.
-- Shines that only come out after something happens (bosses, red coins, NPCs, objects hiding
-  them, the 100th coin, Shadow Mario; `tools/build_objects.py` `shine_sources`, scripts read by
-  `tools/spc.py`) come out from where the decomp says, timed by the ghost (Mario stands still
-  for the demo's length), flying the way `TShine::appearWithTime` / `appearSimple` do, with the
-  world stopped meanwhile and, for ghosts without a recorded camera, the demo's own cameras.
-- Invisible triggers: load zones, cutscene and warp triggers, area cylinders, the stage's cubes,
-  and enemies' own trigger zones (`tools/build_triggers.py` `ENEMY_ZONES`: so far the Monty Mole
-  cannon's bomb, hide and come-back-out distances, from the stage's `cannon.prm`).
-- Frame-by-frame or Cinematic playback, follow / free / top cameras; Follow plays a V8 ghost
-  through the camera it recorded (drag to look round, and it swings back when you let go).
+Live at https://aetherion28.github.io/Moonshine-Ghost-Viewer/v2/ (v1, which needs no disc, stays
+at the site's root, built from `main`).
 
-## Layout
+- **The disc**: a GameCube disc image (`.iso` / `.gcm`, any region) or a folder Dolphin extracted
+  it to. Read with the browser's file APIs (`web/src/disc.ts`); Chrome and Edge can reopen it on
+  the next visit. RVZ / WIA / NKit images need converting to ISO first.
+- **Stages**: the stage table from `stageArc.bin`, each stage's scene archive drawn by noclip's
+  Sunshine loader (map, sky, sea, map objects), plus the stage's characters (NPCs with their colours
+  and parts, enemies, animals) on their idle animations (`web/src/actors.ts`).
+- **Ghosts**: Mario from `mario.szs`, posed by the game's BCKs, with the hands, cap, FLUDD and nozzle
+  the game hangs on him and his own lights (`TLightMario::setLight`); Yoshi under a ghost that rides
+  him. The stage follows the ghost from area to area.
+- **Viewing**: the recorded V8 camera, a follow camera, free flight; the timeline with split dots, the
+  splits table, a comparison view (two ghosts side by side, each in its own stage, lined up on a
+  split), the controller inputs, and the invisible triggers (load zones, cutscene and warp triggers,
+  area cylinders, the stage's cubes, enemies' own zones).
 
-| Path | What |
-|---|---|
-| `site/` | The static site: `index.html`, `ghost.js` (Moonshine format reader), `mario_rig.js`, `mario_anims.js`, `gesso.js` (Gooper Blooper), and the converted data (`maps/`, `objects/`, `models/`). Binary data is stored as base64 `.b64.txt`. |
-| `tools/` | Python converters: GameCube ISO/RARC/Yaz0, J3D BMD/BCK, scene.bin, collision, objects, NPC tables. |
-| `raw/` | Small lookup tables the tools use (stage table, map object table, NPC init data). |
-| `test/` | Test inputs. |
+Not yet in v2 from v1: the game logic v1 runs on what the ghost did (Gooper Blooper, the Chain Chomp,
+Shines coming out, the Monty Mole cannon), FLUDD's water and particles, walking NPCs, pickups
+disappearing. The plan is to rebuild that logic from the decomp.
 
-## Rebuilding the data from your own ISO
-
-The `site/` data was generated from a retail Super Mario Sunshine disc. To regenerate it, extract
-`data/scene/*.szs`, `mario.szs`, `params.szs` and `stageArc.bin` from your ISO, then run, for example:
+## Building
 
 ```
-python3 tools/build_all_stages.py ...
-python3 tools/build_mario_iso.py <mario.szs> site/models --b64
-python3 tools/build_objects.py <scene_dir> raw/stage_table.json raw/mapobj_table.json site
-python3 tools/build_collision.py <scene_dir> site
+cd web
+npm install
+node build.mjs          # site/app.js (minified); --dev for an unminified build
 ```
 
-`raw/npc_init.json` comes from the sms decompilation (`tools/npc_init_data.py src/NPC/NpcInitData.cpp`).
-
-Game data (models, textures, stages) belongs to Nintendo and is included for the speedrunning community's use.
+`web/src` is the viewer, `web/noclip` the noclip.website code it uses (see its README for what
+changed), `web/stubs` stand-ins for the noclip parts it doesn't. `site/` is what's published.
