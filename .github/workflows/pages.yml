@@ -1,8 +1,9 @@
 name: Deploy site to GitHub Pages
 
+# The site is main's site/ folder, with the v2 branch's site/ under /v2/.
 on:
   push:
-    branches: [main]
+    branches: [main, v2]
   workflow_dispatch:
 
 permissions:
@@ -22,11 +23,24 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main
+      - uses: actions/checkout@v4
+        with:
+          ref: v2
+          path: v2
+        continue-on-error: true
+      - name: Put the two sites together
+        run: |
+          mkdir _site
+          cp -r main/site/. _site/
+          if [ -d v2/site ]; then mkdir _site/v2 && cp -r v2/site/. _site/v2/; fi
       - uses: actions/configure-pages@v5
         with:
           enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
