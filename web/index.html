@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moonshine Ghost Viewer v2</title>
+<meta name="description" content="Super Mario Sunshine practice ghosts (Moonshine .smsghost) played in the game's own stages, read from your copy of the game.">
+<style>
+:root {
+  --bg: #0b141b; --panel: #111d26; --line: #23333f; --fg: #e3ecf2; --muted: #8fa1ae; --accent: #f2b33d; --danger: #ff8a80; --good: #39c35f;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
+button, select { font: inherit; font-size: 13px; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); color: #1b1300; border-color: var(--accent); font-weight: 600; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 15px; margin: 0 8px 0 0; white-space: nowrap; }
+header h1 small { color: var(--muted); font-weight: 500; }
+#discLabel { color: var(--muted); font-size: 12px; }
+#where { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+main { position: relative; display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
+#view { position: relative; min-width: 0; min-height: 0; }
+#scene, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#overlay { pointer-events: none; }
+#scene { touch-action: none; }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 12px; display: grid; gap: 12px; align-content: start; }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; }
+.ghostRow { display: flex; gap: 6px; align-items: center; }
+.ghostRow.lead .ghostName { border-color: var(--accent); }
+.ghostName { flex: 1; text-align: left; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
+.ghostName .meta { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+.rm { padding: 2px 8px; }
+.sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.opts { display: grid; gap: 6px; }
+.opts label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+footer { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 12px; }
+#timeline { display: flex; align-items: center; gap: 8px; position: relative; min-width: 0; }
+#scrub { flex: 1; min-width: 0; accent-color: var(--accent); }
+#clock { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 12em; text-align: right; }
+.splitTicks { position: absolute; top: -7px; height: 6px; pointer-events: none; }
+.splitTicks button { position: absolute; top: 0; width: 10px; height: 10px; margin-left: -5px; padding: 0; border: 0; border-radius: 50%; background: var(--accent); pointer-events: auto; min-width: 0; }
+.splits { font-size: 12px; font-family: var(--mono); overflow-x: auto; }
+.splits table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.splits th, .splits td { padding: 3px 5px; text-align: right; white-space: nowrap; border-top: 1px solid var(--line); }
+.splits th { font-family: system-ui, sans-serif; font-size: 11px; color: var(--muted); }
+.splits th:first-child, .splits td:first-child { text-align: left; }
+.splits tbody tr { cursor: pointer; }
+.splits tr.now td:first-child { color: var(--accent); font-weight: 700; }
+.splits .seg { display: block; font-size: 10px; color: var(--muted); }
+.splits .best .seg { color: var(--good); font-weight: 700; }
+.splits .ahead { color: var(--good); } .splits .behind { color: var(--danger); }
+#inputs { position: absolute; left: 12px; bottom: 12px; background: rgba(10,14,20,.6); border-radius: 10px; padding: 6px; pointer-events: none; }
+#inputs svg text { fill: #0b141b; font: 700 11px system-ui; text-anchor: middle; }
+#inputs svg text.s { font-size: 8px; }
+#inputs .ring { fill: rgba(255,255,255,.08); stroke: #8fa1ae; }
+#inputs .dot { fill: #e3ecf2; } #inputs .c { stroke: #f2d23b; } #inputs .dot.c { fill: #f2d23b; }
+#inputs .b { fill: #3a4a56; } #inputs .b.on { fill: #e3ecf2; } #inputs .b.a.on { fill: #39c35f; } #inputs .b.bb.on { fill: #ff6b6b; } #inputs .b.z.on { fill: #a66bff; }
+#inputs .tb { fill: none; stroke: #8fa1ae; } #inputs .tf { fill: #e3ecf2; }
+#welcome { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; background: radial-gradient(circle at 50% 30%, #18303f, var(--bg)); }
+body.hasDisc #welcome { display: none; }
+#welcome .card { max-width: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: grid; gap: 12px; }
+#welcome h2 { margin: 0; font-size: 20px; }
+#welcome p { margin: 0; color: var(--muted); line-height: 1.45; }
+#welcome .row { display: flex; gap: 8px; flex-wrap: wrap; }
+#error { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); max-width: min(640px, 90%); background: #3a1414; border: 1px solid var(--danger); color: #ffd9d6; padding: 10px 14px; border-radius: 8px; z-index: 5; cursor: pointer; }
+#status { position: absolute; top: 12px; right: 12px; background: rgba(10,14,20,.7); padding: 4px 10px; border-radius: 6px; font-size: 12px; }
+#status:empty { display: none; }
+body.dragging #view::after { content: "Drop .smsghost files (or the disc image)"; position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 12px; display: grid; place-items: center; font-size: 18px; background: rgba(0,0,0,.4); }
+.help { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0; }
+kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  aside { border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; }
+  #where { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Moonshine Ghost Viewer <small>v2</small></h1>
+  <button id="addGhost" class="primary">Add ghosts</button>
+  <select id="stage" aria-label="Stage" title="Stage (scene archive)"></select>
+  <span id="discLabel"></span>
+  <span id="where"></span>
+</header>
+<main>
+  <div id="view">
+    <canvas id="scene"></canvas>
+    <canvas id="overlay"></canvas>
+    <div id="inputs" hidden></div>
+    <div id="status"></div>
+    <div id="error" hidden role="alert"><span id="errorClose" hidden></span></div>
+    <div id="welcome">
+      <div class="card">
+        <h2>Your Super Mario Sunshine disc</h2>
+        <p>v2 draws the game's own stages, straight from your copy of the game, with the game's own model and material code. Pick your disc image (.iso or .gcm, any region) or a folder you extracted it to with Dolphin. It's read here in your browser; nothing is uploaded.</p>
+        <div class="row">
+          <button id="pickDisc" class="primary">Choose disc image</button>
+          <button id="pickFolder">Choose extracted folder</button>
+          <button id="reopen" hidden></button>
+        </div>
+        <p>Dolphin's compressed images (RVZ, WIA, NKit) need converting to ISO first: right-click the game in Dolphin, Convert File, ISO.</p>
+        <p><a href="../" style="color:var(--accent)">The first viewer</a> still works without a disc.</p>
+      </div>
+    </div>
+  </div>
+  <aside>
+    <h2>Ghosts</h2>
+    <div id="ghostList"></div>
+    <p class="help" id="ghostHint">Add Moonshine .smsghost files, or drop them on the stage.</p>
+    <h2 id="splitsHead" hidden>Splits</h2>
+    <div class="splits" id="splits" hidden></div>
+    <h2>View</h2>
+    <div class="opts">
+      <div class="row" style="display:flex;gap:6px"><button id="camFollow">Follow</button><button id="camFree">Free</button></div>
+      <label title="Moonshine V8 ghosts recorded the game's camera: Follow shows the run through it (drag to look round, it comes back when you let go)"><input type="checkbox" id="optRecCam" checked> Recorded camera (V8 ghosts)</label>
+      <label title="Load the stage the followed ghost is in, as it moves between areas"><input type="checkbox" id="optAuto" checked> Stage follows the ghost</label>
+      <label title="Load zones, cutscene and warp triggers, area cylinders, the stage's cubes and enemies' own trigger zones"><input type="checkbox" id="optTriggers"> Show invisible triggers</label>
+    </div>
+    <p class="help"><kbd>Space</kbd> or <kbd>P</kbd> play, <kbd>,</kbd> <kbd>.</kbd> one frame, <kbd>F</kbd> follow / free. Free: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move, <kbd>Q</kbd><kbd>E</kbd> down / up, drag to look, <kbd>Shift</kbd> faster.</p>
+    <p class="help">Rendering by <a href="https://github.com/magcius/noclip.website" style="color:var(--accent)">noclip.website</a>'s J3D / GX code (MIT). Game data stays on your device.</p>
+  </aside>
+</main>
+<footer>
+  <div id="timeline">
+    <div class="splitTicks" id="splitTicks" aria-hidden="true"></div>
+    <button id="play">Play</button>
+    <button id="back" title="Back one frame">−1f</button>
+    <button id="fwd" title="Forward one frame">+1f</button>
+    <input type="range" id="scrub" min="0" max="1" step="1" value="0" aria-label="Playback position">
+    <select id="speed" aria-label="Speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+    <span id="clock">0.000</span>
+  </div>
+</footer>
+<input type="file" id="isoFile" accept=".iso,.gcm" hidden>
+<input type="file" id="folderFile" webkitdirectory hidden>
+<input type="file" id="ghostFile" accept=".smsghost" multiple hidden>
+<script type="module" src="app.js"></script>
+</body>
+</html>
