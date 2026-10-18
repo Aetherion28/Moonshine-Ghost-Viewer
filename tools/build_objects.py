@@ -434,7 +434,7 @@ def npc_extra(w, lib, arc, typ, payload, body_model):
         else:
             ji = body_model.joint_names.index(part["joint"])
             mtx = body_model.joints_world[ji]
-        pi = lib_add(w, lib, "part:" + hashlib.sha1(arc[path]).hexdigest(), lambda path=path: [bmd.parse(arc[path])])
+        pi = lib_add(w, lib, "part:" + hashlib.sha1(arc[path]).hexdigest(), lambda path=path: [bmd.parse(arc[path])], f=path)
         if pi >= 0:
             parts.append([pi, [round(float(v), 4) for v in mtx.T.reshape(-1)], pc, ji])
     if not mats and not parts and not k0:
@@ -1160,8 +1160,36 @@ def add_goop(w: GlbWriter, raw: bytes, img, anim: bytes | None, name: str) -> No
 WRITTEN: set = set()   # shared files this run has written
 
 
-def lib_add(w: GlbWriter, lib: dict, key: str, build) -> int:
+# Where each library model comes from in the scene archive (data["mp"], by library index), so a
+# viewer that reads the game's own files (v2) can draw the same objects with the game's models:
+# {"f": .bmd path, "bmt": material table, "tex": 1 (its textures only), "bck": the idle pose's
+# animation, "shrink": the spring's, "parts": [[.bmd, joint of f]], "lift": y offset}.
+SPECS: dict = {}
+
+
+def spec(idx: int, **kw) -> int:
+    if idx >= 0 and idx not in SPECS:
+        SPECS[idx] = {k: (v.lower() if isinstance(v, str) else v) for k, v in kw.items() if v}
+    return idx
+
+
+def wait_bck(arc: dict, model_path: str, model: bmd.Model):
+    """idle_pose's animation file."""
+    folder = model_path.rsplit("/", 1)[0]
+    for k in sorted(arc):
+        if k.startswith(folder + "/") and k.endswith(".bck") and "wait" in k.lower():
+            try:
+                if len(parse_bck(arc[k])["j"]) == len(model.joint_names):
+                    return k
+            except Exception:
+                continue
+    return None
+
+
+def lib_add(w: GlbWriter, lib: dict, key: str, build, **sp) -> int:
     """Add a model (list of parts) to the stage library once per key; returns its index or -1."""
+    if key in lib:
+        return spec(lib[key], **sp) if sp else lib[key]
     if key not in lib:
         try:
             models = build()
@@ -1174,7 +1202,7 @@ def lib_add(w: GlbWriter, lib: dict, key: str, build) -> int:
         except Exception as exc:
             print("  skip model", key, exc)
             lib[key] = -1
-    return lib[key]
+    return spec(lib[key], **sp) if sp else lib[key]
 
 
 def main(argv):
@@ -1197,6 +1225,7 @@ def main(argv):
             continue
         w = GlbWriter(max_tex)
         lib: dict[str, int] = {}
+        SPECS.clear()
         posed: dict[str, bmd.Model] = {}
         scenes: dict[str, str] = {}
         arcs = {}
@@ -1256,9 +1285,11 @@ def main(argv):
                 mi = -1
                 if typ == "Cannon" and "cannon/default.bmd" in arc:
                     parts, mole, hit = cannon_parts(arc)
-                    mi = lib_add(w, lib, "cannon:" + hashlib.sha1(arc["cannon/default.bmd"]).hexdigest(), lambda: parts)
+                    mi = lib_add(w, lib, "cannon:" + hashlib.sha1(arc["cannon/default.bmd"]).hexdigest(), lambda: parts, f="cannon/default.bmd",
+                                 parts=[["cannon/cannon_dom.bmd", j] for j in ("nullA", "nullB", "nullC")] if "cannon/cannon_dom.bmd" in arc else None)
                     mole_i = lib_add(w, lib, "mole:" + hashlib.sha1(arc.get("cannon/tyorobe_model1.bmd", b"")).hexdigest(),
-                                     lambda: [mole] if mole else None)
+                                     lambda: [mole] if mole else None, f="cannon/tyorobe_model1.bmd",
+                                     bck="cannon/tyorobe_wait1_loop.bck" if "cannon/tyorobe_wait1_loop.bck" in arc else None, lift=300.0)
                     cp = enemy_params(arc, typ) or {}
                     extra = {"cannon": {"mole": mole_i, "hit": hit, "hp": cp.get("mSLHitPointMax", 3),
                                         "r": cp.get("mSLChorobeiAttackRadius", 100.0),
@@ -1289,6 +1320,12 @@ def main(argv):
                             print("  skip model", mpath, exc)
                             lib[digest] = -1
                     mi = lib[digest]
+                    if mi >= 0 and mi not in SPECS:
+                        bpath = next((("mapobj/" + MAT_TABLES[(objtable.get(k) or {}).get("actor")][0]) for k in keys or []
+                                      if MAT_TABLES.get((objtable.get(k) or {}).get("actor"))), None) if bmt else None
+                        spec(mi, f=mpath, bmt=bpath, tex=1 if tex_only else 0,
+                             bck=wait_bck(arc, mpath, posed[digest]) if digest in posed and len(posed[digest].joint_names) > 1 else None,
+                             shrink=mpath.rsplit("/", 1)[0] + "/jumpbase_shrink.bck" if typ == "JumpBase" and mpath.rsplit("/", 1)[0] + "/jumpbase_shrink.bck" in arc else None)
                 else:
                     unresolved[typ] = unresolved.get(typ, 0) + 1
                 if typ in NPC_ORDER and mpath and posed.get(hashlib.sha1(arc[mpath]).hexdigest()) is not None:
@@ -1385,6 +1422,9 @@ def main(argv):
                         except Exception as exc:
                             print("  skip skinned", mpath, exc)
                     if lib[skey] >= 0:
+                        spec(lib[skey], f=mpath, bmt=next((("mapobj/" + MAT_TABLES[(objtable.get(k) or {}).get("actor")][0]) for k in keys or []
+                                                            if MAT_TABLES.get((objtable.get(k) or {}).get("actor"))), None) if bmt else None,
+                             tex=1 if tex_only else 0)
                         extra = {**(extra or {}), "skin": lib[skey]}
                         if not wk:
                             extra["ar"] = 2.0   # SMSGetAnmFrameRate
@@ -1414,8 +1454,8 @@ def main(argv):
                     # TBossWanwan::init ignores the placed position: the head starts at BW_HEAD_START,
                     # staked by a TBWPicket at BW_PICKET_START with a TBWLeash of 15 links (bosswanwan.cpp
                     # .bss, set in __sinit_bosswanwan_cpp).
-                    pk = lib_add(w, lib, "bwpicket", lambda: [bmd.parse(arc["bwanwan/bwanwan_picket.bmd"])] if "bwanwan/bwanwan_picket.bmd" in arc else None)
-                    ch = lib_add(w, lib, "bwchain", lambda: [bmd.parse(arc["bwanwan/bwanwan_chain.bmd"])] if "bwanwan/bwanwan_chain.bmd" in arc else None)
+                    pk = lib_add(w, lib, "bwpicket", lambda: [bmd.parse(arc["bwanwan/bwanwan_picket.bmd"])] if "bwanwan/bwanwan_picket.bmd" in arc else None, f="bwanwan/bwanwan_picket.bmd")
+                    ch = lib_add(w, lib, "bwchain", lambda: [bmd.parse(arc["bwanwan/bwanwan_chain.bmd"])] if "bwanwan/bwanwan_chain.bmd" in arc else None, f="bwanwan/bwanwan_chain.bmd")
                     # TBWParams defaults (no bosswanwan.prm on the disc): mSLMarchSpeed 6, mSLLeashNodeLen 120.
                     # TNerveBWGraphWander walks the scene's "bwanwan" graph.
                     extra = {**(extra or {}), "bw": {"pk": pk, "ch": ch, "p": [6012.84, 0.0, 7323.15], "n": 15,
@@ -1482,7 +1522,7 @@ def main(argv):
                     raw = bmd.parse(arc[path])
                     pose = idle_pose(arc, path, raw) if len(raw.joint_names) > 1 else None
                     return [bmd.parse(arc[path], pose=pose) if pose else raw]
-                di = lib_add(w, lib, hashlib.sha1(arc[path]).hexdigest(), build_dyn)
+                di = lib_add(w, lib, hashlib.sha1(arc[path]).hexdigest(), build_dyn, f=path)
                 if di >= 0:
                     p = enemy_params(arc, pname) or {}
                     swap = DYNAMIC_SPRAYED.get(atype)
@@ -1493,7 +1533,7 @@ def main(argv):
                             return None
                         model.textures = [stop if t[0] == swap[0] else t for t in model.textures]
                         return [model]
-                    ai = lib_add(w, lib, "wet:" + hashlib.sha1(arc[path]).hexdigest(), build_wet) if swap else -1
+                    ai = lib_add(w, lib, "wet:" + hashlib.sha1(arc[path]).hexdigest(), build_wet, f=path, swap=list(swap)) if swap else -1
                     dyn[f"{atype:08x}"] = {"m": di, "sprayed": ai, "kind": kind, "prm": {k[3:]: v for k, v in p.items()
                                            if isinstance(v, (int, float)) and k.startswith("mSL")
                                            and ("Thrown" in k or "Bomb" in k or "Body" in k or "Damage" in k)}}
@@ -1501,6 +1541,7 @@ def main(argv):
                 data["dyn"] = dyn
             from build_triggers import triggers   # (imports this module: loaded late)
             data["trig"] = triggers(arc)
+            data["mp"] = {str(k): v for k, v in sorted(SPECS.items())}
             (out_dir / f"{scene}.json").write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False))
         glb = w.write(out_dir / "tmp.glb")
         (out_dir / "tmp.glb").unlink()
